@@ -1,2 +1,0 @@
-# lab
-What's cooking?
