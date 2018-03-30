@@ -1,0 +1,9 @@
+[package]
+name = "foo-test"
+version = "0.1.0"
+authors = ["yoanlcq <yoanlecoq.io@gmail.com>"]
+
+[dependencies]
+foo-derive = { path = "foo-derive"  }
+foo = { path = "foo"  }
+lazy_static = "0.2.5"

@@ -1,0 +1,12 @@
+[package]
+name = "game"
+version = "0.1.0"
+authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
+
+[lib]
+name = "game"
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+libloading = "0.5"
+

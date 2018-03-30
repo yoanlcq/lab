@@ -1,0 +1,15 @@
+[package]
+name = "xinput-dyn"
+version = "0.1.0"
+authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
+description = "Loads the user's latest XInput DLL and provides its API."
+
+[dependencies]
+# xinput-sys = "0.2.0"
+kernel32-sys = "0.2.2"
+
+[dependencies.winapi]
+version = "0.2.8"
+default-features = false
+# FIXME: When winapi will reach 0.3
+# features = ["xinput"]

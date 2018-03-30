@@ -1,0 +1,9 @@
+[package]
+name = "custom-allocator"
+version = "0.1.0"
+authors = ["yoanlcq <yoanlecoq.io@gmail.com>"]
+
+[dependencies]
+
+[dev-dependencies]
+edit-distance = "^1.0.0"

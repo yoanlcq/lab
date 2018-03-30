@@ -1,0 +1,11 @@
+[package]
+name = "foo-derive"
+version = "0.1.0"
+authors = ["yoanlcq <yoanlecoq.io@gmail.com>"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "0.11.9"
+quote = "0.3.15"

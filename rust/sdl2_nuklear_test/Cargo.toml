@@ -1,0 +1,14 @@
+[package]
+name = "sdl2_nuklear_test"
+version = "0.1.0"
+authors = ["yoanlcq <yoanlecoq.io@gmail.com>"]
+
+[dependencies]
+edit-distance = "^1.0.0"
+nuklear-rust = "0.2.1"
+gl = "0.6.0"
+
+[dependencies.sdl2]
+version = "0.29"
+default-features = false
+features = ["image"]

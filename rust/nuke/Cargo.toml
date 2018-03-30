@@ -1,0 +1,27 @@
+[package]
+name = "nuke"
+version = "0.1.0"
+authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+#repository = "https://github.com/rust-lang/log"
+#documentation = "https://doc.rust-lang.org/log"
+#homepage = "https://github.com/rust-lang/log"
+description = """
+An idimatic Nuklear binding that can"t be accidentally misused. Supports #![no_std].
+"""
+#categories = ["development-tools::debugging"]
+
+[dependencies]
+libc = { version = "0.2.22", default-features = false }
+
+[dependencies.nuke-sys]
+path = "sys"
+version = "*"
+
+[features]
+use_std = []
+# use_libc here means "link to libc's functions".
+# The libc crate is still used for its types such as c_void.
+use_libc = []
+default = ["use_std", "use_libc"]

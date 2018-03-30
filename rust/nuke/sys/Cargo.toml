@@ -1,0 +1,16 @@
+[package]
+name = "nuke-sys"
+version = "0.1.0"
+authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
+build = "build.rs"
+
+[build-dependencies]
+bindgen = "0.24.0"
+gcc = "0.3"
+
+[dependencies]
+libc = { version = "0.2.22", default-features = false }
+
+[features]
+gen_bindings = []
+no_libc = []

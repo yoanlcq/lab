@@ -1,0 +1,6 @@
+[package]
+name = "rps"
+version = "1.0.0"
+authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
+
+[dependencies]

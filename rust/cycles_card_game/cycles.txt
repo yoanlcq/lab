@@ -1,0 +1,100 @@
+Vocabulaire:
+- Allié vs adversaire.
+
+4 decks de 30 cartes.
+Lors du jeu, seules 20 cartes de chaque deck sont utilisées.
+Chaque joueur a une fiche "clan" qui répertorie aussi les cartes de son deck. 
+Il y a 6 fiches "alliance", une pour chaque paire possible de clans.
+Il y a une seule fiche qui liste la totalité des cartes; En plaçant une feuille vierge en dessous, il est possible de faire des croix à côté des noms des cartes déjà jouées; Donc, plus de cartes sont révélées, plus ça vaut le coup de tenter des divinations.
+
+2v2.
+La condition de défaite est prioritaire.
+A chaque début de tour, chacun des joueurs de l'équipe dont c'est le tour piochent, chacun leur tour, une carte d'un des deux decks de l'équipe, au choix.
+Les joueurs ont le droit de communiquer de manière conventionnelle du moment que cela n'amène pas un joueur à obtenir une information qu'il n'est pas censé connaître. TODO: Quelle pénalité sinon ?
+Lors du tour, pour chaque joueur de l'équipe, ce joueur peut jouer une carte qui lui est visible, depuis la main de son allié ou sa propre main.
+
+# Arrangement du plateau
+TODO
+
+# "Mentalité" souhaitée pour les joueurs
+- Aube: Mystifier l'entourage. Faire des essais, des paris, et constater que le risque n'est pas grand. Epique quand les prédictions sont correctes.
+- Nuit: Il faut que les gens aient tout le temps envie de dire "Oh le batard".
+- Jour: Peace & Love poussé à l'extrême (jusqu'à faire peur en fait). C'est les Bisounours.
+- Crépuscule: Tranquille mais menaçant et difficile à atteindre.
+
+# Thèmes
+
+## Guerriers de l'aube
+Associés au futur.
+L'Aube ignore les notions de bien et de mal, et se concentre uniquement sur l'amélioration objective et universelle du status quo.
+Elle met fin à la Nuit et est un prémice au Jour.
+
+Victoire: Arriver à une situation où toutes les cartes d'au moins un autre joueur ont été révélées.
+OU: Annoncer une carte adverse avant le début de la partie, vous gagnez si elle est révélée (une carte est révélée si tout le monde voit, ou a pu voir, la face recto de la carte).
+
+## Guerriers du crépuscule
+Associés au passé.
+Le Crépuscule veut conserver et partager les leçons du passé afin de ne plus refaire les mêmes erreurs, et est sceptique des nouveautés.
+Elle met fin au Jour et est un prémice à la Nuit.
+
+Victoire: Arriver à une situation où au moins un des joueurs n'a plus de cartes dans son deck.
+OU faire que la somme des cartes dans les Aethers soit de 25 ou plus.
+
+## Guerriers du jour
+Associés au présent, dans le sens "profiter de la vie".
+Epicurisme.
+Le Jour vise à accomplir une utopie saine où les êtres peuvent vivre une existence passionnante et épanouissante.
+La lumière est porteuse d'énergie et réduit en cendres la malveillance.
+
+Victoire: Faire gagner un autre joueur.
+
+## Guerriers de la nuit
+Associés au présent, dans le sens "la lutte pour la réussite".
+Nihilisme.
+La Nuit veut dominer l'univers ou disparaître avec.
+Sans lumière, il n'y a que ténèbres.
+
+Victoire: Faire perdre un autre joueur (rappel: votre allié compte comme étant un autre joueur).
+OU Dominer les deux joueurs de l'alliance adverse (la domination est un effet spécifique de certaines cartes).
+
+
+# Alliances
+## Aube-Jour
+Défaite: Votre Aether contient 20 cartes ou plus.
+## Crépuscule-Nuit
+Défaite: L'un de vous n'a plus de cartes dans son deck.
+## Jour-Crépuscule
+Défaite: Vous gagnez tous les deux ????
+## Nuit-Aube
+Défaite: L'un de vous n'a plus de cartes en main.
+## Aube-Crépuscule
+Défaite: La somme du nombre de vos cartes en main est de 10 ou plus.
+## Jour-Nuit
+Défaite: Vous avez le même nombre de cartes en main.
+
+# Effets
+## Transferts
+- Pioche: Deck -> Main
+- Défausse: Main -> Aether
+- Passe / échange: Main -> Main (entre joueurs)
+- Meule: Deck -> Aether
+- Exil ?????
+## Révélation (i.e changement de visibilité)
+Retourner des cartes face recto.
+- Sur le deck: Les cartes sont ensuites placées dans un tas spécial devant le deck. Un allié peut piocher depuis ce tas au lieu de piocher depuis le deck.
+
+## Annonce:
+Ta prochaine action sera....
+
+# Mécaniques
+Visibilités:
+- Les autres voient, mais pas moi;
+- Je vois, mais pas les autres;
+- Personne ne voit;
+- Tout le monde voit;
+Apprentissage: Se révéler une carte de sa propre main.
+Divination: Déclarer le nom exact d'une carte qui nous est cachée. (E.g "je vais piocher X" ou "je joue X depuis ma main" sans le savoir)
+- Si on devine juste, on peut la jouer, ou autre chose;
+- Si on se trompe, on est pénalisé.
+Pouvoir jouer une autre carte: ....
+

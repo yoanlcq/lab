@@ -1,0 +1,16 @@
+[package]
+name = "color_stds"
+version = "0.2.0"
+authors = ["yoanlcq <yoanlecoq.io@gmail.com>"]
+
+[dependencies]
+
+[dev-dependencies]
+edit-distance = "1.0.0"
+
+[features]
+tables = []
+basic_table = []
+xkcd_table = []
+css_table = []
+crayola_table = []
