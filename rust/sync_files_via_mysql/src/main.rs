@@ -4,6 +4,7 @@ extern crate mysqlclient_sys;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
+extern crate ignore;
 
 //use std::sync::mpsc::channel;
 //use std::time::Duration;
@@ -41,6 +42,13 @@ fn main() {
     };
     info!("Database backend info: {:#?}", Db::info());
     let _db = Db::new(&p).expect(&format!("Cound not connect to {}", PublicCredentials::from(p.clone())));
+
+    for result in ignore::Walk::new("./") {
+        match result {
+            Ok(entry) => info!("{}", entry.path().display()),
+            Err(err) => error!("ERROR: {}", err),
+        }
+    }
 
     /*
     // Create a channel to receive the events.

@@ -1,0 +1,56 @@
+
+d ls <files>
+List upstream files, with more or less info (versions, etc).
+Filters (AND-gated by default):
+ -kind=file|folder
+ -name=<wildcard>
+ -tags=<tag_set>
+
+Example:
+d ls src/* 
+d ls stuff/* +tags(music dark ambient)
+
+d tags ls
+List upstream tags.
+
+d tags add <tags>
+
+d tags rm <tags>
+
+d up <files>
+Uploads our versions of files. For a given file, when a matching blob
+would have the exact same filetime, it is not uploaded (and a warning is
+reported)
+Options:
+  -add-new-version ask|yes|no
+
+d down <files>
+Downloads latest versions of upstream files that are strictly more recent
+than downstream, asking for confirmation when trying to overwrite.
+Options:
+  -overwrite ask|yes|no|up|back (default: no)
+   (up means "upload ours as other version before overwriting")
+   (back means "make a backup")
+  -newer-than <time>
+  -older-than <time>
+  -only-create (only download files we don't have)
+  -only-update (only download files we do have)
+
+d rm up
+Removes upstream files that are not downstream.
+Equivalent to inserting an upload record with a NULL blob.
+Options:
+ -action ask|yes|no|up|back (default: no)
+
+d rm down
+Removes downstream files that are not upstream.
+Options:
+ -action ask|yes|no|up|back (default: no)
+
+d sync up
+Transforms upstream so it looks like downstream.
+Performs `d up && d rm up`.
+
+d sync down
+Transforms downstream so it looks like upstream.
+Performs `d down && d rm down`.
