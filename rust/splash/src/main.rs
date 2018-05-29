@@ -88,6 +88,35 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
 
 fn main() {
     unsafe {
+        // Center window, excluding taskbar!
+        let (x, y) = {
+            // FIXME: Use MonitorFromWindow() (see "Taxes" in The Old New Thing)
+            let owner_hwnd = GetForegroundWindow();
+            assert!(!owner_hwnd.is_null());
+            let hmonitor = MonitorFromWindow(owner_hwnd, MONITOR_DEFAULTTONEAREST);
+            assert!(!hmonitor.is_null());
+            let mut monitorinfo = MONITORINFOEXW {
+                cbSize: mem::size_of::<MONITORINFOEXW>() as _,
+                .. mem::uninitialized()
+            };
+            let is_ok = GetMonitorInfoW(hmonitor, &mut monitorinfo as *mut _ as *mut MONITORINFO);
+            assert_ne!(is_ok, FALSE);
+            let rect = if is_ok != FALSE {
+                monitorinfo.rcWork
+            } else {
+                let mut rect = mem::uninitialized();
+                let is_ok = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as _, 0);
+                assert_ne!(is_ok, FALSE);
+                rect
+            };
+
+            let cx = (rect.right - rect.left) / 2;
+            let cy = (rect.bottom - rect.top) / 2;
+            let x = cx - W as i32 / 2;
+            let y = cy - H as i32 / 2;
+            (x, y)
+        };
+
         let hinstance = GetModuleHandleW(ptr::null_mut());
         let wndclass = WNDCLASSEXW {
             cbSize: mem::size_of::<WNDCLASSEXW>() as _,
@@ -110,7 +139,8 @@ fn main() {
             WINDOW_CLASS_NAME.as_ptr(),
             ptr::null_mut(), // No title
             WS_POPUP, // Prevents moving by dragging the top
-            CW_USEDEFAULT, CW_USEDEFAULT, W as _, H as _,
+            x, y,
+            W as _, H as _,
             ptr::null_mut(), // No parent
             ptr::null_mut(), // No menu
             hinstance,
@@ -229,20 +259,6 @@ fn main() {
             );
             assert_ne!(is_ok, FALSE, "UpdateLayeredWindow() failed!");
         };
-
-        // Center window, excluding taskbar!
-        {
-            // Primary monitor
-            // FIXME: Use MonitorForWindow() (see "Taxes" i The Old New Thing)
-            let mut rect: RECT = mem::uninitialized();
-            let is_ok = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as _, 0);
-            assert_ne!(is_ok, FALSE);
-            let cx = (rect.right - rect.left) / 2;
-            let cy = (rect.bottom - rect.top) / 2;
-            let x = cx - W as i32 / 2;
-            let y = cy - H as i32 / 2;
-            SetWindowPos(hwnd, ptr::null_mut(), x, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
-        }
 
         update_window();
 
