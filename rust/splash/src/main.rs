@@ -3,6 +3,30 @@
 // - Can I put text in it? Yes. See the exemple in CreateFont()
 // - Can I render OpenGL in it? Yes, see DWM
 
+// Steps:
+// - RegisterClass
+// - CreateWindowEx
+// - Load ARGB image from memory (with premultiplied alpha)
+//   Create matching BITMAPINFO (easy)
+// - Create a memory HDC, create and select a new empty bitmap with appropriate size
+//   Then render the image into the bitmap via memory HDC using StretchDIBits.
+//   At the last moment, we flip the height in bitmapinfo so that the image is flipped
+//   on the Y-axis (otherwise, the origin is bottom-left).
+//   We can't count on StretchDIBits to directly support PNG and JPEG; This is actually
+//   intended for printer HDCs, not memory HDCs.
+// - Center the window within the work area of whichever monitor the window was
+//   created in.
+// - Call UpdateLayeredWindow() which sets the position, size and content of the window.
+//   The content is maintained and drawing is managed by the system, meaning we don't
+//   receive WM_PAINT events anymore.
+//   UpdateLayeredWindows() _also_ sets the _shape_ of the window, that is the pixels within
+//   which the cursor is treated as being "within" the window. Fully transparent pixels are
+//   treated as "not part of the window" and therefore truly act like holes to other underlying
+//   windows.
+// - Finally, show the window.
+// - Then, enter the message loop.
+// - When we're done, free resources as needed.
+
 #![windows_subsystem = "windows"]
 
 extern crate winapi;
@@ -209,6 +233,7 @@ fn main() {
         // Center window, excluding taskbar!
         {
             // Primary monitor
+            // FIXME: Use MonitorForWindow() (see "Taxes" i The Old New Thing)
             let mut rect: RECT = mem::uninitialized();
             let is_ok = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as _, 0);
             assert_ne!(is_ok, FALSE);
