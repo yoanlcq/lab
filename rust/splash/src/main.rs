@@ -44,6 +44,8 @@ const W: u32 = 512;
 const H: u32 = 512;
 static mut ALPHA: u8 = 255;
 
+static TEST_GL: bool = true;
+
 unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match umsg {
         WM_CLOSE => {
@@ -71,10 +73,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
             0
         },
         WM_PAINT => {
-            println!("Painting!");
-            let mut ps = mem::zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            EndPaint(hwnd, &mut ps);
+            println!("Handling WM_PAINT");
+            if !TEST_GL {
+                let mut ps = mem::zeroed();
+                let _hdc = BeginPaint(hwnd, &mut ps);
+                EndPaint(hwnd, &mut ps);
+            }
             0
             /*
             // Apparently calling UpdateLayeredWindow() just once was enough
@@ -90,10 +94,11 @@ fn main() {
     unsafe {
         // Center window, excluding taskbar!
         let (x, y) = {
-            // FIXME: Use MonitorFromWindow() (see "Taxes" in The Old New Thing)
-            let owner_hwnd = GetForegroundWindow();
-            assert!(!owner_hwnd.is_null());
-            let hmonitor = MonitorFromWindow(owner_hwnd, MONITOR_DEFAULTTONEAREST);
+            // Use the current mouse position when app starts; This is what GIMP does.
+            let mut point = mem::uninitialized();
+            let is_ok = GetCursorPos(&mut point);
+            assert_ne!(is_ok, FALSE);
+            let hmonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
             assert!(!hmonitor.is_null());
             let mut monitorinfo = MONITORINFOEXW {
                 cbSize: mem::size_of::<MONITORINFOEXW>() as _,
@@ -110,17 +115,22 @@ fn main() {
                 rect
             };
 
-            let cx = (rect.right - rect.left) / 2;
-            let cy = (rect.bottom - rect.top) / 2;
+            let cx = rect.left + (rect.right - rect.left) / 2;
+            let cy = rect.top + (rect.bottom - rect.top) / 2;
             let x = cx - W as i32 / 2;
             let y = cy - H as i32 / 2;
             (x, y)
         };
 
         let hinstance = GetModuleHandleW(ptr::null_mut());
+        let style = if TEST_GL {
+            CS_HREDRAW | CS_VREDRAW | CS_OWNDC  // CS_OWNDC required for GL
+        } else {
+            CS_HREDRAW | CS_VREDRAW | CS_NOCLOSE  // CS_OWNDC not allowed for layered windows
+        };
         let wndclass = WNDCLASSEXW {
             cbSize: mem::size_of::<WNDCLASSEXW>() as _,
-            style: CS_HREDRAW | CS_VREDRAW | CS_NOCLOSE, // CS_OWNDC not allowed for layered windows
+            style,
             lpfnWndProc: Some(wndproc),
             cbClsExtra: 0,
             cbWndExtra: 0,
@@ -128,17 +138,17 @@ fn main() {
             hIcon: LoadIconW(ptr::null_mut(), IDI_QUESTION as *mut u16),
             hIconSm: LoadIconW(ptr::null_mut(), IDI_QUESTION as *mut u16),
             hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW as *mut u16),
-            hbrBackground: GetStockObject(WHITE_BRUSH as _) as _, // NOTE: We don't actually need this!
+            hbrBackground: if TEST_GL { ptr::null_mut() } else { GetStockObject(WHITE_BRUSH as _) as _ }, // NOTE: We don't actually need this!
             lpszMenuName: ptr::null_mut(),
             lpszClassName: WINDOW_CLASS_NAME.as_ptr(),
         };
         let class_atom = RegisterClassExW(&wndclass);
         assert_ne!(0, class_atom);
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED,
+            if TEST_GL { WS_EX_OVERLAPPEDWINDOW } else { WS_EX_LAYERED },
             WINDOW_CLASS_NAME.as_ptr(),
             ptr::null_mut(), // No title
-            WS_POPUP, // Prevents moving by dragging the top
+            if TEST_GL { WS_OVERLAPPEDWINDOW } else { WS_POPUP }, // Prevents moving by dragging the top
             x, y,
             W as _, H as _,
             ptr::null_mut(), // No parent
@@ -219,7 +229,7 @@ fn main() {
         assert_ne!(status, GDI_ERROR as _, "No PNG support!");
 
         // Try drawing some text in hdc_memory
-        {
+        if false {
             let hdc = hdc_memory;
             let hfont = CreateFontA(48,0,0,0,FW_DONTCARE,FALSE as _,TRUE as _,FALSE as _,DEFAULT_CHARSET,OUT_OUTLINE_PRECIS,
                 CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY, VARIABLE_PITCH,b"Impact\0".as_ptr() as _);
@@ -237,7 +247,40 @@ fn main() {
             DeleteObject(hfont as _);
         }
 
-        let update_window = || {
+        let hdc_window = if TEST_GL {
+            let hdc = GetDC(hwnd);
+            assert!(!hdc.is_null());
+            Some(hdc)
+        } else {
+            None
+        };
+
+        let update_window = || if TEST_GL {
+
+            let GL_TRIANGLES = 4;
+            let GL_DEPTH_BUFFER_BIT = 256;
+            let GL_COLOR_BUFFER_BIT = 16384;
+
+            #[link="opengl32.dll"]
+            extern "system" {
+                fn glBegin(_: u32);
+                fn glEnd();
+                fn glClear(_: u32);
+                fn glClearColor(_: f32, _: f32, _: f32, _: f32);
+                fn glVertex2f(_: f32, _: f32);
+            }
+            glClearColor(1., 0., 0., 0.5);
+            glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
+            glBegin(GL_TRIANGLES);
+            glVertex2f(-1., -1.);
+            glVertex2f(-1., 1.);
+            glVertex2f(1., 1.);
+            glEnd();
+
+            let is_ok = SwapBuffers(hdc_window.unwrap());
+            assert_ne!(is_ok, FALSE);
+        } else {
             let mut blendfunction = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER,
                 SourceConstantAlpha: ALPHA,
@@ -258,6 +301,50 @@ fn main() {
                 ULW_ALPHA
             );
             assert_ne!(is_ok, FALSE, "UpdateLayeredWindow() failed!");
+        };
+
+        let hglrc = if TEST_GL {
+            let pfd = PIXELFORMATDESCRIPTOR {
+                nSize: mem::size_of::<PIXELFORMATDESCRIPTOR>() as _,
+                nVersion: 1,
+                dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER, 
+                iPixelType: PFD_TYPE_RGBA,
+                cColorBits: 32,
+                cRedBits: 0,
+                cRedShift: 0,
+                cGreenBits: 0,
+                cGreenShift: 0,
+                cBlueBits: 0,
+                cBlueShift: 0,
+                cAlphaBits: 0,
+                cAlphaShift: 0,
+                cAccumBits: 0,
+                cAccumRedBits: 0,
+                cAccumGreenBits: 0,
+                cAccumBlueBits: 0,
+                cAccumAlphaBits: 0,
+                cDepthBits: 24,
+                cStencilBits: 8,
+                cAuxBuffers: 0,
+                iLayerType: PFD_MAIN_PLANE,
+                bReserved: 0,
+                dwLayerMask: 0,
+                dwVisibleMask: 0,
+                dwDamageMask: 0,
+            };
+            let hdc_window = hdc_window.unwrap();
+            assert!(!hdc_window.is_null());
+            let pfi = ChoosePixelFormat(hdc_window, &pfd);
+            assert_ne!(pfi, 0);
+            let is_ok = SetPixelFormat(hdc_window, pfi, &pfd);
+            assert_ne!(is_ok, FALSE);
+            let hglrc = wglCreateContext(hdc_window);
+            assert!(!hglrc.is_null());
+            let is_ok = wglMakeCurrent(hdc_window, hglrc);
+            assert_ne!(is_ok, FALSE);
+            Some(hglrc)
+        } else {
+            None
         };
 
         update_window();
@@ -285,9 +372,20 @@ fn main() {
             update_window();
         }
 
+        if TEST_GL {
+            let is_ok = wglMakeCurrent(hdc_window.unwrap(), ptr::null_mut());
+            assert_ne!(is_ok, FALSE);
+            let is_ok = wglDeleteContext(hglrc.unwrap());
+            assert_ne!(is_ok, FALSE);
+            let is_ok = ReleaseDC(hwnd, hdc_window.unwrap()); // FIXME
+            assert_ne!(is_ok, FALSE);
+        }
         SelectObject(hdc_memory, hbmp_old);
-        DeleteObject(hbmp as _);
-        DeleteDC(hdc_memory);
-        ReleaseDC(ptr::null_mut(), hdc_screen);
+        let is_ok = DeleteObject(hbmp as _);
+        assert_ne!(is_ok, FALSE);
+        let is_ok = DeleteDC(hdc_memory);
+        assert_ne!(is_ok, FALSE);
+        let is_ok = ReleaseDC(ptr::null_mut(), hdc_screen);
+        assert_ne!(is_ok, 0);
     }
 }
