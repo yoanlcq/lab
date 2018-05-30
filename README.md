@@ -1,0 +1,3 @@
+# lab
+
+A bunch of pieces of code mostly written by me that are more or less interesting; Some might deserve a life as small libraries on their own...
