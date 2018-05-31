@@ -195,6 +195,11 @@ pub const DWM_BB_ENABLE: DWORD = 1;
 pub const DWM_BB_BLURREGION: DWORD = 2;
 pub const DWM_BB_TRANSITIONONMAXIMIZED: DWORD = 4;
 
+#[link="dwmapi.dll"]
+extern "system" {
+    pub fn DwmIsCompositionEnabled(_: *mut BOOL) -> HRESULT;
+}
+
 
 fn print_gl_stuff() {
     unsafe {
@@ -755,28 +760,36 @@ fn main() {
             assert_ne!(is_ok, FALSE);
         }
 
-        // FIXME: 
-        //assert_ne!(DwmIsCompositionEnabled(), FALSE);
+        let is_dwm_composition_enabled = {
+            let mut is_enabled = FALSE;
+            let hresult = DwmIsCompositionEnabled(&mut is_enabled);
+            assert_eq!(hresult, S_OK);
+            hresult == S_OK && is_enabled != FALSE
+        };
 
-        let hrgn = {
-            let left = 0;
-            let top = 0;
-            let right = 1;
-            let bottom = 1;
-            // If the rect is zero-size, the DWM blur effect takes all of the window :(
-            CreateRectRgn(left, top, right, bottom)
-        };
-        assert!(!hrgn.is_null());
-        let blur_behind = DWM_BLURBEHIND {
-            dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION | DWM_BB_TRANSITIONONMAXIMIZED,
-            fEnable: TRUE,
-            hRgnBlur: hrgn,
-            fTransitionOnMaximized: FALSE, // FIXME: Play with this
-        };
-        let lresult = DwmEnableBlurBehindWindow(app.hwnd, &blur_behind);
-        assert_eq!(lresult, S_OK);
-        let is_ok = DeleteObject(hrgn as _);
-        assert_ne!(is_ok, FALSE);
+        if !is_dwm_composition_enabled {
+            println!("DWM composition is disabled. You won't see a transparent window!");
+        } else {
+            let hrgn = {
+                let left = 0;
+                let top = 0;
+                let right = 1;
+                let bottom = 1;
+                // If the rect is zero-size, the DWM blur effect takes all of the window :(
+                CreateRectRgn(left, top, right, bottom)
+            };
+            assert!(!hrgn.is_null());
+            let blur_behind = DWM_BLURBEHIND {
+                dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION | DWM_BB_TRANSITIONONMAXIMIZED,
+                fEnable: TRUE,
+                hRgnBlur: hrgn,
+                fTransitionOnMaximized: FALSE, // FIXME: Play with this
+            };
+            let lresult = DwmEnableBlurBehindWindow(app.hwnd, &blur_behind);
+            assert_eq!(lresult, S_OK);
+            let is_ok = DeleteObject(hrgn as _);
+            assert_ne!(is_ok, FALSE);
+        }
 
         assert!(APP.is_none());
         APP = Some(app);
