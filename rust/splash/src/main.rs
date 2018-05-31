@@ -158,6 +158,9 @@ mod splash_gl {
         pub fn glColor4f(_: f32, _: f32, _: f32, _: f32);
         pub fn glGetString(_: GLenum) -> *const c_char;
         pub fn glViewport(x: GLint, y: GLint, w: GLsizei, h: GLsizei);
+        pub fn glEnable(_: GLenum);
+        pub fn glDisable(_: GLenum);
+        pub fn glBlendFunc(_: GLenum, _: GLenum);
     }
 
     pub static GL_TRUE: GLboolean = 1;
@@ -167,6 +170,18 @@ mod splash_gl {
     pub const GL_RENDERER   : GLenum = 0x1F01;
     pub const GL_VERSION    : GLenum = 0x1F02;
     pub const GL_EXTENSIONS : GLenum = 0x1F03;
+
+    pub const GL_BLEND               : GLenum = 0x0BE2;
+
+    pub const GL_SRC_COLOR           : GLenum = 0x0300;
+    pub const GL_ONE_MINUS_SRC_COLOR : GLenum = 0x0301;
+    pub const GL_SRC_ALPHA           : GLenum = 0x0302;
+    pub const GL_ONE_MINUS_SRC_ALPHA : GLenum = 0x0303;
+    pub const GL_DST_ALPHA           : GLenum = 0x0304;
+    pub const GL_ONE_MINUS_DST_ALPHA : GLenum = 0x0305;
+    pub const GL_DST_COLOR           : GLenum = 0x0306;
+    pub const GL_ONE_MINUS_DST_COLOR : GLenum = 0x0307;
+    pub const GL_SRC_ALPHA_SATURATE  : GLenum = 0x0308;
 }
 
 static WINDOW_CLASS_NAME: &[u16] = &['_' as _, 0];
@@ -274,8 +289,7 @@ pub struct App {
 
     // OpenGL stuff
     pub window_hdc: HDC,
-    pub classic_hglrc: HGLRC,
-    pub modern_hglrc: HGLRC,
+    pub hglrc: HGLRC,
 }
 
 impl Drop for App {
@@ -284,7 +298,7 @@ impl Drop for App {
             hinstance, class_atom, hwnd, close_requested: _,
             img: _, bitmapinfo: _,
             memory_hdc, screen_hdc, memory_hbitmap, memory_hdc_previous_hgdiobj, alpha: _,
-            window_hdc, classic_hglrc, modern_hglrc,
+            window_hdc, hglrc,
         } = self;
 
         unsafe {
@@ -292,9 +306,7 @@ impl Drop for App {
                 // NOTE: Do all of this _before_ the window is destroyed
                 let is_ok = wglMakeCurrent(window_hdc, ptr::null_mut());
                 assert_ne!(is_ok, FALSE);
-                let is_ok = wglDeleteContext(classic_hglrc);
-                assert_ne!(is_ok, FALSE);
-                let is_ok = wglDeleteContext(modern_hglrc);
+                let is_ok = wglDeleteContext(hglrc);
                 assert_ne!(is_ok, FALSE);
                 // NOTE: Don't try to release the window's DC.
                 // ReleaseDC() does nothing to class DCs (e.g made via CS_OWNDC) and returns FALSE in this case.
@@ -331,12 +343,17 @@ impl App {
                 glClearColor(a, a, 0., a);
                 glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
                 glBegin(GL_TRIANGLES);
-                glColor4f(0., 1., 0., 1.);
                 let s = 0.25;
-                glVertex4f(-s, -s, 0., 1.);
-                glVertex4f(-s, s, 0., 1.);
-                glVertex4f(s, s, 0., 1.);
+                glColor4f(0., 1., 0., 1.);
+                glVertex3f(-s, -s, 0.);
+                glColor4f(0., 1., 0., 0.5);
+                glVertex3f(-s, s, 0.);
+                glColor4f(0., 1., 0., 0.);
+                glVertex3f(s, s, 0.);
                 glEnd();
 
                 let is_ok = SwapBuffers(self.window_hdc);
@@ -421,6 +438,96 @@ fn main() {
         };
         let class_atom = RegisterClassExW(&wndclass);
         assert_ne!(0, class_atom);
+
+        // Load WGL extensions by creating a temporary GL context.
+        if TEST_GL {
+            let tmp_hwnd = CreateWindowExW(
+                WS_EX_OVERLAPPEDWINDOW,
+                WINDOW_CLASS_NAME.as_ptr(),
+                ptr::null_mut(), // No title
+                WS_OVERLAPPEDWINDOW, // Prevents moving by dragging the top
+                CW_USEDEFAULT, // x
+                CW_USEDEFAULT, // y
+                CW_USEDEFAULT, // w
+                CW_USEDEFAULT, // h
+                ptr::null_mut(), // No parent
+                ptr::null_mut(), // No menu
+                hinstance,
+                ptr::null_mut(), // No custom data pointer
+            );
+            assert!(!tmp_hwnd.is_null());
+
+            let tmp_window_hdc = GetDC(tmp_hwnd);
+            assert!(!tmp_window_hdc.is_null());
+
+            let pfd = PIXELFORMATDESCRIPTOR {
+                nSize: mem::size_of::<PIXELFORMATDESCRIPTOR>() as _,
+                nVersion: 1,
+                dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER, 
+                iPixelType: PFD_TYPE_RGBA,
+                cColorBits: 32,
+                cRedBits: 0,
+                cRedShift: 0,
+                cGreenBits: 0,
+                cGreenShift: 0,
+                cBlueBits: 0,
+                cBlueShift: 0,
+                cAlphaBits: 0,
+                cAlphaShift: 0,
+                cAccumBits: 0,
+                cAccumRedBits: 0,
+                cAccumGreenBits: 0,
+                cAccumBlueBits: 0,
+                cAccumAlphaBits: 0,
+                cDepthBits: 24,
+                cStencilBits: 8,
+                cAuxBuffers: 0,
+                iLayerType: PFD_MAIN_PLANE,
+                bReserved: 0,
+                dwLayerMask: 0,
+                dwVisibleMask: 0,
+                dwDamageMask: 0,
+            };
+            let i_pixel_format = ChoosePixelFormat(tmp_window_hdc, &pfd);
+            assert_ne!(i_pixel_format, 0);
+            let is_ok = SetPixelFormat(tmp_window_hdc, i_pixel_format, &pfd);
+            assert_ne!(is_ok, FALSE);
+            let tmp_hglrc = wglCreateContext(tmp_window_hdc);
+            assert!(!tmp_hglrc.is_null());
+            let is_ok = wglMakeCurrent(tmp_window_hdc, tmp_hglrc);
+            assert_ne!(is_ok, FALSE);
+
+            println!("Dumb old context:");
+            print_gl_stuff();
+
+            unsafe fn get_fn(name: &[u8]) -> Option<&c_void> {
+                assert_eq!(&0, name.last().unwrap());
+                match wglGetProcAddress(name.as_ptr() as _) as usize {
+                    0 => None,
+                    f => Some(mem::transmute(f)),
+                }
+            };
+            wglGetExtensionsStringARB = mem::transmute(get_fn(b"wglGetExtensionsStringARB\0"));
+            wglCreateContextAttribsARB = mem::transmute(get_fn(b"wglCreateContextAttribsARB\0"));
+            wglChoosePixelFormatARB = mem::transmute(get_fn(b"wglChoosePixelFormatARB\0"));
+            wglSwapIntervalEXT = mem::transmute(get_fn(b"wglSwapIntervalEXT\0"));
+            wglGetSwapIntervalEXT = mem::transmute(get_fn(b"wglGetSwapIntervalEXT\0"));
+            assert!(wglGetExtensionsStringARB.is_some());
+            assert!(wglCreateContextAttribsARB.is_some());
+            assert!(wglChoosePixelFormatARB.is_some());
+            assert!(wglSwapIntervalEXT.is_some());
+            assert!(wglGetSwapIntervalEXT.is_some());
+
+            // Now we've got the function pointers, get rid of the tmp window and hdc
+            let is_ok = wglMakeCurrent(tmp_window_hdc, ptr::null_mut());
+            assert_ne!(is_ok, FALSE);
+            let is_ok = wglDeleteContext(tmp_hglrc);
+            assert_ne!(is_ok, FALSE);
+            // NOTE: Don't Release or Delete the HDC. Not need and will fail because of CS_OWNDC.
+            let is_ok = DestroyWindow(tmp_hwnd);
+            assert_ne!(is_ok, FALSE);
+        }
+
         let hwnd = CreateWindowExW(
             // WS_CLIP* recommended by MSDN (see SetPixelFormat), but breaks first call to wglMakeCurrent() ???
             if TEST_GL { WS_EX_OVERLAPPEDWINDOW /*| WS_CLIPCHILDREN | WS_CLIPSIBLINGS*/ } else { WS_EX_LAYERED },
@@ -435,6 +542,14 @@ fn main() {
             ptr::null_mut(), // No custom data pointer
         );
         assert!(!hwnd.is_null());
+
+        let window_hdc = if TEST_GL {
+            let hdc = GetDC(hwnd);
+            assert!(!hdc.is_null());
+            hdc
+        } else {
+            ptr::null_mut()
+        };
 
         let img = {
             let mut img = Vec::<u32>::with_capacity((W*H) as usize);
@@ -526,114 +641,62 @@ fn main() {
             DeleteObject(hfont as _);
         }
 
-        let window_hdc = if TEST_GL {
-            let hdc = GetDC(hwnd);
-            assert!(!hdc.is_null());
-            hdc
-        } else {
+        let hglrc = if !TEST_GL {
             ptr::null_mut()
-        };
-
-        let (classic_hglrc, modern_hglrc) = if !TEST_GL {
-            (ptr::null_mut(), ptr::null_mut())
         } else {
-            let pfd = PIXELFORMATDESCRIPTOR {
-                nSize: mem::size_of::<PIXELFORMATDESCRIPTOR>() as _,
-                nVersion: 1,
-                dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER, 
-                iPixelType: PFD_TYPE_RGBA,
-                cColorBits: 32,
-                cRedBits: 0,
-                cRedShift: 0,
-                cGreenBits: 0,
-                cGreenShift: 0,
-                cBlueBits: 0,
-                cBlueShift: 0,
-                cAlphaBits: 0,
-                cAlphaShift: 0,
-                cAccumBits: 0,
-                cAccumRedBits: 0,
-                cAccumGreenBits: 0,
-                cAccumBlueBits: 0,
-                cAccumAlphaBits: 0,
-                cDepthBits: 24,
-                cStencilBits: 8,
-                cAuxBuffers: 0,
-                iLayerType: PFD_MAIN_PLANE,
-                bReserved: 0,
-                dwLayerMask: 0,
-                dwVisibleMask: 0,
-                dwDamageMask: 0,
-            };
-            let pfi = ChoosePixelFormat(window_hdc, &pfd);
-            assert_ne!(pfi, 0);
-            let is_ok = SetPixelFormat(window_hdc, pfi, &pfd);
-            assert_ne!(is_ok, FALSE);
-            let classic_hglrc = wglCreateContext(window_hdc);
-            assert!(!classic_hglrc.is_null());
-            let is_ok = wglMakeCurrent(window_hdc, classic_hglrc);
-            assert_ne!(is_ok, FALSE);
-
-            println!("Dumb old context:");
-            print_gl_stuff();
-
-            unsafe fn get_fn(name: &[u8]) -> Option<&c_void> {
-                assert_eq!(&0, name.last().unwrap());
-                match wglGetProcAddress(name.as_ptr() as _) as usize {
-                    0 => None,
-                    f => Some(mem::transmute(f)),
-                }
-            };
-            wglGetExtensionsStringARB = mem::transmute(get_fn(b"wglGetExtensionsStringARB\0"));
-            wglCreateContextAttribsARB = mem::transmute(get_fn(b"wglCreateContextAttribsARB\0"));
-            wglChoosePixelFormatARB = mem::transmute(get_fn(b"wglChoosePixelFormatARB\0"));
-            wglSwapIntervalEXT = mem::transmute(get_fn(b"wglSwapIntervalEXT\0"));
-            wglGetSwapIntervalEXT = mem::transmute(get_fn(b"wglGetSwapIntervalEXT\0"));
-            assert!(wglGetExtensionsStringARB.is_some());
-            assert!(wglCreateContextAttribsARB.is_some());
-            assert!(wglChoosePixelFormatARB.is_some());
-            assert!(wglSwapIntervalEXT.is_some());
-            assert!(wglGetSwapIntervalEXT.is_some());
-
             // TODO: Use
-            // WGL_ARB: c_int =_pixel_format_float: Allows for floating-point framebuffers.
-            // WGL_ARB: c_int =_framebuffer_sRGB: Allows for color buffers to be in sRGB format.
-            // WGL_ARB: c_int =_multisample: Allows for multisampled framebuffers.
+            // WGL_ARB_pixel_format_float: Allows for floating-point framebuffers.
+            // WGL_ARB_framebuffer_sRGB: Allows for color buffers to be in sRGB format.
+            // WGL_ARB_multisample: Allows for multisampled framebuffers.
 
             // Finding a new pixel format using extensions.
             // We can only call SetPixelFormat() once per window. To do it again,
             // we would have to recreate the window, which is a bit involved.
-            if false {
-                let attribs_i = &[
-                    WGL_DRAW_TO_WINDOW_ARB, GL_TRUE as _,
-                    WGL_SUPPORT_OPENGL_ARB, GL_TRUE as _,
-                    WGL_DOUBLE_BUFFER_ARB, GL_TRUE as _,
-                    WGL_PIXEL_TYPE_ARB, WGL_TYPE_RGBA_ARB,
-                    WGL_COLOR_BITS_ARB, 32,
-                    WGL_DEPTH_BITS_ARB, 24,
-                    WGL_STENCIL_BITS_ARB, 8,
-                    0, // End
-                ];
-                let attribs_f = &[
-                    0., // End
-                ];
+            let attribs_i = &[
+                WGL_DRAW_TO_WINDOW_ARB, TRUE,
+                WGL_SUPPORT_OPENGL_ARB, TRUE,
+                WGL_DOUBLE_BUFFER_ARB, TRUE,
+                WGL_PIXEL_TYPE_ARB, WGL_TYPE_RGBA_ARB,
+                WGL_TRANSPARENT_ARB, TRUE,
+                WGL_COLOR_BITS_ARB, 32,
+                WGL_RED_BITS_ARB, 8,
+                WGL_GREEN_BITS_ARB, 8,
+                WGL_BLUE_BITS_ARB, 8,
+                WGL_ALPHA_BITS_ARB, 8,
+                WGL_DEPTH_BITS_ARB, 24,
+                WGL_STENCIL_BITS_ARB, 8,
+                0, // End
+            ];
+            assert_eq!(&0, attribs_i.last().unwrap());
+            let attribs_f = &[
+                0., // End
+            ];
+            assert_eq!(&0., attribs_f.last().unwrap());
 
-                let mut candidate_pixel_formats = [0; 32];
-                let mut num_formats = 0;
-                (wglChoosePixelFormatARB.unwrap())(
-                    window_hdc,
-                    attribs_i.as_ptr(),
-                    attribs_f.as_ptr(),
-                    candidate_pixel_formats.len() as _,
-                    candidate_pixel_formats.as_mut_ptr(),
-                    &mut num_formats
-                );
-                let candidate_pixel_formats = &candidate_pixel_formats[..num_formats as _];
-                let pixel_format = candidate_pixel_formats[0];
-                let is_ok = SetPixelFormat(window_hdc, pixel_format, &pfd);
-                assert_ne!(is_ok, FALSE);
-            }
-
+            let mut candidate_pixel_formats = [0; 32];
+            let mut num_formats = 0;
+            let is_ok = (wglChoosePixelFormatARB.unwrap())(
+                window_hdc,
+                attribs_i.as_ptr(),
+                attribs_f.as_ptr(),
+                candidate_pixel_formats.len() as _,
+                candidate_pixel_formats.as_mut_ptr(),
+                &mut num_formats
+            );
+            assert_ne!(is_ok, FALSE);
+            let candidate_pixel_formats = &candidate_pixel_formats[..num_formats as _];
+            let i_pixel_format = candidate_pixel_formats[0];
+            assert_ne!(i_pixel_format, 0);
+            let pfd_kludge = {
+                let mut pfd = PIXELFORMATDESCRIPTOR {
+                    nSize: mem::size_of::<PIXELFORMATDESCRIPTOR>() as _,
+                    .. mem::zeroed()
+                };
+                DescribePixelFormat(window_hdc, i_pixel_format, mem::size_of_val(&pfd) as _, &mut pfd);
+                pfd
+            };
+            let is_ok = SetPixelFormat(window_hdc, i_pixel_format, &pfd_kludge);
+            assert_ne!(is_ok, FALSE);
 
             let context_attribs = &[
                 WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
@@ -642,23 +705,24 @@ fn main() {
                 WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
                 0, // End
             ];
+            assert_eq!(&0, context_attribs.last().unwrap());
             let hglrc_share: HGLRC = ptr::null_mut();
-            let modern_hglrc = (wglCreateContextAttribsARB.unwrap())(window_hdc, hglrc_share, context_attribs.as_ptr());
-            assert!(!modern_hglrc.is_null());
-            let is_ok = wglMakeCurrent(window_hdc, modern_hglrc);
+            let hglrc = (wglCreateContextAttribsARB.unwrap())(window_hdc, hglrc_share, context_attribs.as_ptr());
+            assert!(!hglrc.is_null());
+            let is_ok = wglMakeCurrent(window_hdc, hglrc);
             assert_ne!(is_ok, FALSE);
 
             println!("Cool new context:");
             print_gl_stuff();
 
-            (classic_hglrc, modern_hglrc)
+            hglrc
         };
 
         let app = App {
             hinstance, class_atom, hwnd, close_requested: false,
             img, bitmapinfo, memory_hdc, screen_hdc, memory_hbitmap,
             memory_hdc_previous_hgdiobj, alpha: 255_u8,
-            window_hdc, classic_hglrc, modern_hglrc,
+            window_hdc, hglrc,
         };
 
         app.update_window();
