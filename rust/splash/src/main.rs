@@ -34,11 +34,15 @@ extern crate winapi;
 use std::mem;
 use std::ptr;
 use std::os::raw::*;
+use std::ffi::CStr;
 
+#[allow(unused_imports)]
 use winapi::{
-    shared::{windef::*, minwindef::*, windowsx::*,},
-    um::{winuser::{self, *}, wingdi::*, libloaderapi::*, errhandlingapi::*, gl::gl::*},
+    shared::{windef::*, minwindef::*, windowsx::*, winerror::*},
+    um::{winuser::{self, *}, wingdi::*, libloaderapi::*, errhandlingapi::*, gl::gl::*, dwmapi::*,},
 };
+
+use self::splash_gl::*;
 
 
 #[allow(dead_code)]
@@ -149,6 +153,9 @@ mod splash_gl {
         pub fn glClear(_: GLenum);
         pub fn glClearColor(_: f32, _: f32, _: f32, _: f32);
         pub fn glVertex2f(_: f32, _: f32);
+        pub fn glVertex3f(_: f32, _: f32, _: f32);
+        pub fn glVertex4f(_: f32, _: f32, _: f32, _: f32);
+        pub fn glColor4f(_: f32, _: f32, _: f32, _: f32);
         pub fn glGetString(_: GLenum) -> *const c_char;
         pub fn glViewport(x: GLint, y: GLint, w: GLsizei, h: GLsizei);
     }
@@ -161,16 +168,18 @@ mod splash_gl {
     pub const GL_VERSION    : GLenum = 0x1F02;
     pub const GL_EXTENSIONS : GLenum = 0x1F03;
 }
-use self::splash_gl::*;
 
 static WINDOW_CLASS_NAME: &[u16] = &['_' as _, 0];
 const W: u32 = 512;
 const H: u32 = 512;
-static mut ALPHA: u8 = 255;
-
 static TEST_GL: bool = true;
+static mut APP: Option<App> = None;
 
-use std::ffi::CStr;
+// TODO: PR winapi-rs
+pub const DWM_BB_ENABLE: DWORD = 1;
+pub const DWM_BB_BLURREGION: DWORD = 2;
+pub const DWM_BB_TRANSITIONONMAXIMIZED: DWORD = 4;
+
 
 fn print_gl_stuff() {
     unsafe {
@@ -183,8 +192,7 @@ fn print_gl_stuff() {
 unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match umsg {
         WM_CLOSE => {
-            PostQuitMessage(0); // We do this here because we know we only ever have one window.
-            // This could break stuff if we use multiple windows.
+            APP.as_mut().unwrap().close_requested = true;
             0 // zero if processed
         },
         WM_ACTIVATE => {
@@ -194,10 +202,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
             MA_ACTIVATE as _ // Yes, we would like to be activated when we're clicked on
         },
         WM_KEYDOWN => {
+            let app = APP.as_mut().unwrap();
             let vkeycode = wparam as i32;
             match vkeycode {
-                VK_LEFT => ALPHA = ALPHA.saturating_sub(1),
-                VK_RIGHT => ALPHA = ALPHA.saturating_add(1),
+                VK_LEFT => {
+                    app.alpha = app.alpha.saturating_sub(1);
+                    println!("Alpha: {}", app.alpha);
+                },
+                VK_RIGHT => {
+                    app.alpha = app.alpha.saturating_add(1);
+                    println!("Alpha: {}", app.alpha);
+                },
                 VK_ESCAPE => {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                 },
@@ -206,32 +221,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
             0
         },
         WM_SIZING if TEST_GL => {
-            // https://www.gamedev.net/forums/topic/488074-win32-message-pump-and-opengl---rendering-pauses-while-draggingresizing/
-            // FIXME: Call render() here! This event is emitted from a private, blocking message pump by DefWindowProc while user drags window.
+            // It's pointless to try to redraw here.
             1 // TRUE if processed
         },
-        /*
-        WM_ERASEBKGND if TEST_GL => 1, // non-zero if processed
+        WM_ERASEBKGND if TEST_GL => {
+            // Worth redrawing, even though I wonder if it's redundant with WM_PAINT
+            if let Some(app) = APP.as_ref() {
+                app.update_window();
+            }
+            1 // non-zero if processed
+        },
         WM_SIZE if TEST_GL => {
+            // Worth redrawing. Happens when the user temporarily stops dragging
+            if let Some(app) = APP.as_ref() {
+                app.update_window();
+            }
             0 // zero if processed
         },
-        WM_SYSCOMMAND if TEST_GL => {
-            // zero if processed
-            let x = GET_X_LPARAM(lparam);
-            let y = GET_Y_LPARAM(lparam);
-            match wparam {
-                SC_SIZE => {
-                    SetWindowPos(hwnd, ptr::null_mut(), x, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
-                    0
-                },
-                SC_MOVE => {
-                    SetWindowPos(hwnd, ptr::null_mut(), 0, 0, x, y, SWP_NOZORDER | SWP_NOMOVE);
-                    0
-                },
-                _ => DefWindowProcW(hwnd, umsg, wparam, lparam),
-            }
-        },
-        */
         WM_PAINT => {
             // println!("Handling WM_PAINT");
             if !TEST_GL {
@@ -240,15 +246,124 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
                 EndPaint(hwnd, &mut ps);
                 0 // zero if processed
             } else {
+                if let Some(app) = APP.as_ref() {
+                    app.update_window();
+                }
                 0
             }
-            /*
-            // Apparently calling UpdateLayeredWindow() just once was enough
-            // for the window to manage its own repainting...
-            DefWindowProcW(hwnd, umsg, wparam, lparam)
-            */
         },
         _ => DefWindowProcW(hwnd, umsg, wparam, lparam),
+    }
+}
+
+pub struct App {
+    // Common
+    pub hinstance: HINSTANCE,
+    pub class_atom: ATOM,
+    pub hwnd: HWND,
+    pub close_requested: bool,
+
+    // Splash screen bitmap stuff
+    pub img: Vec<u32>,
+    pub bitmapinfo: BITMAPINFO,
+    pub memory_hdc: HDC,
+    pub screen_hdc: HDC,
+    pub memory_hbitmap: HBITMAP,
+    pub memory_hdc_previous_hgdiobj: HGDIOBJ,
+    pub alpha: u8,
+
+    // OpenGL stuff
+    pub window_hdc: HDC,
+    pub classic_hglrc: HGLRC,
+    pub modern_hglrc: HGLRC,
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let &mut Self {
+            hinstance, class_atom, hwnd, close_requested: _,
+            img: _, bitmapinfo: _,
+            memory_hdc, screen_hdc, memory_hbitmap, memory_hdc_previous_hgdiobj, alpha: _,
+            window_hdc, classic_hglrc, modern_hglrc,
+        } = self;
+
+        unsafe {
+            if TEST_GL {
+                // NOTE: Do all of this _before_ the window is destroyed
+                let is_ok = wglMakeCurrent(window_hdc, ptr::null_mut());
+                assert_ne!(is_ok, FALSE);
+                let is_ok = wglDeleteContext(classic_hglrc);
+                assert_ne!(is_ok, FALSE);
+                let is_ok = wglDeleteContext(modern_hglrc);
+                assert_ne!(is_ok, FALSE);
+                // NOTE: Don't try to release the window's DC.
+                // ReleaseDC() does nothing to class DCs (e.g made via CS_OWNDC) and returns FALSE in this case.
+                // let is_ok = ReleaseDC(hwnd, window_hdc.unwrap());
+                // assert_ne!(is_ok, FALSE);
+            }
+            let is_ok = DestroyWindow(hwnd);
+            assert_ne!(is_ok, FALSE);
+            let is_ok = UnregisterClassW(class_atom as u16 as usize as *const _, hinstance);
+            assert_ne!(is_ok, FALSE);
+
+            SelectObject(memory_hdc, memory_hdc_previous_hgdiobj);
+            let is_ok = DeleteObject(memory_hbitmap as _);
+            assert_ne!(is_ok, FALSE);
+            let is_ok = DeleteDC(memory_hdc);
+            assert_ne!(is_ok, FALSE);
+            let is_ok = ReleaseDC(ptr::null_mut(), screen_hdc);
+            assert_ne!(is_ok, 0);
+        }
+    }
+}
+
+impl App {
+    pub fn update_window(&self) {
+        unsafe {
+            if TEST_GL {
+                let mut rect = mem::uninitialized();
+                let is_ok = GetClientRect(self.hwnd, &mut rect);
+                assert_ne!(is_ok, FALSE);
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
+                glViewport(0, 0, w, h);
+                let a = self.alpha as f32 / 255.;
+                glClearColor(a, a, 0., a);
+                glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
+                glBegin(GL_TRIANGLES);
+                glColor4f(0., 1., 0., 1.);
+                let s = 0.25;
+                glVertex4f(-s, -s, 0., 1.);
+                glVertex4f(-s, s, 0., 1.);
+                glVertex4f(s, s, 0., 1.);
+                glEnd();
+
+                let is_ok = SwapBuffers(self.window_hdc);
+                assert_ne!(is_ok, FALSE);
+            } else {
+                let mut blendfunction = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER,
+                    SourceConstantAlpha: self.alpha,
+                    AlphaFormat: AC_SRC_ALPHA,
+                    .. mem::zeroed()
+                };
+                let mut src_pos = POINT { x: 0, y: 0 };
+                let mut dst_size = winuser::SIZE { cx: W as _, cy: H as _ };
+                let is_ok = UpdateLayeredWindow(
+                    self.hwnd,
+                    self.screen_hdc,
+                    ptr::null_mut(), // Don't change the window's position
+                    &mut dst_size,
+                    self.memory_hdc,
+                    &mut src_pos,
+                    RGB(0, 0, 0), // color key for compositing; Only used if ULW_COLORKEY is specified
+                    &mut blendfunction,
+                    ULW_ALPHA
+                );
+                assert_ne!(is_ok, FALSE, "UpdateLayeredWindow() failed!");
+            }
+        }
     }
 }
 
@@ -319,6 +434,7 @@ fn main() {
             hinstance,
             ptr::null_mut(), // No custom data pointer
         );
+        assert!(!hwnd.is_null());
 
         let img = {
             let mut img = Vec::<u32>::with_capacity((W*H) as usize);
@@ -371,13 +487,13 @@ fn main() {
             .. mem::zeroed()
         };
 
-        let hdc_screen = GetDC(ptr::null_mut());
-        let hdc_memory = CreateCompatibleDC(hdc_screen);
-        let hbmp = CreateCompatibleBitmap(hdc_screen, W as _, H as _);
-        let hbmp_old = SelectObject(hdc_memory, hbmp as _);
+        let screen_hdc = GetDC(ptr::null_mut());
+        let memory_hdc = CreateCompatibleDC(screen_hdc);
+        let memory_hbitmap = CreateCompatibleBitmap(screen_hdc, W as _, H as _);
+        let memory_hdc_previous_hgdiobj = SelectObject(memory_hdc, memory_hbitmap as _);
         bitmapinfo.bmiHeader.biHeight *= -1;
         let status = StretchDIBits(
-            hdc_memory,
+            memory_hdc,
             0, 0, W as _, H as _, // dst
             0, 0, W as _, H as _, // src FIXME: assumed
             img.as_ptr() as _,
@@ -391,9 +507,9 @@ fn main() {
         }
         assert_ne!(status, GDI_ERROR as _, "No PNG support!");
 
-        // Try drawing some text in hdc_memory
+        // Try drawing some text in memory_hdc
         if false {
-            let hdc = hdc_memory;
+            let hdc = memory_hdc;
             let hfont = CreateFontA(48,0,0,0,FW_DONTCARE,FALSE as _,TRUE as _,FALSE as _,DEFAULT_CHARSET,OUT_OUTLINE_PRECIS,
                 CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY, VARIABLE_PITCH,b"Impact\0".as_ptr() as _);
             let prev_gdiobj = SelectObject(hdc, hfont as _);
@@ -406,61 +522,20 @@ fn main() {
             // Note that the alpha is incorrect though. See https://stackoverflow.com/a/1343551 for fixing it.
             DrawTextA(hdc, b"Drawing Text with Impact\0".as_ptr() as _, -1, &mut rect, DT_NOCLIP | DT_CENTER | DT_END_ELLIPSIS | DT_VCENTER | DT_SINGLELINE);
 
-            SelectObject(hdc_memory, prev_gdiobj);
+            SelectObject(memory_hdc, prev_gdiobj);
             DeleteObject(hfont as _);
         }
 
-        let hdc_window = if TEST_GL {
+        let window_hdc = if TEST_GL {
             let hdc = GetDC(hwnd);
             assert!(!hdc.is_null());
-            Some(hdc)
+            hdc
         } else {
-            None
+            ptr::null_mut()
         };
 
-        let update_window = || if TEST_GL {
-            let mut rect = mem::uninitialized();
-            let is_ok = GetClientRect(hwnd, &mut rect);
-            assert_ne!(is_ok, FALSE);
-            let w = rect.right - rect.left;
-            let h = rect.bottom - rect.top;
-            glViewport(0, 0, w, h);
-            glClearColor(1., 0., 0., 0.5);
-            glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
-
-            glBegin(GL_TRIANGLES);
-            glVertex2f(-1., -1.);
-            glVertex2f(-1., 1.);
-            glVertex2f(1., 1.);
-            glEnd();
-
-            let is_ok = SwapBuffers(hdc_window.unwrap());
-            assert_ne!(is_ok, FALSE);
-        } else {
-            let mut blendfunction = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER,
-                SourceConstantAlpha: ALPHA,
-                AlphaFormat: AC_SRC_ALPHA,
-                .. mem::zeroed()
-            };
-            let mut src_pos = POINT { x: 0, y: 0 };
-            let mut dst_size = winuser::SIZE { cx: W as _, cy: H as _ };
-            let is_ok = UpdateLayeredWindow(
-                hwnd,
-                hdc_screen,
-                ptr::null_mut(), // Don't change the window's position
-                &mut dst_size,
-                hdc_memory,
-                &mut src_pos,
-                RGB(0, 0, 0), // color key for compositing; Only used if ULW_COLORKEY is specified
-                &mut blendfunction,
-                ULW_ALPHA
-            );
-            assert_ne!(is_ok, FALSE, "UpdateLayeredWindow() failed!");
-        };
-
-        let hglrc = if !TEST_GL {
-            None
+        let (classic_hglrc, modern_hglrc) = if !TEST_GL {
+            (ptr::null_mut(), ptr::null_mut())
         } else {
             let pfd = PIXELFORMATDESCRIPTOR {
                 nSize: mem::size_of::<PIXELFORMATDESCRIPTOR>() as _,
@@ -490,15 +565,13 @@ fn main() {
                 dwVisibleMask: 0,
                 dwDamageMask: 0,
             };
-            let hdc_window = hdc_window.unwrap();
-            assert!(!hdc_window.is_null());
-            let pfi = ChoosePixelFormat(hdc_window, &pfd);
+            let pfi = ChoosePixelFormat(window_hdc, &pfd);
             assert_ne!(pfi, 0);
-            let is_ok = SetPixelFormat(hdc_window, pfi, &pfd);
+            let is_ok = SetPixelFormat(window_hdc, pfi, &pfd);
             assert_ne!(is_ok, FALSE);
-            let hglrc = wglCreateContext(hdc_window);
-            assert!(!hglrc.is_null());
-            let is_ok = wglMakeCurrent(hdc_window, hglrc);
+            let classic_hglrc = wglCreateContext(window_hdc);
+            assert!(!classic_hglrc.is_null());
+            let is_ok = wglMakeCurrent(window_hdc, classic_hglrc);
             assert_ne!(is_ok, FALSE);
 
             println!("Dumb old context:");
@@ -548,7 +621,7 @@ fn main() {
                 let mut candidate_pixel_formats = [0; 32];
                 let mut num_formats = 0;
                 (wglChoosePixelFormatARB.unwrap())(
-                    hdc_window,
+                    window_hdc,
                     attribs_i.as_ptr(),
                     attribs_f.as_ptr(),
                     candidate_pixel_formats.len() as _,
@@ -557,7 +630,7 @@ fn main() {
                 );
                 let candidate_pixel_formats = &candidate_pixel_formats[..num_formats as _];
                 let pixel_format = candidate_pixel_formats[0];
-                let is_ok = SetPixelFormat(hdc_window, pixel_format, &pfd);
+                let is_ok = SetPixelFormat(window_hdc, pixel_format, &pfd);
                 assert_ne!(is_ok, FALSE);
             }
 
@@ -570,25 +643,53 @@ fn main() {
                 0, // End
             ];
             let hglrc_share: HGLRC = ptr::null_mut();
-            let hglrc_modern = (wglCreateContextAttribsARB.unwrap())(hdc_window, hglrc_share, context_attribs.as_ptr());
-            assert!(!hglrc_modern.is_null());
-            let is_ok = wglMakeCurrent(hdc_window, ptr::null_mut());
-            assert_ne!(is_ok, FALSE);
-            let is_ok = wglDeleteContext(hglrc);
-            assert_ne!(is_ok, FALSE);
-            let hglrc = hglrc_modern;
-            let is_ok = wglMakeCurrent(hdc_window, hglrc);
+            let modern_hglrc = (wglCreateContextAttribsARB.unwrap())(window_hdc, hglrc_share, context_attribs.as_ptr());
+            assert!(!modern_hglrc.is_null());
+            let is_ok = wglMakeCurrent(window_hdc, modern_hglrc);
             assert_ne!(is_ok, FALSE);
 
             println!("Cool new context:");
             print_gl_stuff();
 
-            Some(hglrc)
+            (classic_hglrc, modern_hglrc)
         };
 
-        update_window();
+        let app = App {
+            hinstance, class_atom, hwnd, close_requested: false,
+            img, bitmapinfo, memory_hdc, screen_hdc, memory_hbitmap,
+            memory_hdc_previous_hgdiobj, alpha: 255_u8,
+            window_hdc, classic_hglrc, modern_hglrc,
+        };
 
-        ShowWindow(hwnd, SW_SHOW);
+        app.update_window();
+
+        ShowWindow(app.hwnd, SW_SHOW);
+
+        // FIXME: 
+        //assert_ne!(DwmIsCompositionEnabled(), FALSE);
+
+        let hrgn = {
+            let left = 0;
+            let top = 0;
+            let right = 1;
+            let bottom = 1;
+            // If the rect is zero-size, the DWM blur effect takes all of the window :(
+            CreateRectRgn(left, top, right, bottom)
+        };
+        assert!(!hrgn.is_null());
+        let blur_behind = DWM_BLURBEHIND {
+            dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION | DWM_BB_TRANSITIONONMAXIMIZED,
+            fEnable: TRUE,
+            hRgnBlur: hrgn,
+            fTransitionOnMaximized: FALSE, // FIXME: Play with this
+        };
+        let lresult = DwmEnableBlurBehindWindow(app.hwnd, &blur_behind);
+        assert_eq!(lresult, S_OK);
+        let is_ok = DeleteObject(hrgn as _);
+        assert_ne!(is_ok, FALSE);
+
+        assert!(APP.is_none());
+        APP = Some(app);
 
         loop {
             let mut msg = mem::uninitialized();
@@ -615,29 +716,10 @@ fn main() {
                 DispatchMessageW(&msg);
             }
 
-            update_window();
+            if APP.as_ref().unwrap().close_requested {
+                break;
+            }
+            APP.as_ref().unwrap().update_window();
         }
-
-        if TEST_GL {
-            // NOTE: Do all of this _before_ the window is destroyed
-            let is_ok = wglMakeCurrent(hdc_window.unwrap(), ptr::null_mut());
-            assert_ne!(is_ok, FALSE);
-            let is_ok = wglDeleteContext(hglrc.unwrap());
-            assert_ne!(is_ok, FALSE);
-            // NOTE: Don't try to release the window's DC.
-            // ReleaseDC() does nothing to class DCs (e.g made via CS_OWNDC) and returns FALSE in this case.
-            // let is_ok = ReleaseDC(hwnd, hdc_window.unwrap());
-            // assert_ne!(is_ok, FALSE);
-        }
-        let is_ok = DestroyWindow(hwnd);
-        assert_ne!(is_ok, FALSE);
-
-        SelectObject(hdc_memory, hbmp_old);
-        let is_ok = DeleteObject(hbmp as _);
-        assert_ne!(is_ok, FALSE);
-        let is_ok = DeleteDC(hdc_memory);
-        assert_ne!(is_ok, FALSE);
-        let is_ok = ReleaseDC(ptr::null_mut(), hdc_screen);
-        assert_ne!(is_ok, 0);
     }
 }
