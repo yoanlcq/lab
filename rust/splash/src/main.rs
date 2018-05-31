@@ -347,7 +347,7 @@ impl App {
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
                 glBegin(GL_TRIANGLES);
-                let s = 0.25;
+                let s = 0.75;
                 glColor4f(0., 1., 0., 1.);
                 glVertex3f(-s, -s, 0.);
                 glColor4f(0., 1., 0., 0.5);
@@ -528,12 +528,32 @@ fn main() {
             assert_ne!(is_ok, FALSE);
         }
 
+        // WS_CLIP* recommended by MSDN (see SetPixelFormat), but breaks first call to wglMakeCurrent() ???
+        let gl_window_wants_borders = false;
+        let ex_style = if TEST_GL {
+            if gl_window_wants_borders {
+                WS_EX_OVERLAPPEDWINDOW
+            } else {
+                 0
+            }
+        } else {
+            WS_EX_LAYERED
+        };
+        let style = if TEST_GL {
+            if gl_window_wants_borders {
+                WS_OVERLAPPEDWINDOW
+            } else {
+                WS_POPUP
+            }
+        } else {
+            WS_POPUP
+        };
+
         let hwnd = CreateWindowExW(
-            // WS_CLIP* recommended by MSDN (see SetPixelFormat), but breaks first call to wglMakeCurrent() ???
-            if TEST_GL { WS_EX_OVERLAPPEDWINDOW /*| WS_CLIPCHILDREN | WS_CLIPSIBLINGS*/ } else { WS_EX_LAYERED },
+            ex_style,
             WINDOW_CLASS_NAME.as_ptr(),
             ptr::null_mut(), // No title
-            if TEST_GL { WS_OVERLAPPEDWINDOW } else { WS_POPUP }, // Prevents moving by dragging the top
+            style,
             x, y,
             W as _, H as _,
             ptr::null_mut(), // No parent
@@ -721,13 +741,19 @@ fn main() {
         let app = App {
             hinstance, class_atom, hwnd, close_requested: false,
             img, bitmapinfo, memory_hdc, screen_hdc, memory_hbitmap,
-            memory_hdc_previous_hgdiobj, alpha: 255_u8,
+            memory_hdc_previous_hgdiobj, alpha: if TEST_GL { 0_u8 } else { 255_u8 },
             window_hdc, hglrc,
         };
 
         app.update_window();
 
-        ShowWindow(app.hwnd, SW_SHOW);
+        if true {
+            ShowWindow(app.hwnd, SW_SHOW);
+        } else {
+            let millis = 500;
+            let is_ok = AnimateWindow(hwnd, millis, AW_BLEND);
+            assert_ne!(is_ok, FALSE);
+        }
 
         // FIXME: 
         //assert_ne!(DwmIsCompositionEnabled(), FALSE);
