@@ -1,4 +1,4 @@
-use vec4::Vec4f;
+use math::Vec4f;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Ray {

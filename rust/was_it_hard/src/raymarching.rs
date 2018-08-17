@@ -1,7 +1,7 @@
 // http://jamie-wong.com/2016/07/15/ray-marching-signed-distance-functions/
 // http://iquilezles.org/www/articles/distfunctions/distfunctions.htm
 
-use vec4::Vec4f;
+use math::Vec4f;
 use cmp;
 use ndc;
 use ray::Ray;

@@ -1,5 +1,5 @@
 use std::fmt::{self, Display, Formatter};
-use vec4::Vec4f;
+use math::Vec4f;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Framebuffer {

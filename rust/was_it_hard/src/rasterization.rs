@@ -1,6 +1,8 @@
 use ndc;
-use vec4::Vec4f;
+use math::Vec4f;
 use framebuffer::Framebuffer;
+use std::mem;
+use std::arch::x86_64::*;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub struct Triangle {
@@ -18,9 +20,21 @@ impl Triangle {
     pub fn aabb(&self) -> Aabb {
         let (a, b, c) = self.position;
         Aabb {
-            min: Vec4f::min(Vec4f::min(a, b), c),
-            max: Vec4f::max(Vec4f::max(a, b), c),
+            min: Vec4f::partial_min(Vec4f::partial_min(a, b), c),
+            max: Vec4f::partial_max(Vec4f::partial_max(a, b), c),
         }
+    }
+}
+
+fn side(c: Vec4f, a: Vec4f, b: Vec4f) -> f32 {
+    let d1 = (b.x - a.x) * (c.y - a.y);
+    let d2 = (b.y - a.y) * (c.x - a.x);
+    d1 - d2
+}
+
+fn sign_mask(v: Vec4f) -> i32 {
+    unsafe {
+        _mm_movemask_ps(mem::transmute(v))
     }
 }
 
@@ -52,9 +66,9 @@ impl Framebuffer {
         let (a, b, c) = tri.position;
         // Half-space test (here, what 'h' is short for)
         let h = Vec4f::new(
-            p.determine_side(b, c),
-            p.determine_side(c, a),
-            p.determine_side(a, b),
+            side(p, b, c),
+            side(p, c, a),
+            side(p, a, b),
             0.
         );
 
@@ -64,7 +78,7 @@ impl Framebuffer {
         }
 
         // Compute barycentric coordinates (w stands for 'weight')
-        let w = h / c.determine_side(a, b);
+        let w = h / side(c, a, b);
 
         // Interpolate vertex attributes using barycentric coordinates
         let depth = Vec4f::dot(w, Vec4f::new(a.z, b.z, c.z, 0.));
@@ -93,17 +107,17 @@ fn rasterize(fb: &mut Framebuffer, tri: &Triangle) {
     let Aabb { min, max } = tri.aabb();
     // Map from NDC to pixel
     let wh = Vec4f::new((fb.w-1) as _, (fb.h-1) as _, 1., 1.);
-    let min = Vec4f::max(wh * (min + 1.) / 2., Vec4f::zero());
-    let max = Vec4f::min(wh * (max + 1.) / 2., wh);
+    let min = Vec4f::partial_max(wh * (min + 1.) / 2., Vec4f::zero());
+    let max = Vec4f::partial_min(wh * (max + 1.) / 2., wh);
 
-    let mut w_row = Vec4f::new(min.side_2d(b, c), min.side_2d(c, a), min.side_2d(a, b), 0.);
+    let mut w_row = Vec4f::new(side(min, b, c), side(min, c, a), side(min, a, b), 0.);
     let w_step_x = Vec4f::new(b.y - c.y, c.y - a.y, a.y - b.y, 0.);
     let w_step_y = Vec4f::new(c.x - b.x, a.x - c.x, b.x - a.x, 0.);
 
     for y in (min.y as usize) .. (max.y as usize + 1) {
         let mut w = w_row;
         for x in (min.x as usize) .. (max.x as usize + 1) {
-            if w.sign_mask() == 0 {
+            if sign_mask(w) == 0 {
                 let i = y*(fb.w as usize) + x;
                 let zabc = Vec4f::new(a.z, b.z, c.z, 0.);
                 let depth = Vec4f::dot(w, zabc);
