@@ -1,5 +1,5 @@
 // NDC = Normalized Device Coordinates.
-use vec4::Vec4f;
+use math::Vec4f;
 
 pub fn from_pixel(x: u32, y: u32, w: u32, h: u32) -> Vec4f {
     let xy = Vec4f::new(x as _, y as _, 0., 1.);

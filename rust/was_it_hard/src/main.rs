@@ -1,5 +1,4 @@
 pub mod cmp;
-pub mod vec4;
 pub mod ray;
 pub mod ndc;
 pub mod framebuffer;
@@ -7,7 +6,13 @@ pub mod rasterization;
 pub mod raytracing;
 pub mod raymarching;
 
-use vec4::Vec4f;
+pub mod math {
+    extern crate vek;
+
+    pub type Vec4f = self::vek::vec::repr_simd::Vec4<f32>;
+}
+
+use math::Vec4f;
 use framebuffer::Framebuffer;
 
 fn main() {

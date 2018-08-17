@@ -1,6 +1,6 @@
 use ndc;
 use cmp::{self, ForceOrd};
-use vec4::Vec4f;
+use math::Vec4f;
 use framebuffer::Framebuffer;
 use ray::Ray;
 
