@@ -1,174 +1,220 @@
-use std::collections::HashMap;
-use std::mem;
-use std::ptr;
 
-pub type RawID = u32;
+pub mod db {
+    use std::ptr;
+    use std::ops::Range;
 
-macro_rules! specialized_id {
-    ($ID:ident) => {
-        #[repr(C)]
-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-        pub struct $ID { raw: RawID, }
+    const NAME_OF: [&'static str; NB_PRIMITIVE_TYPES as _] = [
+        "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "u128", "i128", "f32", "f64"
+    ];
+    const SIZE_OF: [usize; NB_PRIMITIVE_TYPES as _] = [
+        1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 4, 4
+    ];
 
-        impl $ID {
-            pub fn from_raw(raw: RawID) -> Self { Self { raw } }
+    pub fn is_primitive(t: u32) -> bool {
+        t < NB_PRIMITIVE_TYPES as _
+    }
+    pub fn name_of_primitive(t: u32) -> &'static str {
+        assert!(is_primitive(t));
+        NAME_OF[t as usize] 
+    }
+    pub fn size_of_primitive(t: u32) -> usize {
+        assert!(is_primitive(t));
+        SIZE_OF[t as usize]
+    }
+    pub fn instantiate_primitive(t: u32, mem: &mut [u8], init: &[&str]) {
+        if init.is_empty() {
+            default_instantiate_primitive(t, mem);
+        } else {
+            primitive_from_str(t, mem, init[0]).unwrap();
         }
-    };
+    }
+    pub fn default_instantiate_primitive(t: u32, mem: &mut [u8]) {
+        assert!(mem.len() == size_of_primitive(t));
+        unsafe {
+            ptr::write_bytes(mem.as_mut_ptr(), 0, mem.len())
+        }
+    }
+    pub fn primitive_to_string(t: u32, mem: &[u8]) -> String {
+        assert!(mem.len() == size_of_primitive(t));
+        unsafe {
+            match t {
+                self::U8   => format!("{}", { *(mem.as_ptr() as *const u8  ) }),
+                self::I8   => format!("{}", { *(mem.as_ptr() as *const i8  ) }),
+                self::U16  => format!("{}", { *(mem.as_ptr() as *const u16 ) }),
+                self::I16  => format!("{}", { *(mem.as_ptr() as *const i16 ) }),
+                self::U32  => format!("{}", { *(mem.as_ptr() as *const u32 ) }),
+                self::I32  => format!("{}", { *(mem.as_ptr() as *const i32 ) }),
+                self::U64  => format!("{}", { *(mem.as_ptr() as *const u64 ) }),
+                self::I64  => format!("{}", { *(mem.as_ptr() as *const i64 ) }),
+                self::U128 => format!("{}", { *(mem.as_ptr() as *const u128) }),
+                self::I128 => format!("{}", { *(mem.as_ptr() as *const i128) }),
+                self::F32  => format!("{}", { *(mem.as_ptr() as *const f32 ) }),
+                self::F64  => format!("{}", { *(mem.as_ptr() as *const f64 ) }),
+                _ => unreachable!{},
+            }
+        }
+    }
+    pub fn primitive_from_str(t: u32, mem: &mut [u8], s: &str) -> Result<(), String> {
+        assert!(mem.len() == size_of_primitive(t));
+        unsafe {
+            match t {
+                self::U8   => *(mem.as_mut_ptr() as *mut u8  ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::I8   => *(mem.as_mut_ptr() as *mut i8  ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::U16  => *(mem.as_mut_ptr() as *mut u16 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::I16  => *(mem.as_mut_ptr() as *mut i16 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::U32  => *(mem.as_mut_ptr() as *mut u32 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::I32  => *(mem.as_mut_ptr() as *mut i32 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::U64  => *(mem.as_mut_ptr() as *mut u64 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::I64  => *(mem.as_mut_ptr() as *mut i64 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::U128 => *(mem.as_mut_ptr() as *mut u128) = s.parse().map_err(|e| format!("{}", e))?,
+                self::I128 => *(mem.as_mut_ptr() as *mut i128) = s.parse().map_err(|e| format!("{}", e))?,
+                self::F32  => *(mem.as_mut_ptr() as *mut f32 ) = s.parse().map_err(|e| format!("{}", e))?,
+                self::F64  => *(mem.as_mut_ptr() as *mut f64 ) = s.parse().map_err(|e| format!("{}", e))?,
+                _ => unreachable!{},
+            };
+            Ok(())
+        }
+    }
+
+
+    // Primitive types
+    pub const U8  : u32 =  0;
+    pub const I8  : u32 =  1;
+    pub const U16 : u32 =  2;
+    pub const I16 : u32 =  3;
+    pub const U32 : u32 =  4;
+    pub const I32 : u32 =  5;
+    pub const U64 : u32 =  6;
+    pub const I64 : u32 =  7;
+    pub const U128: u32 =  8;
+    pub const I128: u32 =  9;
+    pub const F32 : u32 = 10;
+    pub const F64 : u32 = 11;
+    pub const NB_PRIMITIVE_TYPES: u32 = F64 + 1;
+    pub const ALL_PRIMITIVE_TYPES: Range<u32> = U8 .. F64;
+
+    // Semantics applied on top of primitive types
+    pub const BOOL: u32 = 32;
+    pub const CHAR: u32 = 33;
+
+    // Sized composites
+    pub const ARRAY : u32 = 64;
+    pub const STRUCT: u32 = 65;
+    pub const UNION : u32 = 66;
+    pub const SUM   : u32 = 67;
+    pub const ENUM  : u32 = 68;
+
+    // Unsized composites
+    pub const VEC   : u32 = 69;
+
+    // Meta
+    pub const TYPE: u32 = 96;
 }
 
-specialized_id!(StringID);
-specialized_id!(BlobID);
-specialized_id!(TypeID);
-specialized_id!(FieldID);
+use std::collections::HashMap;
+use std::io::Write;
+use std::fs::File;
 
-impl TypeID {
-    pub const I32: Self = Self { raw: 0x132 };
-    pub const STRING: Self = Self { raw: 0x133 };
-}
-
-// Objectif: Créer une struct custom
-// struct Team { name: String, num: i32 }
-
-#[derive(Debug, Default)]
-pub struct Db {
-    // Type-related information
-    size_of: HashMap<TypeID, usize>,
-    fields: HashMap<TypeID, Vec<FieldID>>,
-    type_name: HashMap<TypeID, StringID>,
-    type_default_value: HashMap<TypeID, Box<[u8]>>,
-    field_name: HashMap<FieldID, StringID>,
-    field_type: HashMap<FieldID, TypeID>,
-    field_default_value: HashMap<FieldID, Box<[u8]>>,
-
-    // Per-type pools
-    strings: HashMap<StringID, String>,
-    blobs: HashMap<BlobID, Vec<u8>>,
-    objects: HashMap<TypeID, Vec<u8>>,
-}
-
-fn own_bytes<T>(x: T) -> Box<[u8]> {
-    Box::from(unsafe { ::std::slice::from_raw_parts(&x as *const _ as *const u8, mem::size_of::<T>())})
+#[derive(Default)]
+pub struct DB {
+    pub name: HashMap<u32, String>,
+    pub type_: HashMap<u32, u32>,
+    pub struct_: HashMap<u32, u32>,
+    pub offset: HashMap<u32, usize>,
+    pub size: HashMap<u32, usize>,
 }
 
 fn main() {
-    let mut db = Db::default();
+    let mut db = DB::default();
 
-    let typeid_i32 = TypeID::I32;
-    let sid_i32_name = StringID::from_raw(0x453);
-    db.size_of.insert(typeid_i32, mem::size_of::<i32>());
-    db.type_name.insert(typeid_i32, sid_i32_name);
-    db.type_default_value.insert(typeid_i32, own_bytes(0i32));
-    db.strings.insert(sid_i32_name, "i32".to_owned());
+    // Init with primitive types
+    for i in db::ALL_PRIMITIVE_TYPES {
+        db.type_.insert(i, db::TYPE);
+        db.name.insert(i, db::name_of_primitive(i).to_owned());
+        db.size.insert(i, db::size_of_primitive(i));
+    }
 
-    let typeid_string = TypeID::STRING;
-    let sid_string_name = StringID::from_raw(0x452);
-    let sid_empty = StringID::from_raw(0x422);
-    db.size_of.insert(typeid_string, mem::size_of::<StringID>());
-    db.type_name.insert(typeid_string, sid_string_name);
-    db.type_default_value.insert(typeid_string, own_bytes(sid_empty));
-    db.strings.insert(sid_string_name, "String".to_owned());
-    db.strings.insert(sid_empty, "".to_owned());
+    // Now, create a Vec3<f32> struct
+    let id_vec3f   = 0xdead0000;
+    let id_vec3f_x = 0xdead0001;
+    let id_vec3f_y = 0xdead0002;
+    let id_vec3f_z = 0xdead0003;
+    db.name.insert(id_vec3f, "Vec3f".to_owned());
+    db.name.insert(id_vec3f_x, "x".to_owned());
+    db.name.insert(id_vec3f_y, "y".to_owned());
+    db.name.insert(id_vec3f_z, "z".to_owned());
+    db.type_.insert(id_vec3f_x, db::F32);
+    db.type_.insert(id_vec3f_y, db::F32);
+    db.type_.insert(id_vec3f_z, db::F32);
+    db.struct_.insert(id_vec3f_x, id_vec3f);
+    db.struct_.insert(id_vec3f_y, id_vec3f);
+    db.struct_.insert(id_vec3f_z, id_vec3f);
+    db.offset.insert(id_vec3f_x, 0);
+    db.offset.insert(id_vec3f_y, 4);
+    db.offset.insert(id_vec3f_z, 8);
+    {
+        let size = db.struct_size(id_vec3f);
+        db.size.insert(id_vec3f, size);
+    }
 
-    let typeid_team = TypeID::from_raw(0x489);
-    let sid_team_name = StringID::from_raw(0x488);
-    let fieldid_team_name = FieldID::from_raw(0x512);
-    let fieldid_team_num = FieldID::from_raw(0x513);
-    let sid_name_name = StringID::from_raw(0x541);
-    let sid_num_name = StringID::from_raw(0x542);
-    let sid_untitled = StringID::from_raw(0x548);
+    db.print_struct(id_vec3f);
+    let mut v = vec![0_u8; db.size[&id_vec3f]];
+    db.instantiate(id_vec3f, &mut v, &["42", "13.56"]);
+    db.print_struct_instance(id_vec3f, &v);
 
-    db.type_name.insert(typeid_team, sid_team_name);
-    db.strings.insert(sid_team_name, "Team".to_owned());
-    db.fields.insert(typeid_team, vec![fieldid_team_name, fieldid_team_num]);
-    db.field_type.insert(fieldid_team_name, typeid_string);
-    db.field_type.insert(fieldid_team_num, typeid_i32);
-    db.field_name.insert(fieldid_team_name, sid_name_name);
-    db.field_name.insert(fieldid_team_num, sid_num_name);
-    db.field_default_value.insert(fieldid_team_name, own_bytes(sid_untitled));
-    db.field_default_value.insert(fieldid_team_num, own_bytes(42));
-    db.strings.insert(sid_untitled, "<untitled>".to_owned());
-    db.strings.insert(sid_name_name, "name".to_owned());
-    db.strings.insert(sid_num_name, "num".to_owned());
-    db.recompute_size_of_type(typeid_team);
-
-    db.print_type(typeid_i32);
-    db.print_type(typeid_string);
-    db.print_type(typeid_team);
-
-    db.create_object_array(typeid_team, 5);
-    db.print_object_array(typeid_team);
+    db.write_struct_rs(File::create("gen.rs").unwrap(), id_vec3f);
 }
 
-impl Db {
-    pub fn print_object_array(&self, tid: TypeID) {
-        let ob_size = self.size_of[&tid];
-        let array = &self.objects[&tid];
-        assert_eq!(array.len() % ob_size, 0);
-        let count = array.len() / ob_size;
-        let mut offset = 0;
-        for i in 0..count {
-            println!("Object {} {{", i);
-            for fid in self.fields[&tid].iter() {
-                let field_type_id = self.field_type[fid];
-                let field_name = &self.strings[&self.field_name[fid]];
-                let field_size = self.size_of[&field_type_id];
-                match field_type_id {
-                    TypeID::I32 => {
-                        let val: i32 = unsafe {
-                            ptr::read(array[offset..].as_ptr() as *const i32)
-                        };
-                        println!("    {}: {},", field_name, val);
-                    },
-                    TypeID::STRING => {
-                        let sid: StringID = unsafe {
-                            ptr::read(array[offset..].as_ptr() as *const StringID)
-                        };
-                        println!("    {}: {},", field_name, self.strings[&sid]);
-                    },
-                    _ => unimplemented!{},
-                };
-                offset += field_size;
-            }
-            println!("}}");
-        }
-    }
-    pub fn create_object_array(&mut self, tid: TypeID, count: usize) {
-        let cap = count * self.size_of[&tid];
-        let mut array = Vec::<u8>::with_capacity(cap);
-        unsafe { array.set_len(cap) }
-
-        let mut offset = 0;
-        for _ in 0..count {
-            for fid in self.fields[&tid].iter() {
-                let size = self.size_of[&self.field_type[fid]];
-                let default = &self.field_default_value[fid];
-                assert_eq!(default.as_ref().len(), size);
-                unsafe {
-                    ptr::copy_nonoverlapping(default.as_ref().as_ptr(), &mut array[offset], size);
-                }
-                offset += size;
-            }
-        }
-
-        self.objects.insert(tid, array);
-    }
-    pub fn recompute_size_of_type(&mut self, tid: TypeID) {
-        let size = self.fields[&tid].iter().map(|fid| self.size_of[&self.field_type[fid]]).sum();
-        self.size_of.insert(tid, size);
-    }
-    pub fn print_type(&self, typeid: TypeID) {
-        let name = &self.strings[&self.type_name[&typeid]];
-        let size = self.size_of[&typeid];
-        if let Some(ref fields) = self.fields.get(&typeid) {
-            println!("struct {} {{", name);
-            for fieldid in fields.iter() {
-                let name = &self.strings[&self.field_name[&fieldid]];
-                let typename = &self.strings[&self.type_name[&self.field_type[fieldid]]];
-                println!("    {}: {},", name, typename);
-            }
-            println!("}} (size: {})", size);
+impl DB {
+    pub fn instantiate(&self, t: u32, mem: &mut [u8], init: &[&str]) {
+        let mut i = 0;
+        if db::is_primitive(t) {
+            db::instantiate_primitive(t, mem, init);
         } else {
-            println!("type {} (size: {})", name, size);
+            for (m, init) in self.struct_fields(t).into_iter().zip(init.iter()) {
+                let mt = self.type_[&m];
+                let j = i + self.size[&mt];
+                self.instantiate(mt, &mut mem[i..j], &[init]);
+                i = j;
+            }
         }
+    }
+    pub fn struct_fields(&self, s: u32) -> Vec<u32> {
+        let mut fields: Vec<_> = self.struct_.iter().filter(|(_, &v)| v == s).map(|(k, _)| *k).collect();
+        fields.sort_by(|a, b| self.offset[a].cmp(&self.offset[b]));
+        fields
+    }
+    pub fn struct_size(&self, s: u32) -> usize {
+        self.struct_fields(s).iter().map(|m| self.size[&self.type_[&m]]).sum()
+    }
+    pub fn write_struct_rs<W: Write>(&self, mut w: W, s: u32) {
+        writeln!(w, "#[repr(C)]");
+        writeln!(w, "#[derive(Debug, Default, Copy, Clone, PartialEq)]");
+        writeln!(w, "pub struct {} {{", self.name[&s]);
+        for m in self.struct_fields(s) {
+            writeln!(w, "    pub {}: {},", self.name[&m], self.name[&self.type_[&m]]);
+        }
+        writeln!(w, "}}");
+
+        writeln!(w);
+        writeln!(w, "pub const ID: u32 = {:#x};", s);
+    }
+
+    pub fn print_struct(&self, s: u32) {
+        println!("struct {} {{", self.name[&s]);
+        for m in self.struct_fields(s) {
+            println!("    {}: {},", self.name[&m], self.name[&self.type_[&m]]);
+        }
+        println!("}}");
+    }
+    pub fn print_struct_instance(&self, s: u32, mem: &[u8]) {
+        println!("{} {{", self.name[&s]);
+        for m in self.struct_fields(s) {
+            let mt = self.type_[&m];
+            let i = self.offset[&m];
+            let j = i + self.size[&mt];
+            println!("    {}: {},", self.name[&m], db::primitive_to_string(mt, &mem[i..j]));
+        }
+        println!("}}");
     }
 }
