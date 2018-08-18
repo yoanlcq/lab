@@ -6,4 +6,6 @@ pub struct Vec3f {
     pub z: f32,
 }
 
-pub const ID: u32 = 0xdead0000;
+pub const UUID: u128 = 0x20000000000000000000000000000001;
+
+

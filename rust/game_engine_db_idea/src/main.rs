@@ -3,11 +3,19 @@ pub mod db {
     use std::ptr;
     use std::ops::Range;
 
-    const NAME_OF: [&'static str; NB_PRIMITIVE_TYPES as _] = [
+    // Private macro
+    macro_rules! uuid {
+        ($i:expr) => { $i as u128 + (1 << 120) };
+    }
+
+    static NAME_OF: [&'static str; NB_PRIMITIVE_TYPES as _] = [
         "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "u128", "i128", "f32", "f64"
     ];
-    const SIZE_OF: [usize; NB_PRIMITIVE_TYPES as _] = [
+    static SIZE_OF: [usize; NB_PRIMITIVE_TYPES as _] = [
         1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 4, 4
+    ];
+    static UUID_OF: [u128; NB_PRIMITIVE_TYPES as _] = [
+        uuid!(U8), uuid!(I8), uuid!(U16), uuid!(I16), uuid!(U32), uuid!(I32), uuid!(U64), uuid!(I64), uuid!(U128), uuid!(I128), uuid!(F32), uuid!(F64)
     ];
 
     pub fn is_primitive(t: u32) -> bool {
@@ -20,6 +28,10 @@ pub mod db {
     pub fn size_of_primitive(t: u32) -> usize {
         assert!(is_primitive(t));
         SIZE_OF[t as usize]
+    }
+    pub fn uuid_of_primitive(t: u32) -> u128 {
+        assert!(is_primitive(t));
+        UUID_OF[t as usize]
     }
     pub fn instantiate_primitive(t: u32, mem: &mut [u8], init: &[&str]) {
         if init.is_empty() {
@@ -96,6 +108,7 @@ pub mod db {
     // Semantics applied on top of primitive types
     pub const BOOL: u32 = 32;
     pub const CHAR: u32 = 33;
+    pub const UUID: u32 = 34;
 
     // Sized composites
     pub const ARRAY : u32 = 64;
@@ -108,15 +121,22 @@ pub mod db {
     pub const VEC   : u32 = 69;
 
     // Meta
-    pub const TYPE: u32 = 96;
+    pub const PRIMITIVE_TYPE: u32 = 96;
+    pub const PRIMITIVE_TYPE_UUID: u128 = uuid!(PRIMITIVE_TYPE);
+
+    pub const HIGHEST_RESERVED_ID_EXCLUSIVE: u32 = 256;
 }
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::fs::File;
 
 #[derive(Default)]
 pub struct DB {
+    highest_id: u32,
+    // Use BTreeMap for sorted export
+    pub uuid: BTreeMap<u32, u128>,
+    pub uuid_reverse: BTreeMap<u128, u32>,
     pub name: HashMap<u32, String>,
     pub type_: HashMap<u32, u32>,
     pub struct_: HashMap<u32, u32>,
@@ -124,21 +144,40 @@ pub struct DB {
     pub size: HashMap<u32, usize>,
 }
 
+// Goals: 
+// - Represent mapping between Entity and "chunk of data which size is uniform and know only at run-time"
+// - Allow retrieval by entity
+// - Allow fast traversal of all chunks in one go
+pub struct Arena {
+    pool: Vec<u8>,
+    index: HashMap<u128, usize>,
+}
+
+pub struct WorldDB {
+    // For each type, contains all instances of that type, keyed by entity.
+    pub arena: HashMap<u128, Arena>,
+}
+
 fn main() {
-    let mut db = DB::default();
+    let mut db = DB::new();
 
     // Init with primitive types
+    db.uuid.insert(db::PRIMITIVE_TYPE, db::PRIMITIVE_TYPE_UUID);
+    db.uuid_reverse.insert(db::PRIMITIVE_TYPE_UUID, db::PRIMITIVE_TYPE);
+    db.name.insert(db::PRIMITIVE_TYPE, "PrimitiveType".to_owned());
     for i in db::ALL_PRIMITIVE_TYPES {
-        db.type_.insert(i, db::TYPE);
+        db.type_.insert(i, db::PRIMITIVE_TYPE);
         db.name.insert(i, db::name_of_primitive(i).to_owned());
         db.size.insert(i, db::size_of_primitive(i));
+        db.uuid.insert(i, db::uuid_of_primitive(i));
+        db.uuid_reverse.insert(db::uuid_of_primitive(i), i);
     }
 
     // Now, create a Vec3<f32> struct
-    let id_vec3f   = 0xdead0000;
-    let id_vec3f_x = 0xdead0001;
-    let id_vec3f_y = 0xdead0002;
-    let id_vec3f_z = 0xdead0003;
+    let id_vec3f   = db.id_from_uuid(0x20000000000000000000000000000001);
+    let id_vec3f_x = db.id_from_uuid(0x20000000000000000000000000000002);
+    let id_vec3f_y = db.id_from_uuid(0x20000000000000000000000000000003);
+    let id_vec3f_z = db.id_from_uuid(0x20000000000000000000000000000004);
     db.name.insert(id_vec3f, "Vec3f".to_owned());
     db.name.insert(id_vec3f_x, "x".to_owned());
     db.name.insert(id_vec3f_y, "y".to_owned());
@@ -163,9 +202,53 @@ fn main() {
     db.print_struct_instance(id_vec3f, &v);
 
     db.write_struct_rs(File::create("gen.rs").unwrap(), id_vec3f);
+
+    db.export(File::create("db.ini").unwrap());
 }
 
 impl DB {
+    pub fn export<W: Write>(&self, mut w: W) {
+        for (uuid, id) in &self.uuid_reverse {
+            writeln!(w, "[{:#x}]", uuid);
+            if let Some(name) = self.name.get(id) {
+                writeln!(w, "name = \"{}\"", name);
+            }
+            if let Some(struct_) = self.struct_.get(id) {
+                writeln!(w, "# {}", self.name[struct_]);
+                writeln!(w, "struct = {:#x}", self.uuid[struct_]);
+            }
+            if let Some(ty) = self.type_.get(id) {
+                writeln!(w, "# {}", self.name[ty]);
+                writeln!(w, "type = {:#x}", self.uuid[ty]);
+            }
+            if let Some(offset) = self.offset.get(id) {
+                writeln!(w, "offset = {}", offset);
+            }
+            if let Some(size) = self.size.get(id) {
+                writeln!(w, "size = {}", size);
+            }
+            writeln!(w);
+        }
+    }
+    pub fn new() -> Self {
+        Self {
+            highest_id: db::HIGHEST_RESERVED_ID_EXCLUSIVE,
+            .. Default::default()
+        }
+    }
+    fn gen_id(&mut self) -> u32 {
+        self.highest_id = self.highest_id.wrapping_add(1);
+        self.highest_id
+    }
+    fn add_new_uuid(&mut self, uuid: u128) -> u32 {
+        let id = self.gen_id();
+        self.uuid.insert(id, uuid);
+        self.uuid_reverse.insert(uuid, id);
+        id
+    }
+    pub fn id_from_uuid(&mut self, uuid: u128) -> u32 {
+        self.uuid_reverse.get(&uuid).map(|x| *x).unwrap_or_else(|| self.add_new_uuid(uuid))
+    }
     pub fn instantiate(&self, t: u32, mem: &mut [u8], init: &[&str]) {
         let mut i = 0;
         if db::is_primitive(t) {
@@ -197,7 +280,7 @@ impl DB {
         writeln!(w, "}}");
 
         writeln!(w);
-        writeln!(w, "pub const ID: u32 = {:#x};", s);
+        writeln!(w, "pub const UUID: u128 = {:#x};", self.uuid[&s]);
     }
 
     pub fn print_struct(&self, s: u32) {
