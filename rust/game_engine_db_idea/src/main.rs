@@ -144,13 +144,16 @@ pub struct DB {
     pub size: HashMap<u32, usize>,
 }
 
+pub mod datamap;
+use datamap::{DenseDataMap, DataMapKey};
+
 // Goals: 
 // - Represent mapping between Entity and "chunk of data which size is uniform and know only at run-time"
-// - Allow retrieval by entity
-// - Allow fast traversal of all chunks in one go
+// - Allow retrieval of "data chunk" by entity;
+// - Allow fast traversal of all chunks in one go;
 pub struct Arena {
-    pool: Vec<u8>,
-    index: HashMap<u128, usize>,
+    map: DenseDataMap,
+    index: HashMap<u128, DataMapKey>,
 }
 
 pub struct WorldDB {
@@ -197,9 +200,20 @@ fn main() {
     }
 
     db.print_struct(id_vec3f);
-    let mut v = vec![0_u8; db.size[&id_vec3f]];
-    db.instantiate(id_vec3f, &mut v, &["42", "13.56"]);
-    db.print_struct_instance(id_vec3f, &v);
+
+    let mut map = DenseDataMap::new(db.size[&id_vec3f]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["22", "53.57"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["22", "53.57"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["22", "53.57"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["42", "13.56"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["42", "13.56"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["42", "13.56"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["22", "53.57"]);
+    db.instantiate(id_vec3f, map.insert_uninitialized().1, &["22", "53.57"]);
+    for (k, v) in map.iter() {
+        println!("Key: {:?}", k);
+        db.print_struct_instance(id_vec3f, v);
+    }
 
     db.write_struct_rs(File::create("gen.rs").unwrap(), id_vec3f);
 
@@ -254,10 +268,10 @@ impl DB {
         if db::is_primitive(t) {
             db::instantiate_primitive(t, mem, init);
         } else {
-            for (m, init) in self.struct_fields(t).into_iter().zip(init.iter()) {
+            for (mi, m) in self.struct_fields(t).into_iter().enumerate() {
                 let mt = self.type_[&m];
                 let j = i + self.size[&mt];
-                self.instantiate(mt, &mut mem[i..j], &[init]);
+                self.instantiate(mt, &mut mem[i..j], if mi < init.len() { &init[mi..mi+1] } else { &[] } );
                 i = j;
             }
         }

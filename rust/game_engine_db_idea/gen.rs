@@ -7,5 +7,3 @@ pub struct Vec3f {
 }
 
 pub const UUID: u128 = 0x20000000000000000000000000000001;
-
-
