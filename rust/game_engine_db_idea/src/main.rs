@@ -1,4 +1,6 @@
 
+pub mod gui;
+
 pub mod db {
     use std::ptr;
     use std::ops::Range;
