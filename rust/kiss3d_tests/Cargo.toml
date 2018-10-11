@@ -1,0 +1,9 @@
+[package]
+name = "kiss3d_tests"
+version = "0.1.0"
+authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
+
+[dependencies]
+kiss3d = "0.16.4"
+nalgebra = "0.16.4"
+vek = "0.9.4"
