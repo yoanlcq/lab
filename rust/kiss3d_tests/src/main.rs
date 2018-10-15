@@ -58,3 +58,121 @@ fn main() {
 
     window.render_loop(state)
 }
+
+
+use vek::{Vec3, Vec2};
+
+// https://www.geometrictools.com/Documentation/IntersectionMovingSphereTriangle.pdf
+
+// The triangle is decomposed into 7 regions (Voronoi diagram):
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+enum Region {
+    R0,
+    R1,
+    R2,
+    R01,
+    R12,
+    R20,
+    R012,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Sphere {
+    pub c: Vec3<f32>,
+    pub r: f32,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Element {
+    pub min: f32,
+    pub max: f32,
+    pub region: Region,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Partition {
+    pub elements: Vec<Element>, // FIXME: Use some kind of smallvec[7] instead (and derive Copy)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct ContactInfo {
+    pub time: f32,
+    pub contact: Vec3<f32>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Triangle {
+    // p0, p1 and p2 are the triangle's vertices.
+    p0: Vec3<f32>,
+    p1: Vec3<f32>,
+    p2: Vec3<f32>,
+
+    // ---- Quantities derived from P0, P1, and P2 :
+
+    // u0, u1 and u2 are unit-length vectors that define an orthonormal basis such that u0 = normalize(p1-p0), and u2 = normalize(cross(p1-p0, p2-p0)).
+    u0: Vec3<f32>,
+    u1: Vec3<f32>,
+    u2: Vec3<f32>,
+    // q0, q1 and q2 are the planar-coordinates counterparts to p0, p1 and p2.
+    q0: Vec2<f32>,
+    q1: Vec2<f32>,
+    q2: Vec2<f32>,
+    // Edge vectors (not normalized)
+    e0: Vec2<f32>,
+    e1: Vec2<f32>,
+    e2: Vec2<f32>,
+    // n0 is the normal to the edge defined by q1-q0, pointing out of the triangle and along its plane.
+    // same goes for n1 with q2-q1, and n2 with q0-q2.
+    n0: Vec2<f32>,
+    n1: Vec2<f32>,
+    n2: Vec2<f32>,
+}
+
+impl Triangle {
+    pub fn new(p0: Vec3<f32>, p1: Vec3<f32>, p2: Vec3<f32>) -> Self {
+        let u2 = Vec3::cross(p1-p0, p2-p0).normalized();
+        let u0 = (p1-p0).normalized();
+        let u1 = Vec3::cross(u2, u0); // XXX: was written cross(N, U0)
+
+        let l = (p1-p0).magnitude();
+        let a = u0.dot(p2-p0);
+        let b = u1.dot(p2-p0);
+
+        let q0 = Vec2::zero();
+        let q1 = Vec2::new(l, 0.);
+        let q2 = Vec2::new(a, b);
+
+        let e0 = q1 - q0;
+        let e1 = q2 - q1;
+        let e2 = q0 - q2;
+
+        let n0 = Vec2::new(0., -1.);
+        let n1 = Vec2::new(b, l-a) / (b*b + (l-a)*(l-a)).sqrt();
+        let n2 = Vec2::new(-b, a) / (b*b + a*a).sqrt();
+
+        Self {
+            p0, p1, p2,
+            u0, u1, u2,
+            q0, q1, q2,
+            e0, e1, e2,
+            n0, n1, n2,
+        }
+    }
+
+    pub fn compute_partition(&self, sphere: &Sphere, v: Vec3<f32>) -> Partition {
+        unimplemented!()
+    }
+    pub fn get_overlap_interval(&self, k: Vec2<f32>, v: Vec2<f32>, region: Region) -> Option<(f32, f32)> {
+        unimplemented!()
+    }
+    pub fn compute_roots(&self, sphere: &Sphere, v: Vec3<f32>, element: &Element) -> Vec<ContactInfo> { // FIXME: returns either zero, one, or two roots. Using a Vec is overkill.
+        unimplemented!()
+    }
+    pub fn solve_quadratic(&self, tmin: f32, tmax: f32, a0: f32, a1: f32, a2: f32) -> Vec<f32> { // FIXME: returns either zero, one, or two roots. Using a Vec is overkill.
+        unimplemented!()
+    }
+}
+
+fn get_contact(sphere: &Sphere, sphere_vel: Vec3<f32>, tri: Triangle, tri_vel: Vec3<f32>) -> Option<(ContactInfo, ContactInfo)> {
+    unimplemented!()
+}
