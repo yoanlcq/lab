@@ -1,2 +1,5 @@
-Hello world
-a = 42 + 8;
+Exception thrown: read access violation.
+
+**CArrayBase<SCard * __ptr64>::operator[]**(...) returned 0x73F995D60.
+
+Marché, j'achète une carte plusieurs fois, je passe à mes cartes, bam

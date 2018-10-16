@@ -89,12 +89,12 @@ struct Element {
     pub region: Region,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Partition {
     pub elements: Vec<Element>, // FIXME: Use some kind of smallvec[7] instead (and derive Copy)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 struct ContactInfo {
     pub time: f32,
     pub contact: Vec3<f32>,
@@ -160,19 +160,160 @@ impl Triangle {
     }
 
     pub fn compute_partition(&self, sphere: &Sphere, v: Vec3<f32>) -> Partition {
-        unimplemented!()
-    }
-    pub fn get_overlap_interval(&self, k: Vec2<f32>, v: Vec2<f32>, region: Region) -> Option<(f32, f32)> {
-        unimplemented!()
+        let mut s = Partition::default();
+
+        let p0_to_c = sphere.c - self.p0;
+        let k = Vec2::new(self.u0.dot(p0_to_c), self.u1.dot(p0_to_c));
+        let w = Vec2::new(self.u0.dot(v), self.u1.dot(v));
+
+        if w == Vec2::zero() {
+            s.elements.push(Element { min: -1. / 0., max: 1. / 0., region: self.get_containing_region(k), });
+        } else {
+            // PERF: Brute-force, unoptimized
+            for region in [Region::R0, Region::R1, Region::R2, Region::R01, Region::R12, Region::R20, Region::R012].iter().cloned() {
+                if let Some((min, max)) = self.get_overlap_interval(k, w, region) {
+                    s.elements.push(Element { min, max, region });
+                }
+            }
+            s.sort_elements();
+        }
+
+        s
     }
     pub fn compute_roots(&self, sphere: &Sphere, v: Vec3<f32>, element: &Element) -> Vec<ContactInfo> { // FIXME: returns either zero, one, or two roots. Using a Vec is overkill.
+        let mut contacts = vec![];
+
+        let radius_sq = sphere.r * sphere.r;
+        let tmin = element.min;
+        let tmax = element.max;
+
+        match element.region {
+            Region::R0 | Region::R1 | Region::R2 => {
+                let p = match element.region {
+                    Region::R0 => self.p0,
+                    Region::R1 => self.p1,
+                    Region::R2 => self.p2,
+                    _ => unreachable!(),
+                };
+                let diff = sphere.c - p;
+                let a0 = diff.dot(diff) - radius_sq;
+                let a1 = v.dot(diff);
+                let a2 = v.dot(v);
+                let roots = solve_quadratic(tmin, tmax, a0, a1, a2);
+                for root in roots {
+                    contacts.push(ContactInfo { time: root, contact: p, });
+                }
+            },
+            Region::R01 | Region::R12 | Region::R20 => {
+                let (pa, pb) = match element.region {
+                    Region::R01 => (self.p0, self.p1),
+                    Region::R12 => (self.p1, self.p2),
+                    Region::R20 => (self.p2, self.p0),
+                    _ => unreachable!(),
+                };
+                let diff = sphere.c - pa;
+                let edge = pb - pa;
+                let s0 = edge.dot(diff) / edge.magnitude_squared();
+                let s1 = edge.dot(v) / edge.magnitude_squared();
+                let con_coeff = diff - edge * s0;
+                let lin_coeff = v - edge * s1;
+                let a0 = con_coeff.dot(con_coeff) - radius_sq;
+                let a1 = con_coeff.dot(lin_coeff);
+                let a2 = lin_coeff.dot(lin_coeff);
+                let roots = solve_quadratic(tmin, tmax, a0, a1, a2);
+                for root in roots {
+                    contacts.push(ContactInfo { time: root, contact: pa + edge * (s1 * root + s0), });
+                }
+            },
+            Region::R012 => {
+                let diff = sphere.c - self.p0;
+                let s0 = self.u2.dot(diff);
+                let s1 = self.u2.dot(v);
+                let a0 = s0*s0 - radius_sq;
+                let a1 = s0*s1;
+                let a2 = s1*s1;
+                let roots = solve_quadratic(tmin, tmax, a0, a1, a2);
+                for root in roots {
+                    contacts.push(ContactInfo { time: root, contact: sphere.c + v * root - self.u2 * (s1 * root + s0), });
+                }
+            },
+        }
+
+        contacts
+    }
+    // Point-in-convex-region test, or half-space tests
+    pub fn get_containing_region(&self, k: Vec2<f32>) -> Region {
         unimplemented!()
     }
-    pub fn solve_quadratic(&self, tmin: f32, tmax: f32, a0: f32, a1: f32, a2: f32) -> Vec<f32> { // FIXME: returns either zero, one, or two roots. Using a Vec is overkill.
+    // Clip the line defined by K + t*W for all t, against the given region. if there is overlap, return (min, max).
+    pub fn get_overlap_interval(&self, k: Vec2<f32>, w: Vec2<f32>, region: Region) -> Option<(f32, f32)> {
         unimplemented!()
     }
 }
 
-fn get_contact(sphere: &Sphere, sphere_vel: Vec3<f32>, tri: Triangle, tri_vel: Vec3<f32>) -> Option<(ContactInfo, ContactInfo)> {
-    unimplemented!()
+impl Partition {
+    /// Sort so that interval times are increasing
+    pub fn sort_elements(&mut self) {
+        unimplemented!()
+    }
+}
+
+fn get_contact(sphere: &Sphere, sphere_vel: Vec3<f32>, tri: Triangle, tri_vel: Vec3<f32>) -> Option<[ContactInfo; 2]> {
+    let v = sphere_vel - tri_vel;
+    let s = tri.compute_partition(sphere, v);
+    let mut contacts = [ContactInfo { time: 1. / 0., contact: Vec3::zero(), }, ContactInfo { time: -1. / 0., contact: Vec3::zero(), }];
+    let mut has_roots = false;
+
+    for elem in s.elements.iter() {
+        let roots = tri.compute_roots(sphere, v, elem);
+        // PERF: Apparently we can exit when we detect 2 roots
+        for root in roots {
+            if root.time < contacts[0].time {
+                contacts[0] = root;
+                has_roots = true;
+            }
+            if root.time > contacts[1].time {
+                contacts[1] = root;
+                has_roots = true;
+            }
+        }
+    }
+    if has_roots {
+        Some(contacts)
+    } else {
+        None
+    }
+}
+
+pub fn solve_quadratic(tmin: f32, tmax: f32, a0: f32, a1: f32, a2: f32) -> Vec<f32> { // FIXME: returns either zero, one, or two roots. Using a Vec is overkill.
+    let mut roots = vec![];
+    if a2 != 0. { // FIXME: "close to zero" tests
+        let discr = a1 * a1 - a0 * a2;
+        if discr > 0. {
+            let root_discr = discr.sqrt();
+            let tmp0 = (-a1 - root_discr) / a2;
+            let tmp1 = (-a1 + root_discr) / a2;
+            if tmin <= tmp0 && tmp0 <= tmax {
+                roots.push(tmp0);
+            }
+            if tmin <= tmp1 && tmp1 <= tmax {
+                roots.push(tmp1);
+            }
+        } else if discr == 0. {
+            let tmp = -a1 / a2;
+            if tmin <= tmp && tmp <= tmax {
+                roots.push(tmp);
+                roots.push(tmp);
+            }
+        }
+    } else if a1 != 0. {
+        let tmp = -a0 / a1;
+        if tmin <= tmp && tmp <= tmax {
+            roots.push(tmp);
+        }
+    } else if a0 == 0. {
+        roots.push(0.);
+        roots.push(0.);
+    }
+    roots
 }
