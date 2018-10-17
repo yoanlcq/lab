@@ -243,11 +243,85 @@ impl Triangle {
     }
     // Point-in-convex-region test, or half-space tests
     pub fn get_containing_region(&self, k: Vec2<f32>) -> Region {
-        unimplemented!()
+        let s01 = k.determine_side(self.q0, self.q1);
+        let s12 = k.determine_side(self.q1, self.q2);
+        let s20 = k.determine_side(self.q2, self.q0);
+
+        if s01 > 0. && s12 > 0. && s20 > 0. {
+            return Region::R012;
+        }
+
+        let q0_n0_side = k.determine_side(self.q0, self.q0 + self.n0);
+        let q0_n2_side = k.determine_side(self.q0, self.q0 + self.n2);
+        let q1_n0_side = k.determine_side(self.q1, self.q1 + self.n0);
+        let q1_n1_side = k.determine_side(self.q1, self.q1 + self.n1);
+        let q2_n1_side = k.determine_side(self.q2, self.q2 + self.n1);
+        let q2_n2_side = k.determine_side(self.q2, self.q2 + self.n2);
+
+        if q0_n0_side < 0. && q0_n2_side > 0. {
+            return Region::R0;
+        }
+        if q1_n1_side < 0. && q1_n0_side > 0. {
+            return Region::R1;
+        }
+        if q2_n2_side < 0. && q2_n1_side > 0. {
+            return Region::R2;
+        }
+
+        if q0_n0_side > 0. && q1_n0_side < 0. && s01 < 0. {
+            return Region::R01;
+        }
+        if q1_n1_side > 0. && q2_n1_side < 0. && s12 < 0. {
+            return Region::R12;
+        }
+        if q2_n2_side > 0. && q0_n2_side < 0. && s20 < 0. {
+            return Region::R20;
+        }
+        unreachable!()
     }
-    // Clip the line defined by K + t*W for all t, against the given region. if there is overlap, return (min, max).
+    // Clip the line defined by K + t*W for all t, against the given region. if there is overlap, return [min, max] (values of t).
     pub fn get_overlap_interval(&self, k: Vec2<f32>, w: Vec2<f32>, region: Region) -> Option<(f32, f32)> {
-        unimplemented!()
+        let line = Line2::new(k, k+w);
+        match region {
+            Region::R012 => {
+                let mut candidates = vec![]; // PERF: overkill
+                let c01 = line.intersection_with_segment(self.q0, self.q1);
+                let c12 = line.intersection_with_segment(self.q1, self.q2);
+                let c20 = line.intersection_with_segment(self.q2, self.q0);
+                if let Some(c) = c01 { candidates.push(c.distance(k)); }
+                if let Some(c) = c12 { candidates.push(c.distance(k)); }
+                if let Some(c) = c20 { candidates.push(c.distance(k)); }
+                if candidates.is_empty() {
+                    None
+                } else {
+                    // assert!(candidates.len() >= 2);
+                    candidates.sort_unstable_by(|a, b| a.cmp(b));
+                    Some((candidates[0], *candidates.last().unwrap()))
+                }
+            },
+            Region::R0 => {
+                let mut candidates = vec![]; // PERF: overkill
+                let c01 = line.intersection_with_ray(self.q0, self.n0);
+                let c02 = line.intersection_with_ray(self.q0, self.n2);
+                if let Some(c) = c01 { candidates.push(c.distance(k)); }
+                if let Some(c) = c02 { candidates.push(c.distance(k)); }
+                match candidates.len() {
+                    0 => None,
+                    1 => {
+                        if (candidates[0] - k).dot(w) >= 0. {
+                            Some((-1. / 0., candidates[0]))
+                        } else {
+                            Some((-candidates[0], 1. / 0.))
+                        }
+                    },
+                    2 => {
+                        candidates.sort_unstable_by(|a, b| a.cmp(b));
+                        Some((candidates[0], candidates[1]))
+                    }
+                }
+            },
+            _ => unimplemented!(),
+        }
     }
 }
 
