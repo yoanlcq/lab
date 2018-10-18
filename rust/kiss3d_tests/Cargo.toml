@@ -7,3 +7,6 @@ authors = ["Yoan Lecoq <yoanlecoq.io@gmail.com>"]
 kiss3d = "0.16.4"
 nalgebra = "0.16.4"
 vek = "0.9.4"
+bitflags = "1.0.4"
+arrayvec = "0.4.7"
+approx = "0.1.0"

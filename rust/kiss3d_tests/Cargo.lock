@@ -352,6 +352,9 @@ dependencies = [
 name = "kiss3d_tests"
 version = "0.1.0"
 dependencies = [
+ "approx 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "arrayvec 0.4.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "kiss3d 0.16.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "nalgebra 0.16.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "vek 0.9.4 (registry+https://github.com/rust-lang/crates.io-index)",
