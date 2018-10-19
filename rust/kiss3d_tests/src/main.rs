@@ -62,11 +62,19 @@ fn main() {
         r: 0.5,
     };
     */
+    /*
     let sphere_vel = Vec3::new(1., -0.5, 0.05);
     let mut sphere = Sphere {
         c: Vec3::new(0., 1.4, -5.4),
         r: 0.5,
     };
+    */
+    let sphere_vel = Vec3::new(0.05, -0.5, 0.0);
+    let mut sphere = Sphere {
+        c: Vec3::new(0., 1.4, 5.0),
+        r: 0.5,
+    };
+
 
     let contacts = get_contact(&sphere, sphere_vel, &tri, tri_vel);
     println!("Contacts: {:#?}", contacts);
