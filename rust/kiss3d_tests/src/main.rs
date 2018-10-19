@@ -13,6 +13,8 @@ use kiss3d::light::Light;
 use kiss3d::scene::SceneNode;
 use kiss3d::window::{State, Window};
 use kiss3d::resource::Mesh;
+use kiss3d::event::Key;
+use kiss3d::event::Action;
 use na::{Vector3, Point3, Translation3};
 
 struct AppState {
@@ -27,6 +29,66 @@ struct AppState {
 
 impl State for AppState {
     fn step(&mut self, window: &mut Window) {
+        let speed = 0.05;
+        if window.get_key(Key::Left) == Action::Press {
+            self.sphere.c.x -= speed;
+        }
+        if window.get_key(Key::Right) == Action::Press {
+            self.sphere.c.x += speed;
+        }
+        if window.get_key(Key::Up) == Action::Press {
+            self.sphere.c.z -= speed;
+        }
+        if window.get_key(Key::Down) == Action::Press {
+            self.sphere.c.z += speed;
+        }
+
+        self.sphere_vel = Vec3::new(0.0, -0.01, 0.01);
+
+        let tri_vel = Vec3::zero();
+        let contacts = get_contact(&self.sphere, self.sphere_vel, &self.tri, tri_vel);
+        // println!("Contacts: {:#?}", contacts);
+
+        if let Some(mut node) = self.contact0_node.take() {
+            window.remove_node(&mut node);
+        }
+        if let Some(mut node) = self.contact1_node.take() {
+            window.remove_node(&mut node);
+        }
+
+        if let Some(contacts) = contacts {
+            let mut node = window.add_sphere(0.025);
+            node.set_color(0., 1., 1.);
+            let ct = contacts[0].contact;
+            node.set_local_translation(Translation3::new(ct.x, ct.y, ct.z));
+            self.contact0_node = Some(node);
+
+            let mut node = window.add_sphere(0.025);
+            node.set_color(0., 0., 1.);
+            let ct = contacts[1].contact;
+            node.set_local_translation(Translation3::new(ct.x, ct.y, ct.z));
+            self.contact1_node = Some(node);
+
+            //println!("contacts: {:?}", contacts);
+            if contacts[0].time > 1. { // No obstacle, go on
+                self.sphere.c += self.sphere_vel;
+            } else {
+                let mut v = self.sphere_vel;
+                self.sphere.c += v * contacts[0].time;
+                v -= v * contacts[0].time;
+                let ct = contacts[0].contact;
+                let n = self.sphere.c - ct;
+                self.sphere.c += n.normalized() * 0.001; // Don't touch the triangle; stay a bit above
+                let proj_v = v - n * v.dot(n) / n.magnitude_squared();
+                self.sphere.c += proj_v;
+                //println!("proj_v: {}", proj_v);
+            }
+        } else {
+            self.sphere.c += self.sphere_vel;
+        }
+
+        self.sphere_node.set_local_translation(Translation3::new(self.sphere.c.x, self.sphere.c.y, self.sphere.c.z));
+
         {
             let v = self.sphere_vel;
             let c = self.sphere.c;
@@ -34,19 +96,22 @@ impl State for AppState {
             let b = c + v * 1000.;
             window.draw_line(&Point3::new(a.x, a.y, a.z), &Point3::new(b.x, b.y, b.z), &Point3::new(1., 1., 0.));
         }
-        // self.tri.prepend_to_local_rotation(&self.rot)
     }
 }
+
+// TODO: Move sphere center
+// TODO: Move sphere vel
+// TODO: Load terrain
+// TODO: Basic game
 
 fn main() {
     let mut window = Window::new("Moving sphere vs tri");
 
     let tri = Triangle::new(
-        Vec3::new(10.0, 0.0, -5.0),
-        Vec3::new(-10.0, 0.0, -5.0),
-        Vec3::new(0.0, 0.0, 5.0),
+        Vec3::new(-10.0, 0.0, 5.0),
+        Vec3::new(10.0, 0.0, 5.0),
+        Vec3::new(0.0, 0.0, -5.0),
     );
-    let tri_vel = Vec3::zero();
 
     /*
     let sphere_vel = Vec3::new(0.0, -0.2, 1.0);
@@ -70,32 +135,10 @@ fn main() {
     };
     */
     let sphere_vel = Vec3::new(0.05, -0.5, 0.0);
-    let mut sphere = Sphere {
-        c: Vec3::new(0., 1.4, 5.0),
+    let sphere = Sphere {
+        c: Vec3::new(0., 1.4, 0.0),
         r: 0.5,
     };
-
-
-    let contacts = get_contact(&sphere, sphere_vel, &tri, tri_vel);
-    println!("Contacts: {:#?}", contacts);
-
-    let mut contact0_node = None;
-    let mut contact1_node = None;
-    if let Some(contacts) = contacts {
-        let mut node = window.add_sphere(0.025);
-        node.set_color(0., 1., 1.);
-        let ct = contacts[0].contact;
-        node.set_local_translation(Translation3::new(ct.x, ct.y, ct.z));
-        contact0_node = Some(node);
-
-        let mut node = window.add_sphere(0.025);
-        node.set_color(0., 0., 1.);
-        let ct = contacts[1].contact;
-        node.set_local_translation(Translation3::new(ct.x, ct.y, ct.z));
-        contact1_node = Some(node);
-
-        sphere.c += sphere_vel * contacts[0].time;
-    }
 
     let mesh = {
         let faces = vec![Point3::new(0, 1, 2)];
@@ -118,7 +161,6 @@ fn main() {
     let mut sphere_node = window.add_sphere(sphere.r);
     let mut tri_node = window.add_mesh(mesh, Vector3::new(1.0, 1.0, 1.0) /* scale */);
 
-    sphere_node.set_local_translation(Translation3::new(sphere.c.x, sphere.c.y, sphere.c.z));
     sphere_node.set_color(1.0, 0.0, 0.0);
     tri_node.set_local_translation(Translation3::new(0.0, 0.0, 0.0));
     tri_node.set_color(0.0, 1.0, 0.0);
@@ -126,7 +168,7 @@ fn main() {
     window.set_light(Light::StickToCamera);
 
     let state = AppState {
-        sphere_node, tri_node, contact0_node, contact1_node,
+        sphere_node, tri_node, contact0_node: None, contact1_node: None,
         tri, sphere_vel, sphere,
     };
 
@@ -273,7 +315,7 @@ impl Triangle {
             }
         }
 
-        println!("pts: {:#?}", &pts[..]);
+        // println!("pts: {:#?}", &pts[..]);
 
         let mut elem = Element { min: NEG_INF, max: INF, region: Region::empty(), };
 
@@ -288,7 +330,7 @@ impl Triangle {
         elem.region = pts[i-1].1 & !pts[i-2].1;
         partition.elements.push(elem);
 
-        println!("Partition : {:#?}", &partition.elements[..]);
+        // println!("Partition : {:#?}", &partition.elements[..]);
 
         assert!(partition.elements.len() >= 3, "The partition must have at least 3 elements in this case");
 
