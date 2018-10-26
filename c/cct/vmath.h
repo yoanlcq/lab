@@ -89,3 +89,16 @@ static inline v2 v2_line_vs_ray(v2 a, v2 b, v2 origin, v2 dir) {
     const float t = v2_line_vs_line(a, b, origin, origin + dir);
     return t != NAN && 0.f <= t ? origin + dir * t : V2_NAN;
 }
+
+
+typedef struct Plane {
+    v3 o, n; // origin and normal. Interestingly it also describes a ray.
+} Plane;
+
+static inline v3 v3_proj_on_plane(v3 v, v3 n) {
+    return v - n * v3_dot(v, n) / v3_magnitude_squared(n);
+}
+
+static inline float v3_plane_dist(Plane plane, v3 point) {
+    return v3_dot(v3_normalize(plane.n), point - plane.o);
+}

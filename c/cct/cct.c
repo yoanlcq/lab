@@ -350,197 +350,107 @@ static AllContacts get_all_contacts() {
     contacts.map(|c| Self { t: c[0].time, ct: c[0].contact, highest_negative_contact_time })
 }
 
-typedef struct Plane {
-    v3 o, n;
-} Plane;
-
-v3 proj_on_plane(v3 v, v3 n) {
-    return v - n * v3_dot(v, n) / v3_magnitude_squared(n);
-}
-
-float plane_dist(Plane plane, v3 point) {
-    return v3_dot(v3_normalize(plane.n), point - plane.o);
-}
+typedef struct Game {
+    CCT_Sphere sphere;
+    bool is_grounded;
+    v3 sphere_gravity_vel;
+    v3 sphere_move_vel;
+    v3 sphere_vel;
+} Game;
 
 
-impl AppState {
-    fn try_move(&mut self, window: &mut Window, mut v: Vec3<f32>) -> Vec3<f32> {
-        let very_close = 0.001;
-        let mut dst = self.sphere.c + v;
-        let mut first_plane = Plane { o: Vec3::zero(), n: Vec3::zero() };
+v3 try_move(Game* g, v3 v) {
+    let very_close = 0.001;
+    let mut dst = self.sphere.c + v;
+    let mut first_plane = Plane { o: Vec3::zero(), n: Vec3::zero() };
 
-        for i in 0..3 {
-            match AllContacts::new(&self.sphere, v) {
-                None => {
+    for i in 0..3 {
+        match AllContacts::new(&self.sphere, v) {
+            None => {
+                self.sphere.c += v;
+                if i == 0 {
+                    self.is_grounded = false;
+                }
+                return v;
+            },
+            Some(AllContacts { t, ct, .. }) => {
+                if t <= 0. || t > 1. {
                     self.sphere.c += v;
                     if i == 0 {
                         self.is_grounded = false;
                     }
                     return v;
-                },
-                Some(AllContacts { t, ct, .. }) => {
-                    if t <= 0. || t > 1. {
-                        self.sphere.c += v;
-                        if i == 0 {
-                            self.is_grounded = false;
-                        }
-                        return v;
-                    }
+                }
 
-                    let t = t.clamped01();
+                let t = t.clamped01();
 
-                    use ::vek::ops::Clamp;
-                    let dist = v.magnitude() * t;
-                    let short_dist = ::vek::partial_max(0., dist - very_close);
+                use ::vek::ops::Clamp;
+                let dist = v.magnitude() * t;
+                let short_dist = ::vek::partial_max(0., dist - very_close);
 
-                    let touch_point = self.sphere.c + v * t;
-                    let near_point = self.sphere.c + v.normalized() * short_dist;
-                    let n = (touch_point - ct).normalized();
-                    assert!(!n.x.is_nan(), "n.x is NaN, i = {}", i);
-                    assert!(!n.y.is_nan(), "n.y is NaN, i = {}", i);
-                    assert!(!n.z.is_nan(), "n.z is NaN, i = {}", i);
+                let touch_point = self.sphere.c + v * t;
+                let near_point = self.sphere.c + v.normalized() * short_dist;
+                let n = (touch_point - ct).normalized();
+                assert!(!n.x.is_nan(), "n.x is NaN, i = {}", i);
+                assert!(!n.y.is_nan(), "n.y is NaN, i = {}", i);
+                assert!(!n.z.is_nan(), "n.z is NaN, i = {}", i);
 
-                    let sliding_plane = Plane { o: ct, n, };
+                let sliding_plane = Plane { o: ct, n, };
 
-                    self.is_grounded = n.dot(Vec3::new(0., 1., 0.)) >= 0.1;
-                    let use_dead_zone = n.dot(Vec3::new(0., 1., 0.));
+                self.is_grounded = n.dot(Vec3::new(0., 1., 0.)) >= 0.1;
+                let use_dead_zone = n.dot(Vec3::new(0., 1., 0.));
 
-                    self.sphere.c += v.normalized() * short_dist;
+                self.sphere.c += v.normalized() * short_dist;
 
-                    if i == 0 {
-                        let long_radius = self.sphere.r + very_close; // XXX
-                        first_plane = sliding_plane;
-                        dst -= first_plane.n * (plane_dist(first_plane, dst) - long_radius);
-                        v = dst - self.sphere.c;
-                        assert!(!v.x.is_nan(), "v.x is NaN");
-                        assert!(!v.y.is_nan(), "v.y is NaN");
-                        assert!(!v.z.is_nan(), "v.z is NaN");
-                    } else if i == 1 {
-                        let second_plane = sliding_plane;
-                        let crease = first_plane.n.cross(second_plane.n).normalized();
-                        assert!(!crease.x.is_nan(), "crease.x is NaN");
-                        assert!(!crease.y.is_nan(), "crease.y is NaN");
-                        assert!(!crease.z.is_nan(), "crease.z is NaN");
-                        let signed_dist = (dst - self.sphere.c /* near_point*/).dot(crease);
-                        v = crease * signed_dist;
-                        assert!(!v.x.is_nan(), "v.x is NaN");
-                        assert!(!v.y.is_nan(), "v.y is NaN");
-                        assert!(!v.z.is_nan(), "v.z is NaN");
-                        dst = self.sphere.c + v;
-                    }
+                if i == 0 {
+                    let long_radius = self.sphere.r + very_close; // XXX
+                    first_plane = sliding_plane;
+                    dst -= first_plane.n * (plane_dist(first_plane, dst) - long_radius);
+                    v = dst - self.sphere.c;
+                    assert!(!v.x.is_nan(), "v.x is NaN");
+                    assert!(!v.y.is_nan(), "v.y is NaN");
+                    assert!(!v.z.is_nan(), "v.z is NaN");
+                } else if i == 1 {
+                    let second_plane = sliding_plane;
+                    let crease = first_plane.n.cross(second_plane.n).normalized();
+                    assert!(!crease.x.is_nan(), "crease.x is NaN");
+                    assert!(!crease.y.is_nan(), "crease.y is NaN");
+                    assert!(!crease.z.is_nan(), "crease.z is NaN");
+                    let signed_dist = (dst - self.sphere.c /* near_point*/).dot(crease);
+                    v = crease * signed_dist;
+                    assert!(!v.x.is_nan(), "v.x is NaN");
+                    assert!(!v.y.is_nan(), "v.y is NaN");
+                    assert!(!v.z.is_nan(), "v.z is NaN");
+                    dst = self.sphere.c + v;
+                }
 
-                    // println!("v = {}, v.mag = {}", v, v.magnitude());
-                    if v.magnitude() < 0.01 * use_dead_zone * use_dead_zone { // Make the sphere stop at some point (dead zone)
-                        v = Vec3::zero();
-                        return v;
-                    }
+                // println!("v = {}, v.mag = {}", v, v.magnitude());
+                if v.magnitude() < 0.01 * use_dead_zone * use_dead_zone { // Make the sphere stop at some point (dead zone)
+                    v = Vec3::zero();
+                    return v;
                 }
             }
         }
-        v
     }
-    /*
-    fn try_move(&mut self, window: &mut Window, v: Vec3<f32>) -> Vec3<f32> {
-        self.try_move_recursive(window, v, 0)
-    }
-    fn try_move_recursive(&mut self, window: &mut Window, v: Vec3<f32>, recursion_level: u32) -> Vec3<f32> {
-        let very_close = 0.002;
-
-        match AllContacts::new(&self.sphere, v) {
-            None => {
-                self.sphere.c += v;
-                self.is_grounded = false; // XXX: Works because overridden by gravity after
-                v
-            },
-            Some(AllContacts { t, mut ct, .. }) => {
-                if t <= 0. {  // At this point we're already penetrating a triangle, => too late!
-                    self.sphere.c += v;
-                    self.is_grounded = false; // XXX: Works because overridden by gravity after
-                    return v;
-                }
-
-                use ::vek::ops::Clamp;
-                let vt = v * t.clamped01();
-                self.sphere.c += vt;
-
-                // Now the sphere either exactly touches the plane, or is from some distance of it.
-
-                let dist = self.sphere.c.distance(ct) - self.sphere.r;
-
-                if dist > very_close {
-                    self.is_grounded = false; // XXX: Works because overridden by gravity after
-                    return /*v -*/ vt;
-                }
-
-                self.is_grounded = true;
-
-                self.sphere.c -= v.normalized() * (very_close - dist);
-                ct -= v.normalized() * very_close;
-                let n = self.sphere.c - ct;
-                let pv = proj_on_plane(v - vt, n);
-
-                if pv.magnitude() <= very_close {
-                    return pv;
-                }
-
-                if recursion_level < 20 {
-                    self.try_move_recursive(window, pv, recursion_level + 1)
-                } else {
-                    pv
-                }
-            },
-        }
-    }
-*/
-}
-
-
-impl State for AppState {
-    fn step(&mut self, window: &mut Window) {
-        if self.sphere.c.y < -8.0 {
-            self.sphere.c = Vec3::new(0.0, 2.0, 0.0);
-        }
-
-        let mut mv = Vec3::<f32>::zero();
-        let speed = 0.1;
-        if window.get_key(Key::Left) == Action::Press {
-            mv.x -= speed;
-        }
-        if window.get_key(Key::Right) == Action::Press {
-            mv.x += speed;
-        }
-        if window.get_key(Key::Up) == Action::Press {
-            mv.z -= speed;
-        }
-        if window.get_key(Key::Down) == Action::Press {
-            mv.z += speed;
-        }
-        if window.get_key(Key::Space) == Action::Press && self.is_grounded {
-            self.sphere_gravity_vel.y += 0.3;
-            self.is_grounded = false;
-        }
-
-        self.sphere_move_vel = self.try_move(window, mv);
-
-        let gravity = Vec3::new(0.0, -0.008, 0.0) + self.sphere_gravity_vel;
-        //println!("gravity: {}", gravity);
-        self.sphere_gravity_vel = self.try_move(window, gravity);
-        //println!("sphere_gravity_vel: {}", self.sphere_gravity_vel);
-        
-        // println!("grounded: {}", self.is_grounded);
-
-        self.sphere_vel = self.sphere_move_vel + self.sphere_gravity_vel;
-
-        self.sphere_node.set_local_translation(Translation3::new(self.sphere.c.x, self.sphere.c.y, self.sphere.c.z));
-
-        {
-            let v = self.sphere_vel;
-            let c = self.sphere.c;
-            let a = c - v * 1000.;
-            let b = c + v * 1000.;
-            window.draw_line(&Point3::new(a.x, a.y, a.z), &Point3::new(b.x, b.y, b.z), &Point3::new(1., 1., 0.));
-        }
+    return v;
     }
 }
 
+void game_step(Game* g) {
+    if g->sphere.c.y < -8.f {
+        g->sphere.c = (v3) { 0.f, 2.f, 0.f };
+    }
 
+    const float speed = 0.1f;
+    const v3 mv = (v3){ g->input.lx, 0.f, g->input.ly } * speed;
+
+    if (g->input.cross.just_pressed && g->is_grounded) {
+        g->sphere_gravity_vel.y += 0.3f;
+        g->is_grounded = false;
+    }
+
+    g->sphere_move_vel = try_move(g, mv);
+    const v3 gravity = (v3){0.f, -0.008f, 0.f} + g->sphere_gravity_vel;
+    g->sphere_gravity_vel = try_move(g, gravity);
+    g->sphere_vel = g->sphere_move_vel + g->sphere_gravity_vel;
+}
