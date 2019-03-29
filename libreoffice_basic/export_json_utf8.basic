@@ -1,0 +1,45 @@
+Function nl()
+	nl = chr(13)
+End Function
+
+Function OpenFileUTF8(ByVal path)
+	simpleFileAccess = createUnoService("com.sun.star.ucb.SimpleFileAccess")
+	simpleFileAccess.kill(path) rem Because this API doesn't support truncating a file, we have to re-create it, otherwise there could be left-over content from its previous existence.
+		
+	f = createUnoService("com.sun.star.io.TextOutputStream")
+	f.OutputStream = simpleFileAccess.openFileWrite(path)
+	f.Encoding = "UTF-8"
+
+	OpenFileUtf8 = f
+End Function
+
+Sub CloseFileUTF8(ByRef f)
+	f.OutputStream.closeOutput()
+	f.closeOutput()
+End Sub
+
+
+Sub Main()	
+	GlobalScope.BasicLibraries.loadLibrary("Tools")
+	ExportFoo()
+End Sub
+
+Sub ExportFoo()
+	sheet = ThisComponent.Sheets.getByName("foo")
+	currentDir = Tools.Strings.DirectoryNameoutofPath(ThisComponent.getURL(),"/")
+	path = currentDir & "foo.json"
+	
+	json = OpenFileUTF8(path)
+	json.writeString("[" & nl())
+	ExportFooSheetJSON(sheet, json)
+	json.writeString("]" & nl())
+	CloseFileUTF8(json)
+End Sub
+
+
+Sub ExportFooSheetJSON(ByVal sheet, ByVal json)
+	y = 5
+	While sheet.getCellByPosition(0, y).String <> ""
+		json.writeString("    {" & nl())
+	WEnd
+End Sub
