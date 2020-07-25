@@ -27,6 +27,8 @@ static inline bool relative_eq(float a, float b, float epsilon) {
     return abs_diff <= epsilon;
 }
 
+static inline float fclamp(float x, float a, float b) { return fminf(fmaxf(x, a), b); }
+
 
 //
 // VECTOR TYPES

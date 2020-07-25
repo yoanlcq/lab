@@ -301,54 +301,12 @@ CCT_Contacts get_contact(const CCT_Sphere* sphere, v3 sphere_vel, const CCT_Tria
 //
 //
 
-
-
-typedef struct AllContacts {
+typedef struct SphereCastResult {
     float t;
     v3 ct;
-} AllContacts;
+} SphereCastResult;
 
-static AllContacts get_all_contacts() {
-    let tri_vel = Vec3::zero();
-    let mut contacts: Option<[ContactInfo; 2]> = None;
-    let mut highest_negative_contact_time = NEG_INF;
-    let mut accum = Vec::with_capacity(8);
-
-    for f in LV_FACES {
-        // In OBJ, indices start at 1...
-        let p0 = LV_TRIS[f.x as usize - 1];
-        let p1 = LV_TRIS[f.y as usize - 1];
-        let p2 = LV_TRIS[f.z as usize - 1];
-        let tri = Triangle::new(p0, p1, p2).expect("Degenerate triangle");
-        if let Some(candidates) = get_contact(sphere, v, &tri, tri_vel) {
-            if candidates[0].time >= 0. {
-                if let Some(contacts_) = contacts {
-                    if candidates[0].time < contacts_[0].time {
-                        contacts = Some(candidates);
-                        accum.insert(0, candidates[0].time);
-                    }
-                } else {
-                    contacts = Some(candidates);
-                    accum.insert(0, candidates[0].time);
-                }
-            } else if candidates[0].time > highest_negative_contact_time {
-                highest_negative_contact_time = candidates[0].time;
-            }
-        }
-    }
-
-    /*
-    println!("accum: {:?}", if accum.len() >= 8 { &accum[0..8] } else { &accum[..] });
-    if accum.len() >= 2 {
-        println!("accum: ");
-        let a = sphere.c.distance(sphere.c + v * accum[0]) - sphere.r;
-        let b = sphere.c.distance(sphere.c + v * accum[1]) - sphere.r;
-        println!("a: {}, b: {}, diff: {}", a, b, (a - b).abs());
-    }
-    */
-
-    contacts.map(|c| Self { t: c[0].time, ct: c[0].contact, highest_negative_contact_time })
-}
+static SphereCastResult sphere_cast_world(CCT_Sphere* sphere, v3 v) {}
 
 typedef struct Game {
     CCT_Sphere sphere;
@@ -360,84 +318,58 @@ typedef struct Game {
 
 
 v3 try_move(Game* g, v3 v) {
-    let very_close = 0.001;
-    let mut dst = self.sphere.c + v;
-    let mut first_plane = Plane { o: Vec3::zero(), n: Vec3::zero() };
+    const float very_close = 0.001f;
+    v3 dst = g->sphere.c + v;
+    Plane first_plane;
 
-    for i in 0..3 {
-        match AllContacts::new(&self.sphere, v) {
-            None => {
-                self.sphere.c += v;
-                if i == 0 {
-                    self.is_grounded = false;
-                }
-                return v;
-            },
-            Some(AllContacts { t, ct, .. }) => {
-                if t <= 0. || t > 1. {
-                    self.sphere.c += v;
-                    if i == 0 {
-                        self.is_grounded = false;
-                    }
-                    return v;
-                }
+    for (unsigned i = 0; i < 3; ++i) {
+        const SphereCastResult query = sphere_cast_world(&g->sphere, v);
+        if (query.t == NAN || query.t <= 0.f || query.t > 1.) {
+            g->sphere.c += v;
+            if (i == 0)
+                g->is_grounded = false;
+            return v;
+        }
 
-                let t = t.clamped01();
+        const float t = fclamp(query.t, 0.f, 1.f);
+        const v3 ct = query.ct;
 
-                use ::vek::ops::Clamp;
-                let dist = v.magnitude() * t;
-                let short_dist = ::vek::partial_max(0., dist - very_close);
+        const float dist = v3_magnitude(v) * t;
+        const float short_dist = fmaxf(0.f, dist - very_close);
 
-                let touch_point = self.sphere.c + v * t;
-                let near_point = self.sphere.c + v.normalized() * short_dist;
-                let n = (touch_point - ct).normalized();
-                assert!(!n.x.is_nan(), "n.x is NaN, i = {}", i);
-                assert!(!n.y.is_nan(), "n.y is NaN, i = {}", i);
-                assert!(!n.z.is_nan(), "n.z is NaN, i = {}", i);
+        const v3 touch_point = g->sphere.c + v * t;
+        const v3 near_point = g->sphere.c + v3_normalize(v) * short_dist;
+        const v3 n = v3_normalize(touch_point - ct);
+        const Plane sliding_plane = { .o = ct, .n = n };
 
-                let sliding_plane = Plane { o: ct, n, };
+        g->is_grounded = v3_dot(n, (v3) { 0.f, 1.f, 0.f }) >= 0.1f;
+        const float use_dead_zone = v3_dot(n, (v3) { 0.f, 1.f, 0.f });
 
-                self.is_grounded = n.dot(Vec3::new(0., 1., 0.)) >= 0.1;
-                let use_dead_zone = n.dot(Vec3::new(0., 1., 0.));
+        g->sphere.c += v3_normalize(v) * short_dist;
 
-                self.sphere.c += v.normalized() * short_dist;
+        if (i == 0) {
+            const float long_radius = g->sphere.r + very_close; // XXX
+            first_plane = sliding_plane;
+            dst -= first_plane.n * (v3_plane_dist(first_plane, dst) - long_radius);
+            v = dst - g->sphere.c;
+        } else if (i == 1) {
+            const Plane second_plane = sliding_plane;
+            const v3 crease = v3_normalize(v3_cross(first_plane.n, second_plane.n));
+            const float signed_dist = v3_dot(dst - g->sphere.c /* near_point*/, crease);
+            v = crease * signed_dist;
+            dst = g->sphere.c + v;
+        }
 
-                if i == 0 {
-                    let long_radius = self.sphere.r + very_close; // XXX
-                    first_plane = sliding_plane;
-                    dst -= first_plane.n * (plane_dist(first_plane, dst) - long_radius);
-                    v = dst - self.sphere.c;
-                    assert!(!v.x.is_nan(), "v.x is NaN");
-                    assert!(!v.y.is_nan(), "v.y is NaN");
-                    assert!(!v.z.is_nan(), "v.z is NaN");
-                } else if i == 1 {
-                    let second_plane = sliding_plane;
-                    let crease = first_plane.n.cross(second_plane.n).normalized();
-                    assert!(!crease.x.is_nan(), "crease.x is NaN");
-                    assert!(!crease.y.is_nan(), "crease.y is NaN");
-                    assert!(!crease.z.is_nan(), "crease.z is NaN");
-                    let signed_dist = (dst - self.sphere.c /* near_point*/).dot(crease);
-                    v = crease * signed_dist;
-                    assert!(!v.x.is_nan(), "v.x is NaN");
-                    assert!(!v.y.is_nan(), "v.y is NaN");
-                    assert!(!v.z.is_nan(), "v.z is NaN");
-                    dst = self.sphere.c + v;
-                }
-
-                // println!("v = {}, v.mag = {}", v, v.magnitude());
-                if v.magnitude() < 0.01 * use_dead_zone * use_dead_zone { // Make the sphere stop at some point (dead zone)
-                    v = Vec3::zero();
-                    return v;
-                }
-            }
+        if (v3_magnitude(v) < 0.01f * use_dead_zone * use_dead_zone) { // Make the sphere stop at some point (dead zone)
+            v = (v3) { 0.f, 0.f, 0.f };
+            return v;
         }
     }
     return v;
-    }
 }
 
 void game_step(Game* g) {
-    if g->sphere.c.y < -8.f {
+    if (g->sphere.c[1] < -8.f) {
         g->sphere.c = (v3) { 0.f, 2.f, 0.f };
     }
 
@@ -445,7 +377,7 @@ void game_step(Game* g) {
     const v3 mv = (v3){ g->input.lx, 0.f, g->input.ly } * speed;
 
     if (g->input.cross.just_pressed && g->is_grounded) {
-        g->sphere_gravity_vel.y += 0.3f;
+        g->sphere_gravity_vel[1] += 0.3f;
         g->is_grounded = false;
     }
 
