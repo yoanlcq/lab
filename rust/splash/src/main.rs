@@ -35,6 +35,7 @@ use std::mem;
 use std::ptr;
 use std::os::raw::*;
 use std::ffi::CStr;
+use std::time::Instant;
 
 #[allow(unused_imports)]
 use winapi::{
@@ -146,7 +147,7 @@ mod splash_gl {
     pub static mut wglSwapIntervalEXT: Option<extern "system" fn(c_int) -> BOOL> = None;
     pub static mut wglGetSwapIntervalEXT: Option<extern "system" fn() -> c_int> = None;
 
-    #[link="opengl32.dll"]
+    #[link(name = "opengl32", kind = "dylib")]
     extern "system" { // Is this the correct calling convention ??
         pub fn glBegin(_: GLenum);
         pub fn glEnd();
@@ -195,7 +196,7 @@ pub const DWM_BB_ENABLE: DWORD = 1;
 pub const DWM_BB_BLURREGION: DWORD = 2;
 pub const DWM_BB_TRANSITIONONMAXIMIZED: DWORD = 4;
 
-#[link="dwmapi.dll"]
+#[link(name = "dwmapi", kind = "dylib")]
 extern "system" {
     pub fn DwmIsCompositionEnabled(_: *mut BOOL) -> HRESULT;
 }
@@ -245,17 +246,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
             1 // TRUE if processed
         },
         WM_ERASEBKGND if TEST_GL => {
+            /*
             // Worth redrawing, even though I wonder if it's redundant with WM_PAINT
-            if let Some(app) = APP.as_ref() {
-                app.update_window();
+            if let Some(app) = APP.as_mut() {
+                app.update_window(0.);
             }
+            */
             1 // non-zero if processed
         },
         WM_SIZE if TEST_GL => {
+            /*
             // Worth redrawing. Happens when the user temporarily stops dragging
-            if let Some(app) = APP.as_ref() {
-                app.update_window();
+            if let Some(app) = APP.as_mut() {
+                app.update_window(0.);
             }
+            */
             0 // zero if processed
         },
         WM_PAINT => {
@@ -266,9 +271,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, umsg: UINT, wparam: WPARAM, lparam
                 EndPaint(hwnd, &mut ps);
                 0 // zero if processed
             } else {
-                if let Some(app) = APP.as_ref() {
-                    app.update_window();
+                /*
+                if let Some(app) = APP.as_mut() {
+                    app.update_window(0.);
                 }
+                */
                 0
             }
         },
@@ -295,6 +302,9 @@ pub struct App {
     // OpenGL stuff
     pub window_hdc: HDC,
     pub hglrc: HGLRC,
+
+    // Timing
+    pub seconds_since_start: f32
 }
 
 impl Drop for App {
@@ -304,6 +314,7 @@ impl Drop for App {
             img: _, bitmapinfo: _,
             memory_hdc, screen_hdc, memory_hbitmap, memory_hdc_previous_hgdiobj, alpha: _,
             window_hdc, hglrc,
+            seconds_since_start: _,
         } = self;
 
         unsafe {
@@ -334,11 +345,16 @@ impl Drop for App {
     }
 }
 
+fn lerp(a: f32, b: f32, alpha: f32) -> f32 {
+    b * alpha + a * (1. - alpha)
+}
+
 impl App {
-    pub fn update_window(&self) {
+    pub fn update_window(&mut self, dt: f32) {
+        self.seconds_since_start += dt;
         unsafe {
             if TEST_GL {
-                let mut rect = mem::uninitialized();
+                let mut rect = mem::zeroed();
                 let is_ok = GetClientRect(self.hwnd, &mut rect);
                 assert_ne!(is_ok, FALSE);
                 let w = rect.right - rect.left;
@@ -351,13 +367,19 @@ impl App {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+                let speed = 2.;
+                let scale_factor = ((speed * self.seconds_since_start).sin() + 1.) / 2.;
+                let alpha_factor0 = ((self.seconds_since_start).sin() + 1.) / 2.;
+                let alpha_factor1 = ((self.seconds_since_start + 8.28 * 1. / 3.).sin() + 1.) / 2.;
+                let alpha_factor2 = ((self.seconds_since_start + 8.28 * 2. / 3.).sin() + 1.) / 2.;
+                let s = lerp(0.50, 0.75, scale_factor);
+
                 glBegin(GL_TRIANGLES);
-                let s = 0.75;
-                glColor4f(0., 1., 0., 1.);
+                glColor4f(0., 1., 0., alpha_factor0);
                 glVertex3f(-s, -s, 0.);
-                glColor4f(0., 1., 0., 0.5);
+                glColor4f(0., 1., 0., alpha_factor1);
                 glVertex3f(-s, s, 0.);
-                glColor4f(0., 1., 0., 0.);
+                glColor4f(0., 1., 0., alpha_factor2);
                 glVertex3f(s, s, 0.);
                 glEnd();
 
@@ -394,21 +416,21 @@ fn main() {
         // Center window, excluding taskbar!
         let (x, y) = {
             // Use the current mouse position when app starts; This is what GIMP does.
-            let mut point = mem::uninitialized();
+            let mut point = mem::zeroed();
             let is_ok = GetCursorPos(&mut point);
             assert_ne!(is_ok, FALSE);
             let hmonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
             assert!(!hmonitor.is_null());
             let mut monitorinfo = MONITORINFOEXW {
                 cbSize: mem::size_of::<MONITORINFOEXW>() as _,
-                .. mem::uninitialized()
+                .. mem::zeroed()
             };
             let is_ok = GetMonitorInfoW(hmonitor, &mut monitorinfo as *mut _ as *mut MONITORINFO);
             assert_ne!(is_ok, FALSE);
             let rect = if is_ok != FALSE {
                 monitorinfo.rcWork
             } else {
-                let mut rect = mem::uninitialized();
+                let mut rect = mem::zeroed();
                 let is_ok = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as _, 0);
                 assert_ne!(is_ok, FALSE);
                 rect
@@ -511,7 +533,8 @@ fn main() {
                     0 => None,
                     f => Some(mem::transmute(f)),
                 }
-            };
+            }
+
             wglGetExtensionsStringARB = mem::transmute(get_fn(b"wglGetExtensionsStringARB\0"));
             wglCreateContextAttribsARB = mem::transmute(get_fn(b"wglCreateContextAttribsARB\0"));
             wglChoosePixelFormatARB = mem::transmute(get_fn(b"wglChoosePixelFormatARB\0"));
@@ -740,17 +763,22 @@ fn main() {
             println!("Cool new context:");
             print_gl_stuff();
 
+            wglSwapIntervalEXT.unwrap()(-1); // Adaptic VSync. Not checking for errors; too lazy.
+
             hglrc
         };
 
-        let app = App {
+        let mut app = App {
             hinstance, class_atom, hwnd, close_requested: false,
             img, bitmapinfo, memory_hdc, screen_hdc, memory_hbitmap,
             memory_hdc_previous_hgdiobj, alpha: if TEST_GL { 0_u8 } else { 255_u8 },
             window_hdc, hglrc,
+            seconds_since_start: 0.,
         };
 
-        app.update_window();
+        if !TEST_GL {
+            app.update_window(0.);
+        }
 
         if true {
             ShowWindow(app.hwnd, SW_SHOW);
@@ -794,8 +822,16 @@ fn main() {
         assert!(APP.is_none());
         APP = Some(app);
 
+        let mut prev_frame_instant = None;
         loop {
-            let mut msg = mem::uninitialized();
+            let now = Instant::now();
+            let dt = match prev_frame_instant {
+                Some(prev_frame_instant) => now.duration_since(prev_frame_instant).as_secs_f32(),
+                None => 1. / 60.,
+            };
+            prev_frame_instant = Some(now);
+
+            let mut msg = mem::zeroed();
 
             if false {
             	let has_one = PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) != FALSE;
@@ -822,7 +858,8 @@ fn main() {
             if APP.as_ref().unwrap().close_requested {
                 break;
             }
-            APP.as_ref().unwrap().update_window();
+            APP.as_mut().unwrap().update_window(dt);
+            // println!("DeltaTime = {}, FPS = {}", dt, 1. / dt);
         }
     }
 }
