@@ -205,8 +205,18 @@ void* dfm_alloc_uninitialized(const DfmAllocationParams* p) {
 void dfm_rename_ptr(DfmContext* cx, void* old_ptr, void* new_ptr) {
     // We want to find all pointers which value is equal to old_ptr, and set their value to new_ptr.
     // - Comfort+Safety: Soit on rebuild tout en mode bourrin (un gros O(N) mais va tout détecter);
+    //   Could note that it only needs to happen once for the defragmentation, not every time we move a block.
+    //   We could also reduce the cost by culling items which never have pointers.
     // - Perf: Soit le caller nous garantit l'équivalent d'un "on_ptr_changed", pour qu'on puisse updater une acceleration structure.
     //   Càd que toute modif sur un référenceur est notifiée au système.
+    //   Du coup:
+    //   - dfm_alloc_zeroed() (on ne permet pas _uninitialized(), car il faut que les pointeurs passent de NULL à non-NULL)
+    //   - dfm_unregister_referencer(void** referencer_address) // should also set pointer value to NULL?
+    //   - dfm_register_referencer(void** referencer_address)
+    //   - dfm_replace_referencer(void** referencer_address, void* new_value) // unregister, set, then register
+    //   - dfm_item_unregister_referencers(void* item, archetype)
+    //   - dfm_item_register_referencers(void* item, archetype)
+    //   - dfm_alloc_within(void** referencer_address, params); // Internally calls dfm_forget_referencer() and dfm_add_referencer()
 }
 
 // TODO:
