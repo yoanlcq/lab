@@ -1,4 +1,6 @@
-// gcc -std=c11 -Wall -Wextra -pedantic -Wno-pedantic-ms-format auto_defrag_allocator.c
+// Compile with one of the following:
+// gcc   -std=c11 -Wall -Wextra -pedantic -Wno-pedantic-ms-format auto_defrag_allocator.c
+// clang -std=c11 -Wall -Wextra -pedantic auto_defrag_allocator.c
 
 #include <stdlib.h> // malloc() for main()
 #include <stdint.h>
@@ -217,27 +219,44 @@ void dfm_free(DfmContext* cx, void* ptr) {
     // - Free block: ability to get the next (i.e not free) block (for defragmentation)
     // - Magic number: detect if an address is a valid block
 
+    // Allocation params:
+    // - Strategy: Ordered set of instructions such as:
+    //   - Try to allocate directly by bumping the "top" pointer;
+    //   - Search in free blocks: condition may be:
+    //     - Find smallest matching;
+    //     - Find any matching;
+    // - Relocation callback IFN;
+    // - Userdata pointer IFN (is that pointer managed? Can know the answer by looking if it's within the arena's range)
+    // - Archetype definition IFN; Can be either of the following:
+    //   - Callback (useful if the item is a tagged union: receives pointer to item, returns static array of offsets to managed pointers)
+    //   - Static array of offsets to managed pointers
+
     // Impl:
     // - Each block stores this struct, with a forced alignment of 1 (compressed/decompressed on-demand):
-    //   - Sentinel for the previous block (1 byte);
-    //     - payload_size : 5; (to jump past it, to access the info struct)
-    //     - magic padding : 3 (it's a magic number and also pads to the next byte)
-    //   - Variable length payload (min 3 bytes, max 24 bytes):
-    //     - nb_items (compressed by choosing the smallest fitting unsigned type)
-    //     - sizeof_item (compressed by choosing the smallest fitting unsigned type)
-    //     - archetype_handle (an index into an array of redirectors)
-    //     - caller metadata??
-    //   - Info for the current block (2 bytes):
+    //   - Info for the current block (4 bytes):
+    //     - magic: 4; (for detecting if someone wrote past the previous allocation)
     //     - typeof_nb_items : 2; (0 = u8, 1 = u16, 2 = u32, 3 = u64)
     //     - typeof_sizeof_item : 2; (0 = u8, 1 = u16, 2 = u32, 3 = u64)
-    //     - typeof_archetype_handle : 2; (0 = u8, 1 = u16, 2 = u32, 3 = u64)
+    //     - compressed_alignof_item : 5; (alignment = (1 << compressed_alignof_item)).
     //     - is_free : 1;
-    //     - alignof_item : 9; (compressed as a bit shift, since it's power of two).
-    //   - <unused space> (padding for the allocation's alignment, if necessary; some of this bytes are abused for storing an offset, see below)
+    //     - has_name : 1; (If true: name is embedded in the alignment padding)
+    //     - has_userdata : 1;
+    //     - has_relocation_callback : 1; (If true: relocation callback is present in the variable length payload)
+    //     - archetype_handle: 16 (CANNOT be made variable-length, since the archetype may be determined progressively after allocation)
+    //   - Variable length payload (min 2 bytes, max 32 bytes):
+    //     - nb_items (compressed by choosing the smallest fitting unsigned type)
+    //     - sizeof_item (compressed by choosing the smallest fitting unsigned type)
+    //     - optional relocation callback
+    //     - optional userdata ptr (useful for passing to relocation callback, or storing the callstack (or callstack hash), or anything else)
+    //   - <unused space> (padding for the allocation's alignment, if necessary; some of these bytes are abused for storing an offset, see below)
+    //   - abused bytes: see below
     //   - Sentinel just behind the allocation address (1 byte):
-    //     - nb_bits : 3; (0 = none (perfectly aligned), 1 = u8, 2 = u16, 3 = u32, 4 = u64) (indicates a number of bytes to read within the unused space, and cast to unsigned: gives an offset from the allocation pointer, to the address of the info's end)
-    //     - magic : 5;
+    //     - typeof_abused_bytes : 3; (0 = none (perfectly aligned), 1 = u8, 2 = u16, 3 = u32, 4 = u64) (indicates a number of bytes just behind this byte, to read and cast to unsigned: gives an offset from this bytes, to the address of the info's end)
+    //     - payload_size_to_add : 5; ??
     // - This is enough for any block to know where its allocation starts and ends
+    // - TODO: But not enough to jump to the previous block.
+    //   We need to access previous block when our thread is defragmenting (it knows its first block).
+    //   Solution: Whenever a free block is formed, it looks at its next block's thread ID, and sets itself as that thread's "free block before the first used one"
 }
 
 // TODO: Support for freeing and free space reuse
