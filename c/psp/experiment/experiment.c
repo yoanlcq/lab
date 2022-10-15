@@ -124,6 +124,7 @@
 // 3. Vertex_UVf32_XYZf32 format GU_COLOR_8888 | GU_NORMAL_8BIT | GU_VERTEX_8BIT
 //
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -154,6 +155,17 @@ static inline void* psp_uncached_ptr(void* p) {
 	return (void*) (((uintptr_t)p) | 0x40000000ul);
 }
 
+static inline u32 u32_popcount(u32 x) {
+	return __builtin_popcount(x);
+}
+
+static inline bool u32_is_power_of_two_nonzero(u32 x) {
+	return u32_popcount(x) == 1;
+}
+
+static inline bool u32_is_power_of_two_or_zero(u32 x) {
+	return u32_popcount(x) <= 1;
+}
 
 //
 //
@@ -250,7 +262,7 @@ typedef enum {
 	GU_SIGNAL_ID__COUNT // Keep last
 } GuSignalID;
 
-static void gu_on_signal(int id) {
+void gu_on_signal(int id) {
 	switch (id) {
 	case GU_SIGNAL_ID__CLOCK_START: 
 		psp_rtc_get_current_tick_sync(&g_frame_stats.gpu.start);
@@ -263,11 +275,11 @@ static void gu_on_signal(int id) {
 	}
 }
 
-static void gu_insert_clock_start_marker() {
+void gu_insert_clock_start_marker() {
 	sceGuSignal(GU_BEHAVIOR_CONTINUE, GU_SIGNAL_ID__CLOCK_START);
 }
 
-static void gu_insert_clock_end_marker() {
+void gu_insert_clock_end_marker() {
 	sceGuSignal(GU_BEHAVIOR_CONTINUE, GU_SIGNAL_ID__CLOCK_END);
 }
 
@@ -278,7 +290,7 @@ typedef struct {
 
 #define Vertex_UVf32_XYZf32_FORMAT (GU_TEXTURE_32BITF | GU_VERTEX_32BITF)
 
-static void gu_draw_fullscreen_quad(f32 uv0, f32 uv1) {
+void gu_draw_fullscreen_quad(f32 uv0, f32 uv1) {
 	Vertex_UVf32_XYZf32* v = sceGuGetMemory(2 * sizeof(Vertex_UVf32_XYZf32));
 	v[0] = (Vertex_UVf32_XYZf32) {
 		.uv = { 1, 1 }, // UV is 1 rather than 0; avoids slight wraparound in the top-left corner; GU_CLAMP doesn't seem to fix it
@@ -290,6 +302,68 @@ static void gu_draw_fullscreen_quad(f32 uv0, f32 uv1) {
 	};
 	sceGuDrawArray(GU_SPRITES, Vertex_UVf32_XYZf32_FORMAT | GU_TRANSFORM_2D, 2, 0, v);
 }
+
+typedef struct {
+	void* data;
+	u16 size_px[2];
+	u16 stride_px;
+	u8 psm : 4;
+	u8 nb_mipmap_levels : 4; // Must not be 0. Values range from 1 to 9
+	u8 is_swizzled : 1;
+} Texture;
+
+void texture_check_common(const Texture* m) {
+	assert(m->nb_mipmap_levels >= 1);
+	if (m->size_px[0] && m->size_px[1]) {
+		assert(u32_is_power_of_two_nonzero(m->stride_px));
+		assert(m->data);
+	} else {
+		assert(u32_is_power_of_two_or_zero(m->stride_px));
+	}
+}
+
+void texture_check_as_input(const Texture* m) {
+	texture_check_common(m);
+	assert(u32_is_power_of_two_or_zero(m->size_px[0]));
+	assert(u32_is_power_of_two_or_zero(m->size_px[1]));
+}
+
+void texture_check_as_rendertarget(const Texture* m) {
+	texture_check_common(m);
+}
+
+void gu_set_offset(u32 w, u32 h) {
+	sceGuOffset(2048 - (w / 2), 2048 - (h / 2));
+}
+
+void gu_set_viewport(u32 w, u32 h) {
+	sceGuViewport(2048, 2048, w, h);
+}
+
+void gu_set_scissor(u32 w, u32 h) {
+	sceGuScissor(0, 0, w, h);
+}
+
+void gu_set_offset_and_viewport_and_scissor(u32 w, u32 h) {
+	gu_set_offset(w, h);
+	gu_set_viewport(w, h);
+	gu_set_scissor(w, h);
+}
+
+void gu_set_rendertarget(const Texture* m) {
+	texture_check_as_rendertarget(m);
+	sceGuDrawBufferList(m->psm, m->data, m->stride_px);
+	gu_set_offset_and_viewport_and_scissor(m->size_px[0], m->size_px[1]);
+}
+
+void gu_set_texture(const Texture* m) {
+	texture_check_as_input(m);
+	assert(m->nb_mipmap_levels == 1); // TODO: m->data should support multiple levels; needs to handle offset calculation
+	sceGuTexMode(m->psm, m->nb_mipmap_levels - 1, 0, m->is_swizzled);
+	for (size_t level = 0; level < m->nb_mipmap_levels; ++level)
+		sceGuTexImage(level, m->size_px[0] >> level, m->size_px[1] >> level, m->stride_px >> level, m->data);
+}
+
 
 u32 ALIGN16 g_gu_main_list[256 * 1024] = {0}; // Zeroing should not be necessary, but samples declare it as static, which zeroes it, so...
 
@@ -359,7 +433,15 @@ typedef enum LUTMode {
 //
 
 u32 ALIGN16 g_clut[4][256];
-u32 ALIGN16 g_test_texture[256*256];
+u32 ALIGN16 g_test_texture_data[256 * 256];
+Texture g_test_texture = {
+	.psm = GU_PSM_8888,
+	.data = g_test_texture_data,
+	.size_px = { 256, 256 },
+	.stride_px = 256,
+	.nb_mipmap_levels = 1,
+	.is_swizzled = false,
+};
 
 //
 //
@@ -375,19 +457,27 @@ u64 g_frame_counter = 0;
 
 int main(int argc, char* argv[]) {
 	const int fb_psm = GU_PSM_8888;
-	const size_t fb_size = gu_psm_get_bytes_per_pixel(fb_psm) * PSP_SCREEN_STRIDE * PSP_SCREEN_HEIGHT;
+	const size_t fb_size = PSP_SCREEN_STRIDE * PSP_SCREEN_HEIGHT * gu_psm_get_bytes_per_pixel(fb_psm);
+	const size_t zb_size = PSP_SCREEN_STRIDE * PSP_SCREEN_HEIGHT * 2;
 
-	u8* fbp0 = NULL;
-	u8* fbp1 = fbp0 + fb_size;
-	u8* zb = fbp1 + fb_size;
+	u8* vram_cursor = NULL;
+	u8* fbp0 = vram_cursor;
+	vram_cursor += fb_size;
+	u8* fbp1 = vram_cursor;
+	vram_cursor += fb_size;
+	u8* fbp2 = vram_cursor;
+	vram_cursor += fb_size;
+	u8* zb = vram_cursor;
+	vram_cursor += zb_size;
+	assert((uintptr_t) vram_cursor <= 2 * 1024 * 1024);
 
 	psp_setup_callbacks();
 
 	for (int y = 0; y < 256; ++y)
 		for (int x = 0; x < 256; ++x)
-			g_test_texture[y * 256 + x] = GU_ABGR(0xff, 0xff, y, x);
+			g_test_texture_data[y * 256 + x] = GU_ABGR(0xff, 0xff, y, x);
 
-	sceKernelDcacheWritebackAll();
+	sceKernelDcacheWritebackRange(g_test_texture_data, sizeof g_test_texture_data);
 
 	pspDebugScreenInit();
 
@@ -398,12 +488,9 @@ int main(int argc, char* argv[]) {
 	sceGuDispBuffer(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, fbp1, PSP_SCREEN_STRIDE);
 	sceGuDepthBuffer(zb, PSP_SCREEN_STRIDE);
 
-	sceGuOffset(2048 - (PSP_SCREEN_WIDTH / 2), 2048 - (PSP_SCREEN_HEIGHT / 2));
-	sceGuViewport(2048, 2048, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
+	gu_set_offset_and_viewport_and_scissor(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 
 	sceGuDepthRange(0xffff, 0x0000);
-
-	sceGuScissor(0, 0, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 
 	sceGuEnable(GU_SCISSOR_TEST);
 	sceGuEnable(GU_TEXTURE_2D);
@@ -495,10 +582,13 @@ int main(int argc, char* argv[]) {
 		gu_insert_clock_start_marker();
 
 		sceGuClearColor(GU_ABGR(0,0,0,0));
+		sceGuClearDepth(0);
 		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 
-		sceGuTexMode(GU_PSM_T32, 0, 0, 0);
-		sceGuTexImage(0, 256, 256, 256, g_test_texture);
+		Texture test_texture_t32 = g_test_texture;
+		test_texture_t32.psm = GU_PSM_T32;
+		gu_set_texture(&test_texture_t32);
+
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 		sceGuTexWrap(GU_CLAMP, GU_CLAMP);
@@ -506,17 +596,33 @@ int main(int argc, char* argv[]) {
 		sceGuAmbientColor(0xffffffffu);
 		sceGuColor(0xffffffffu);
 
-		float fu = 256, fv = 256;
+		f32 fu = g_test_texture.size_px[0];
+		f32 fv = g_test_texture.size_px[1];
 		if (use_framebuffer_as_texture) {
-			sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-			sceGuTexImage(0, 256, 256, 256, g_test_texture);
-			gu_draw_fullscreen_quad(256, 256);
+			Texture rendertarget = {
+				.psm = fb_psm,
+				.nb_mipmap_levels = 1,
+				.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
+				.stride_px = PSP_SCREEN_STRIDE,
+				.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
+			};
+			gu_set_rendertarget(&rendertarget);
 
-			sceGuTexMode(GU_PSM_T32, 0, 0, 0);
+			gu_set_texture(&g_test_texture);
+			gu_draw_fullscreen_quad(g_test_texture.size_px[0], g_test_texture.size_px[1]);
 
-			// Size of textures must be power of two; if they're not, they'll be converted to the next lower power of two value.
-			// So we have to pretend our texture is larger, it's the UVs that will be responsible for preventing invalid memory accesses.
-			sceGuTexImage(0, 512, 512, PSP_SCREEN_STRIDE, (char*) sceGeEdramGetAddr() + (uintptr_t) fbp0);
+			rendertarget.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp0;
+			gu_set_rendertarget(&rendertarget);
+
+			const Texture src_texture = {
+				.psm = GU_PSM_T32,
+				.nb_mipmap_levels = 1,
+				.size_px = { 512, 512 },
+				.stride_px = PSP_SCREEN_STRIDE,
+				.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
+			};
+			gu_set_texture(&src_texture);
+
 			fu = PSP_SCREEN_WIDTH;
 			fv = PSP_SCREEN_HEIGHT;
 		}
@@ -532,7 +638,6 @@ int main(int argc, char* argv[]) {
 			sceGuPixelMask(0);
 			break;
 		case LUT_MODE_3_TO_3:
-			// TODO: Requires ping-ponging if using the FB directly as source
 			sceGuEnable(GU_BLEND);
 			sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
 			for (int i = 0; i < 3; ++i) {
