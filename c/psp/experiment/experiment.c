@@ -2,6 +2,7 @@
 #include <pspdisplay.h>
 #include <pspdebug.h>
 #include <pspctrl.h>
+#include <psprtc.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -11,8 +12,8 @@
 
 #include <pspgu.h>
 
-PSP_MODULE_INFO("Postprocessing Sample", 0, 1, 1);
-PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
+PSP_MODULE_INFO("Experiment", 0, 1, 1);
+PSP_MAIN_THREAD_ATTR(PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU);
 
 static unsigned int __attribute__((aligned(16))) list[262144];
 
@@ -68,10 +69,38 @@ typedef enum LUTMode {
 unsigned int __attribute__((aligned(16))) clut256[4][256];
 unsigned int __attribute__((aligned(16))) tex256[256*256];
 
+static u64 cpu_clock_start = 0;
+static u64 cpu_clock_end = 0;
+static u64 gpu_clock_start = 0;
+static u64 gpu_clock_end = 0;
+
+static void get_current_tick(u64* dst) {
+	static bool s_lock = false;
+	while (__atomic_test_and_set(&s_lock, __ATOMIC_SEQ_CST))
+		;
+	
+	const int result = sceRtcGetCurrentTick(dst);
+	if (result != 0)
+		printf("sceRtcGetCurrentTick() failed: %08x\n", result);
+	
+	__atomic_clear(&s_lock, __ATOMIC_SEQ_CST);
+}
+
+static void gucallback(int id) {
+	if(id == 1) {
+		get_current_tick(&gpu_clock_start);
+	} else if(id == 2) {
+		get_current_tick(&gpu_clock_end);
+	}
+}
+
 int main(int argc, char* argv[])
 {
 	//
 	// Things I'd like to try:
+	// - VFPU benchmark
+	// - Number-of-Polygons benchmark
+	// - Media Engine
 	// - Transient resources (e.g depth buffer can be recycled after main 3D rendering is done)
 	// - Reflective 3D models (new)
 	//   - Draw the scene into a "cubemap" (so 6 times)
@@ -226,6 +255,7 @@ int main(int argc, char* argv[])
 	sceGuEnable(GU_SCISSOR_TEST);
 	sceGuFrontFace(GU_CW);
 	sceGuEnable(GU_TEXTURE_2D);
+	sceGuSetCallback(GU_CALLBACK_SIGNAL, gucallback);
 	sceGuClear(GU_COLOR_BUFFER_BIT|GU_DEPTH_BUFFER_BIT);
 	sceGuFinish();
 	sceGuSync(0,0);
@@ -248,6 +278,8 @@ int main(int argc, char* argv[])
 
 	for(;;)
 	{
+		get_current_tick(&cpu_clock_start);
+
 		SceCtrlData pad;
 		if(sceCtrlPeekBufferPositive(&pad, 1))
 		{
@@ -262,8 +294,6 @@ int main(int argc, char* argv[])
 			}
 			oldPad = pad;
 		}
-
-		sceGuStart(GU_DIRECT,list);
 
 		// animate palette
 
@@ -314,6 +344,9 @@ int main(int argc, char* argv[])
 		default:
 			break;
 		}
+
+		sceGuStart(GU_DIRECT,list);
+		sceGuSignal(GU_BEHAVIOR_CONTINUE, 1);
 
 		// clear screen
 
@@ -376,6 +409,8 @@ int main(int argc, char* argv[])
 
 		// wait for next frame
 
+		get_current_tick(&cpu_clock_end);
+		sceGuSignal(GU_BEHAVIOR_CONTINUE, 2);
 		sceGuFinish();
 		sceGuSync(0,0);
 
@@ -384,6 +419,10 @@ int main(int argc, char* argv[])
 		pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(lut));
 		pspDebugScreenSetXY(4,17);
 		pspDebugScreenPrintf("%s (toggle via X)", use_framebuffer_as_texture ? "Using FB as texture" : "Not using FB as texture");
+		pspDebugScreenSetXY(4,18);
+		pspDebugScreenPrintf("CPU: %.3f ms", 1000.0 * (cpu_clock_end - cpu_clock_start) / (double) sceRtcGetTickResolution());
+		pspDebugScreenSetXY(4,19);
+		pspDebugScreenPrintf("GPU: %.3f ms", 1000.0 * (gpu_clock_end - gpu_clock_start) / (double) sceRtcGetTickResolution());
 
 		sceDisplayWaitVblankStart();
 		fbp1 = fbp0;
