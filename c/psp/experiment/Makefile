@@ -1,18 +1,18 @@
-BUILD_PRX = 1
-TARGET = experiment
-OBJS = experiment.o
+BUILD_PRX := 1
+TARGET := experiment
+OBJS := experiment.o
 
-INCDIR =
-CFLAGS = -Wall -O2
-CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
-ASFLAGS = $(CFLAGS)
+INCDIR :=
+CFLAGS := -Wall -Wdouble-promotion -O3
+CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
+ASFLAGS := $(CFLAGS)
 
-LIBDIR =
-LDFLAGS =
-LIBS = -lpspgu
+LIBDIR :=
+LDFLAGS :=
+LIBS := -lpspgu
 
-EXTRA_TARGETS = EBOOT.PBP
-PSP_EBOOT_TITLE = Experiment
+EXTRA_TARGETS := EBOOT.PBP
+PSP_EBOOT_TITLE := Experiment
 
-PSPSDK=$(shell psp-config --pspsdk-path)
+PSPSDK := $(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak
