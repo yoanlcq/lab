@@ -1,0 +1,28 @@
+{
+    "configurations": [
+        {
+            "cStandard": "gnu11",
+            "compilerArgs": [
+                "-std=gnu11",
+                "-Wall",
+                "-Wextra",
+                "-Wcast-align",
+                "-Wdouble-promotion"
+            ],
+            "compilerPath": "gcc",
+            "cppStandard": "gnu++14",
+            "defines": [
+                "VSCODE_INTELLISENSE"
+            ],
+            "includePath": [
+                "${PSPDEV}/include",
+                "${PSPDEV}/psp/include",
+                "${PSPDEV}/psp/sdk/include"
+            ],
+            "intelliSenseMode": "gcc-x64",
+            "name": "Experiment (PSP)",
+            "windowsSdkVersion": "10.0.18362.0"
+        }
+    ],
+    "version": 4
+}
