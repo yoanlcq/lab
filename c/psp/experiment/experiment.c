@@ -135,6 +135,7 @@
 #include <pspctrl.h>
 #include <pspdebug.h>
 #include <pspdisplay.h>
+#include <pspfpu.h>
 #include <pspgu.h>
 #include <pspkernel.h>
 #include <psprtc.h>
@@ -148,6 +149,9 @@
 typedef float f32;
 typedef double f64;
 
+typedef f32 __attribute__((vector_size(16))) v4;
+typedef struct { v4 cols[4]; } m4;
+
 #define ALIGN_N(x) __attribute__((aligned(x)))
 #define ALIGN16 ALIGN_N(16)
 
@@ -155,17 +159,24 @@ static inline void* psp_uncached_ptr(void* p) {
 	return (void*) (((uintptr_t)p) | 0x40000000ul);
 }
 
-static inline u32 u32_popcount(u32 x) {
-	return __builtin_popcount(x);
+static inline bool size_is_power_of_two_nonzero(size_t x) {
+	return x != 0 && !(x & (x - 1));
 }
 
-static inline bool u32_is_power_of_two_nonzero(u32 x) {
-	return u32_popcount(x) == 1;
+static inline bool size_is_power_of_two_or_zero(size_t x) {
+	return x == 0 || !(x & (x - 1));
 }
 
-static inline bool u32_is_power_of_two_or_zero(u32 x) {
-	return u32_popcount(x) <= 1;
+static inline void* ptr_align(const void* p, uintptr_t a) {
+	assert(size_is_power_of_two_nonzero(a));
+	return (void*) ((((uintptr_t) p) + a - 1) & ~(a - 1));
 }
+
+static inline bool ptr_is_aligned(const void* p, uintptr_t a) {
+	assert(size_is_power_of_two_nonzero(a));
+	return (((uintptr_t) p) & (a - 1)) == 0;
+}
+
 
 //
 //
@@ -315,17 +326,17 @@ typedef struct {
 void texture_check_common(const Texture* m) {
 	assert(m->nb_mipmap_levels >= 1);
 	if (m->size_px[0] && m->size_px[1]) {
-		assert(u32_is_power_of_two_nonzero(m->stride_px));
+		assert(size_is_power_of_two_nonzero(m->stride_px));
 		assert(m->data);
 	} else {
-		assert(u32_is_power_of_two_or_zero(m->stride_px));
+		assert(size_is_power_of_two_or_zero(m->stride_px));
 	}
 }
 
 void texture_check_as_input(const Texture* m) {
 	texture_check_common(m);
-	assert(u32_is_power_of_two_or_zero(m->size_px[0]));
-	assert(u32_is_power_of_two_or_zero(m->size_px[1]));
+	assert(size_is_power_of_two_or_zero(m->size_px[0]));
+	assert(size_is_power_of_two_or_zero(m->size_px[1]));
 }
 
 void texture_check_as_rendertarget(const Texture* m) {
@@ -428,6 +439,37 @@ typedef enum LUTMode {
 
 //
 //
+// VFPU
+//
+//
+
+void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
+	assert(ptr_is_aligned(result, 64));
+	assert(ptr_is_aligned(a, 64));
+	assert(ptr_is_aligned(b, 64));
+	__asm__ volatile
+	(
+		"lv.q C000,  0 + %1\n"
+		"lv.q C010, 16 + %1\n"
+		"lv.q C020, 32 + %1\n"
+		"lv.q C030, 48 + %1\n"
+
+		"lv.q C100,  0 + %2\n"
+		"lv.q C110, 16 + %2\n"
+		"lv.q C120, 32 + %2\n"
+		"lv.q C130, 48 + %2\n"
+
+		"vmmul.q M200, M000, M100\n"
+
+		"sv.q C200,  0 + %0\n"
+		"sv.q C210, 16 + %0\n"
+		"sv.q C220, 32 + %0\n"
+		"sv.q C230, 48 + %0\n"
+	: "=m"(*result) : "m"(*a), "m"(*b) : "memory");
+}
+
+//
+//
 // Unsorted
 //
 //
@@ -452,7 +494,6 @@ Texture g_test_texture = {
 PSP_MODULE_INFO("Experiment", 0, 1, 1);
 PSP_MAIN_THREAD_ATTR(PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU);
 
-
 u64 g_frame_counter = 0;
 
 int main(int argc, char* argv[]) {
@@ -470,6 +511,10 @@ int main(int argc, char* argv[]) {
 	u8* zb = vram_cursor;
 	vram_cursor += zb_size;
 	assert((uintptr_t) vram_cursor <= 2 * 1024 * 1024);
+
+	pspFpuSetEnable(0); // Disable exceptions
+	pspFpuSetRoundmode(PSP_FPU_RN);
+	pspFpuSetFS(1); // flush denormals to zero instead of causing an exception
 
 	psp_setup_callbacks();
 
@@ -517,6 +562,16 @@ int main(int argc, char* argv[]) {
 
 	while (!g_exit_requested) {
 		psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.start);
+
+		u8 matrices_buffer[63 + 3 * sizeof(m4)];
+		m4* matrices = ptr_align(matrices_buffer, 64);
+		f32 vfpu_mmul_result = 0.f;
+		for (size_t i = 0; i < 18000; ++i) {
+			memset(&matrices[1], i, sizeof matrices[1]);
+			memset(&matrices[2], i, sizeof matrices[2]);
+			vfpu_m4_mul(&matrices[0], &matrices[1], &matrices[2]);
+			vfpu_mmul_result += matrices[0].cols[0][0];
+		}
 
 		SceCtrlData pad;
 		if (sceCtrlPeekBufferPositive(&pad, 1)) {
@@ -666,6 +721,8 @@ int main(int argc, char* argv[]) {
 		pspDebugScreenPrintf("CPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu));
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("GPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.gpu));
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("VFPU MMUL result: %.3f", (f64) vfpu_mmul_result);
 
 		sceDisplayWaitVblankStart();
 		fbp1 = fbp0;
