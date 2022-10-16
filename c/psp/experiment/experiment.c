@@ -510,16 +510,21 @@ void mesh_generate_grid(Vertex_Ni8_Pi16* vertices, u16* indices, size_t rows, si
 
 // Stolen from shadowprojection sample
 void mesh_generate_torus(Vertex_Ni8_Pi16* vertices, u16* indices, size_t slices, size_t rows, f32 radius, f32 thickness) {
+	// We're going to fit positions in a normalized integer format
 	assert(radius + thickness <= 1.f);
+
+	const f32 slices_inv = 1.f / slices;
+	const f32 rows_inv = 1.f / rows;
+
 	for (size_t j = 0; j < slices; ++j) {
 		for (size_t i = 0; i < rows; ++i) {
 			const f32 s = i + 0.5f;
 			const f32 t = j;
 
-			const f32 cs = cosf(s * (2 * GU_PI) / slices);
-			const f32 ct = cosf(t * (2 * GU_PI) / rows);
-			const f32 ss = sinf(s * (2 * GU_PI) / slices);
-			const f32 st = sinf(t * (2 * GU_PI) / rows);
+			const f32 cs = cosf(s * 2 * GU_PI * slices_inv);
+			const f32 ss = sinf(s * 2 * GU_PI * slices_inv);
+			const f32 ct = cosf(t * 2 * GU_PI * rows_inv);
+			const f32 st = sinf(t * 2 * GU_PI * rows_inv);
 
 			f32 n[3] = { cs * ct, cs * st, ss };
 			f32 p[3] = {
