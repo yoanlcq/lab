@@ -137,6 +137,7 @@
 #include <pspdisplay.h>
 #include <pspfpu.h>
 #include <pspgu.h>
+#include <pspgum.h>
 #include <pspkernel.h>
 #include <psprtc.h>
 
@@ -146,6 +147,10 @@
 //
 //
 
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
 typedef float f32;
 typedef double f64;
 
@@ -155,8 +160,13 @@ typedef struct { v4 cols[4]; } m4;
 #define ALIGN_N(x) __attribute__((aligned(x)))
 #define ALIGN16 ALIGN_N(16)
 
-static inline void* psp_uncached_ptr(void* p) {
-	return (void*) (((uintptr_t)p) | 0x40000000ul);
+static inline void* psp_uncached_ptr_non_null(const void* p) {
+	assert(p); // If you're passing NULL, you'll get an uncached NULL ptr but it won't evaluate to NULL, so that may trick conditionals and do bad stuff.
+	return (void*) (((uintptr_t) p) | 0x40000000ul);
+}
+
+static inline void* psp_uncached_ptr_or_null(const void* p) {
+	return p ? psp_uncached_ptr_non_null(p) : NULL;
 }
 
 static inline bool size_is_power_of_two_nonzero(size_t x) {
@@ -228,6 +238,36 @@ static float tick_range_get_duration(TickRange m) {
 	return (m.end - m.start) / (float) sceRtcGetTickResolution();
 }
 
+//
+//
+// VFPU
+//
+//
+
+void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
+	assert(ptr_is_aligned(result, 64));
+	assert(ptr_is_aligned(a, 64));
+	assert(ptr_is_aligned(b, 64));
+	__asm__ volatile
+	(
+		"lv.q C000,  0 + %1\n"
+		"lv.q C010, 16 + %1\n"
+		"lv.q C020, 32 + %1\n"
+		"lv.q C030, 48 + %1\n"
+
+		"lv.q C100,  0 + %2\n"
+		"lv.q C110, 16 + %2\n"
+		"lv.q C120, 32 + %2\n"
+		"lv.q C130, 48 + %2\n"
+
+		"vmmul.q M200, M000, M100\n"
+
+		"sv.q C200,  0 + %0\n"
+		"sv.q C210, 16 + %0\n"
+		"sv.q C220, 32 + %0\n"
+		"sv.q C230, 48 + %0\n"
+	: "=m"(*result) : "m"(*a), "m"(*b) : "memory");
+}
 
 //
 //
@@ -376,6 +416,161 @@ void gu_set_texture(const Texture* m) {
 		sceGuTexImage(level, m->size_px[0] >> level, m->size_px[1] >> level, m->stride_px >> level, m->data);
 }
 
+typedef struct {
+	u8 gu_topology;
+	u32 gu_vertex_format;
+	size_t sizeof_vertex;
+	void* vertices;
+	size_t nb_vertices;
+	u16* indices;
+	size_t nb_indices;
+} Mesh;
+
+void mesh_allocate_buffers(Mesh* m) {
+	m->vertices = malloc(m->nb_vertices * m->sizeof_vertex);
+	m->indices = malloc(m->nb_indices * sizeof m->indices[0]);
+	assert(m->nb_vertices * m->sizeof_vertex == 0 || m->vertices);
+	assert(m->nb_indices == 0 || m->indices);
+	assert(ptr_is_aligned(m->vertices, 16));
+	assert(ptr_is_aligned(m->indices, 16));
+}
+
+void mesh_destroy(Mesh* m) {
+	free(m->vertices);
+	free(m->indices);
+	*m = (Mesh) {0};
+}
+
+void mesh_draw_impl(const Mesh* m, bool b2d) {
+	u32 count = m->nb_vertices;
+	u32 vtype = m->gu_vertex_format | (b2d ? GU_TRANSFORM_2D : GU_TRANSFORM_3D);
+	if (m->nb_indices) {
+		vtype |= GU_INDEX_16BIT;
+		count = m->nb_indices;
+	}
+	sceGuDrawArray(m->gu_topology, vtype, count, m->indices, m->vertices);
+}
+
+void mesh_draw_3d(const Mesh* m) {
+	mesh_draw_impl(m, false);
+}
+
+void mesh_draw_2d(const Mesh* m) {
+	mesh_draw_impl(m, true);
+}
+
+// Stolen from shadowprojection sample
+void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
+	const f32 columns_minus_one_inv = 1.f / (columns - 1.f);
+	const f32 rows_minus_one_inv = 1.f / (rows - 1.f);
+
+	m->gu_topology = GU_TRIANGLES;
+	m->gu_vertex_format = Vertex_Ni8_Pi16_FORMAT;
+	Vertex_Ni8_Pi16* vertices = psp_uncached_ptr_or_null(m->vertices);
+	m->sizeof_vertex = sizeof vertices[0];
+
+	m->nb_vertices = rows * columns;
+	if (vertices) {
+		for (size_t j = 0; j < rows; ++j) {
+			for (size_t i = 0; i < columns; ++i) {
+				vertices[j * columns + i] = (Vertex_Ni8_Pi16) {
+					.normal = { 0, INT8_MAX, 0 },
+					.position = {
+						(i * rows_minus_one_inv * 2.f - 1.f) * INT16_MAX,
+						0,
+						(j * columns_minus_one_inv * 2.f - 1.f) * INT16_MAX,
+					},
+				};
+			}
+		}
+	}
+
+	m->nb_indices = (rows - 1) * (columns - 1) * 6;
+	u16* indices = psp_uncached_ptr_or_null(m->indices);
+	if (indices) {
+		for (size_t j = 0; j < rows - 1; ++j) {
+			for (size_t i = 0; i < columns - 1; ++i) {
+				u16* curr = &indices[(i + (j * (columns - 1))) * 6];
+
+				*curr++ = i + j * columns;
+				*curr++ = (i+1) + j * columns;
+				*curr++ = i + (j+1) * columns;
+
+				*curr++ = (i+1) + j * columns;
+				*curr++ = (i+1) + (j+1) * columns;
+				*curr++ = i + (j + 1) * columns;
+			}
+		}
+	}
+}
+
+// Stolen from shadowprojection sample
+void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 thickness) {
+	// We're going to fit positions in a normalized integer format
+	assert(radius + thickness <= 1.f);
+
+	const f32 slices_inv = 1.f / slices;
+	const f32 rows_inv = 1.f / rows;
+
+	m->gu_topology = GU_TRIANGLES;
+	m->gu_vertex_format = Vertex_Ni8_Pi16_FORMAT;
+	Vertex_Ni8_Pi16* vertices = psp_uncached_ptr_or_null(m->vertices);
+	m->sizeof_vertex = sizeof vertices[0];
+
+	m->nb_vertices = slices * rows;
+	if (vertices) {
+		for (size_t j = 0; j < slices; ++j) {
+			for (size_t i = 0; i < rows; ++i) {
+				const f32 s = i + 0.5f;
+				const f32 t = j;
+
+				const f32 cs = cosf(s * 2 * GU_PI * slices_inv);
+				const f32 ss = sinf(s * 2 * GU_PI * slices_inv);
+				const f32 ct = cosf(t * 2 * GU_PI * rows_inv);
+				const f32 st = sinf(t * 2 * GU_PI * rows_inv);
+
+				f32 n[3] = { cs * ct, cs * st, ss };
+				f32 p[3] = {
+					(radius + thickness * cs) * ct,
+					(radius + thickness * cs) * st,
+					thickness * ss,
+				};
+
+				for (size_t d = 0; d < 3; ++d) {
+					n[d] *= INT8_MAX;
+					p[d] *= INT16_MAX;
+				}
+
+				vertices[j * rows + i] = (Vertex_Ni8_Pi16) {
+					.normal = { n[0], n[1], n[2] },
+					.position = { p[0], p[1], p[2] },
+				};
+			}
+		}
+	}
+
+	m->nb_indices = slices * rows * 6;
+	u16* indices = psp_uncached_ptr_or_null(m->indices);
+	if (indices) {
+		for (size_t j = 0; j < slices; ++j) {
+			for (size_t i = 0; i < rows; ++i) {
+				u16* curr = &indices[(i + (j * rows)) * 6];
+				const size_t i1 = (i + 1) % rows;
+				const size_t j1 = (j + 1) % slices;
+
+				*curr++ = i + j * rows;
+				*curr++ = i1 + j * rows;
+				*curr++ = i + j1 * rows;
+
+				*curr++ = i1 + j * rows;
+				*curr++ = i1 + j1 * rows;
+				*curr++ = i + j1 * rows;
+			}
+		}
+	}
+}
+
+
 
 u32 ALIGN16 g_gu_main_list[256 * 1024] = {0}; // Zeroing should not be necessary, but samples declare it as static, which zeroes it, so...
 
@@ -440,131 +635,7 @@ typedef enum LUTMode {
 
 //
 //
-// VFPU
-//
-//
-
-void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
-	assert(ptr_is_aligned(result, 64));
-	assert(ptr_is_aligned(a, 64));
-	assert(ptr_is_aligned(b, 64));
-	__asm__ volatile
-	(
-		"lv.q C000,  0 + %1\n"
-		"lv.q C010, 16 + %1\n"
-		"lv.q C020, 32 + %1\n"
-		"lv.q C030, 48 + %1\n"
-
-		"lv.q C100,  0 + %2\n"
-		"lv.q C110, 16 + %2\n"
-		"lv.q C120, 32 + %2\n"
-		"lv.q C130, 48 + %2\n"
-
-		"vmmul.q M200, M000, M100\n"
-
-		"sv.q C200,  0 + %0\n"
-		"sv.q C210, 16 + %0\n"
-		"sv.q C220, 32 + %0\n"
-		"sv.q C230, 48 + %0\n"
-	: "=m"(*result) : "m"(*a), "m"(*b) : "memory");
-}
-
-//
-//
-// Mesh generators
-//
-//
-
-// Stolen from shadowprojection sample
-void mesh_generate_grid(Vertex_Ni8_Pi16* vertices, u16* indices, size_t rows, size_t columns) {
-	const f32 columns_minus_one_inv = 1.f / (columns - 1.f);
-	const f32 rows_minus_one_inv = 1.f / (rows - 1.f);
-
-	for (size_t j = 0; j < rows; ++j) {
-		for (size_t i = 0; i < columns; ++i) {
-			vertices[j * columns + i] = (Vertex_Ni8_Pi16) {
-				.normal = { 0, INT8_MAX, 0 },
-				.position = {
-					(i * rows_minus_one_inv * 2.f - 1.f) * INT16_MAX,
-					0,
-					(j * columns_minus_one_inv * 2.f - 1.f) * INT16_MAX,
-				},
-			};
-		}
-	}
-
-	for (size_t j = 0; j < rows - 1; ++j) {
-		for (size_t i = 0; i < columns - 1; ++i) {
-			u16* curr = &indices[(i + (j * (columns - 1))) * 6];
-
-			*curr++ = i + j * columns;
-			*curr++ = (i+1) + j * columns;
-			*curr++ = i + (j+1) * columns;
-
-			*curr++ = (i+1) + j * columns;
-			*curr++ = (i+1) + (j+1) * columns;
-			*curr++ = i + (j + 1) * columns;
-		}
-	}
-}
-
-// Stolen from shadowprojection sample
-void mesh_generate_torus(Vertex_Ni8_Pi16* vertices, u16* indices, size_t slices, size_t rows, f32 radius, f32 thickness) {
-	// We're going to fit positions in a normalized integer format
-	assert(radius + thickness <= 1.f);
-
-	const f32 slices_inv = 1.f / slices;
-	const f32 rows_inv = 1.f / rows;
-
-	for (size_t j = 0; j < slices; ++j) {
-		for (size_t i = 0; i < rows; ++i) {
-			const f32 s = i + 0.5f;
-			const f32 t = j;
-
-			const f32 cs = cosf(s * 2 * GU_PI * slices_inv);
-			const f32 ss = sinf(s * 2 * GU_PI * slices_inv);
-			const f32 ct = cosf(t * 2 * GU_PI * rows_inv);
-			const f32 st = sinf(t * 2 * GU_PI * rows_inv);
-
-			f32 n[3] = { cs * ct, cs * st, ss };
-			f32 p[3] = {
-				(radius + thickness * cs) * ct,
-				(radius + thickness * cs) * st,
-				thickness * ss,
-			};
-
-			for (size_t d = 0; d < 3; ++d) {
-				n[d] *= INT8_MAX;
-				p[d] *= INT16_MAX;
-			}
-
-			vertices[j * rows + i] = (Vertex_Ni8_Pi16) {
-				.normal = { n[0], n[1], n[2] },
-				.position = { p[0], p[1], p[2] },
-			};
-		}
-	}
-
-	for (size_t j = 0; j < slices; ++j) {
-		for (size_t i = 0; i < rows; ++i) {
-			u16* curr = &indices[(i + (j * rows)) * 6];
-			const size_t i1 = (i + 1) % rows;
-			const size_t j1 = (j + 1) % slices;
-
-			*curr++ = i + j * rows;
-			*curr++ = i1 + j * rows;
-			*curr++ = i + j1 * rows;
-
-			*curr++ = i1 + j * rows;
-			*curr++ = i1 + j1 * rows;
-			*curr++ = i + j1 * rows;
-		}
-	}
-}
-
-//
-//
-// Unsorted
+// Hardcoded resources
 //
 //
 
@@ -612,12 +683,6 @@ int main(int argc, char* argv[]) {
 
 	psp_setup_callbacks();
 
-	for (int y = 0; y < 256; ++y)
-		for (int x = 0; x < 256; ++x)
-			g_test_texture_data[y * 256 + x] = GU_ABGR(0xff, 0xff, y, x);
-
-	sceKernelDcacheWritebackRange(g_test_texture_data, sizeof g_test_texture_data);
-
 	pspDebugScreenInit();
 
 	sceGuInit();
@@ -629,12 +694,69 @@ int main(int argc, char* argv[]) {
 
 	gu_set_offset_and_viewport_and_scissor(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuDepthMask(0);
+	sceGuDepthOffset(0);
 	sceGuDepthRange(0xffff, 0x0000);
+
+	sceGuFog(0.f, 0.f, 0);
+
+	sceGuSetAllStatus(0);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_SCISSOR_TEST);
+	sceGuDisable(GU_STENCIL_TEST);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuDisable(GU_DITHER);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_CLIP_PLANES);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_LIGHTING);
+	sceGuDisable(GU_LIGHT0);
+	sceGuDisable(GU_LIGHT1);
+	sceGuDisable(GU_LIGHT2);
+	sceGuDisable(GU_LIGHT3);
+	sceGuDisable(GU_LINE_SMOOTH);
+	sceGuDisable(GU_PATCH_CULL_FACE);
+	sceGuDisable(GU_COLOR_TEST);
+	sceGuDisable(GU_COLOR_LOGIC_OP);
+	sceGuDisable(GU_FACE_NORMAL_REVERSE);
+	sceGuDisable(GU_PATCH_FACE);
+	sceGuDisable(GU_FRAGMENT_2X);
+
+	sceGuClearColor(0);
+	sceGuClearDepth(0);
+	sceGuClearStencil(0);
+	sceGuPixelMask(0);
+
+	// sceGuColor = sceGuMaterial(7, c);
+	sceGuColor(0xffffffff); // primitive color, overriden by vertex color
+	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR); // command 83
+	// 84: model emissive (RGB)
+	// 85: model ambient (RGB)
+	// 86: model diffuse (RGB)
+	// 87: model specular (RGB)
+	// 88: model ambient alpha
+	sceGuMaterial(GU_AMBIENT, 0); // 1: 85,88 (RGBA). 2: 86. 4: 87
+	// sceGuAmbientColor() // commands 85,88 (RGBA) => model ambient color
+	// sceGuAmbient(); // commands 92,93 (RGBA) => global ambient light color
+	sceGuModelColor(0, 0, 0, 0); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
+	sceGuSpecular(0.f);
+	sceGuShadeModel(GU_SMOOTH);
+
+	sceGuAmbientColor(0xffffffffu);
+
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
 	sceGuEnable(GU_SCISSOR_TEST);
 	sceGuEnable(GU_TEXTURE_2D);
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuEnable(GU_CULL_FACE);
 
-	sceGuFrontFace(GU_CW); // TODO: use CCW instead? It's the OpenGL convention
+	sceGuFrontFace(GU_CW);
 
 	sceGuSetCallback(GU_CALLBACK_SIGNAL, gu_on_signal);
 
@@ -649,6 +771,45 @@ int main(int argc, char* argv[]) {
 	sceCtrlSetSamplingCycle(0); // Sync input sampling to VSync
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
 
+	{
+		u32* pixels = psp_uncached_ptr_non_null(g_test_texture_data);
+		for (int y = 0; y < g_test_texture.size_px[1]; ++y)
+			for (int x = 0; x < g_test_texture.size_px[0]; ++x)
+				pixels[y * g_test_texture.size_px[0] + x] = GU_ABGR(0xff, 0xff, y, x);
+	}
+
+	Mesh torus_mesh = {0};
+	Mesh grid_mesh = {0};
+	for (size_t i = 0; i < 2; ++i) {
+		mesh_generate_torus(&torus_mesh, 48, 48, 0.5f, 0.4f);
+		mesh_generate_grid(&grid_mesh, 32, 32);
+		if (i == 0) {
+			mesh_allocate_buffers(&torus_mesh);
+			mesh_allocate_buffers(&grid_mesh);
+		}
+	}
+
+	ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
+	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
+	ScePspFVector3 eye_position = { 0.f, 10.f, 10.f };
+	ScePspFVector3 torus_position = { 0.f, 10.f, 0.f };
+	ScePspFVector3 torus_scale = { 4.f, 4.f, 4.f };
+	ScePspFVector3 grid_scale = { 100.f, 100.f, 100.f };
+
+	ScePspFMatrix4 grid_model_matrix;
+	ScePspFMatrix4 torus_model_matrix;
+	ScePspFMatrix4 view_matrix;
+	ScePspFMatrix4 projection_matrix;
+
+	gumLoadIdentity(&grid_model_matrix);
+	gumScale(&grid_model_matrix, &grid_scale);
+	gumLoadIdentity(&torus_model_matrix);
+	gumRotateX(&torus_model_matrix, 90.f * GU_PI / 180.f);
+	gumScale(&torus_model_matrix, &torus_scale);
+	gumTranslate(&torus_model_matrix, &torus_position);
+	gumLookAt(&view_matrix, &eye_position, &eye_target_position, &up_vector);
+	gumPerspective(&projection_matrix, 75.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
+
 	LUT lut = LUT_IDENTITY;
 	LUTMode lut_mode = LUT_MODE_1_TO_1;
 
@@ -657,14 +818,16 @@ int main(int argc, char* argv[]) {
 	while (!g_exit_requested) {
 		psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.start);
 
-		u8 matrices_buffer[63 + 3 * sizeof(m4)];
-		m4* matrices = ptr_align(matrices_buffer, 64);
 		f32 vfpu_mmul_result = 0.f;
-		for (size_t i = 0; i < 18000; ++i) {
-			memset(&matrices[1], i, sizeof matrices[1]);
-			memset(&matrices[2], i, sizeof matrices[2]);
-			vfpu_m4_mul(&matrices[0], &matrices[1], &matrices[2]);
-			vfpu_mmul_result += matrices[0].cols[0][0];
+		if (false) {
+			u8 matrices_buffer[63 + 3 * sizeof(m4)];
+			m4* matrices = ptr_align(matrices_buffer, 64);
+			for (size_t i = 0; i < 18000; ++i) {
+				memset(&matrices[1], i, sizeof matrices[1]);
+				memset(&matrices[2], i, sizeof matrices[2]);
+				vfpu_m4_mul(&matrices[0], &matrices[1], &matrices[2]);
+				vfpu_mmul_result += matrices[0].cols[0][0];
+			}
 		}
 
 		SceCtrlData pad;
@@ -680,9 +843,9 @@ int main(int argc, char* argv[]) {
 			previous_pad = pad;
 		}
 
-		u32* pcr = psp_uncached_ptr(g_clut[0]);
-		u32* pcg = psp_uncached_ptr(g_clut[1]);
-		u32* pcb = psp_uncached_ptr(g_clut[2]);
+		u32* pcr = psp_uncached_ptr_non_null(g_clut[0]);
+		u32* pcg = psp_uncached_ptr_non_null(g_clut[1]);
+		u32* pcb = psp_uncached_ptr_non_null(g_clut[2]);
 		lut_mode = LUT_MODE_1_TO_1;
 		switch (lut) {
 		case LUT_IDENTITY: 
@@ -733,6 +896,48 @@ int main(int argc, char* argv[]) {
 		sceGuClearColor(GU_ABGR(0,0,0,0));
 		sceGuClearDepth(0);
 		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+
+		{
+			ScePspFMatrix4 lightMatrix;
+
+			// orbiting light
+			{
+				ScePspFVector3 lightLookAt = eye_target_position;
+				ScePspFVector3 rot1 = { 0, 1.f * 0.79f * (GU_PI / 180.0f), 0 };
+				ScePspFVector3 rot2 = { -(GU_PI / 180.0f) * 60.0f, 0, 0 };
+				ScePspFVector3 pos = {0, 0, 6.f };
+
+				gumLoadIdentity(&lightMatrix);
+				gumTranslate(&lightMatrix,&lightLookAt);
+				gumRotateXYZ(&lightMatrix,&rot1);
+				gumRotateXYZ(&lightMatrix,&rot2);
+				gumTranslate(&lightMatrix,&pos);
+			}
+
+			ScePspFVector3 lightPos = { lightMatrix.w.x, lightMatrix.w.y, lightMatrix.w.z };
+			ScePspFVector3 lightDir = { lightMatrix.z.x, lightMatrix.z.y, lightMatrix.z.z };
+
+			sceGuLight(0, GU_SPOTLIGHT, GU_DIFFUSE, &lightPos);
+			sceGuLightSpot(0, &lightDir, 5.0, 0.6);
+			sceGuLightColor(0, GU_DIFFUSE, 0x00ff4040);
+			sceGuLightAtt(0, 1.0f, 0.0f, 0.0f);
+			sceGuAmbient(0x00202020);
+			sceGuEnable(GU_LIGHTING);
+			sceGuEnable(GU_LIGHT0);
+
+			sceGuSetMatrix(GU_VIEW, &view_matrix);
+			sceGuSetMatrix(GU_PROJECTION, &projection_matrix);
+
+			sceGuSetMatrix(GU_MODEL, &torus_model_matrix);
+			mesh_draw_3d(&torus_mesh);
+
+			sceGuSetMatrix(GU_MODEL, &grid_model_matrix);
+			mesh_draw_3d(&grid_mesh);
+
+			sceGuDisable(GU_LIGHTING);
+			sceGuDisable(GU_LIGHT0);
+		}
+
 
 		Texture test_texture_t32 = g_test_texture;
 		test_texture_t32.psm = GU_PSM_T32;
@@ -824,6 +1029,9 @@ int main(int argc, char* argv[]) {
 
 		g_frame_counter++;
 	}
+
+	mesh_destroy(&torus_mesh);
+	mesh_destroy(&grid_mesh);
 
 	sceGuTerm();
 

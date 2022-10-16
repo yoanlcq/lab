@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "pspfpu.h": "c"
+        "pspfpu.h": "c",
+        "pspgum.h": "c"
     }
 }
