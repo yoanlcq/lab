@@ -120,8 +120,8 @@
 // 3. rgba 123x yz   rgba 123x yz   rgba
 //
 // 1. Format of the normals buffer: rgb = xyz, a = cubemap face index
-// 2. Vertex_UVf32_XYZf32 format GU_NORMAL_8BIT | GU_VERTEX_8BIT
-// 3. Vertex_UVf32_XYZf32 format GU_COLOR_8888 | GU_NORMAL_8BIT | GU_VERTEX_8BIT
+// 2. Vertex_Tf32_Pf32 format GU_NORMAL_8BIT | GU_VERTEX_8BIT
+// 3. Vertex_Tf32_Pf32 format GU_COLOR_8888 | GU_NORMAL_8BIT | GU_VERTEX_8BIT
 //
 
 #include <assert.h>
@@ -294,24 +294,25 @@ void gu_insert_clock_end_marker() {
 	sceGuSignal(GU_BEHAVIOR_CONTINUE, GU_SIGNAL_ID__CLOCK_END);
 }
 
-typedef struct {
-	f32 uv[2];
-	f32 position[3];
-} Vertex_UVf32_XYZf32;
+typedef struct { f32 uv[2]; f32 position[3]; } Vertex_Tf32_Pf32;
+typedef struct { i8 normal[3]; i8 position[3]; } Vertex_Ni8_Pi8;
+typedef struct { i8 normal[3]; i16 position[3]; } Vertex_Ni8_Pi16;
 
-#define Vertex_UVf32_XYZf32_FORMAT (GU_TEXTURE_32BITF | GU_VERTEX_32BITF)
+#define Vertex_Tf32_Pf32_FORMAT (GU_TEXTURE_32BITF | GU_VERTEX_32BITF)
+#define Vertex_Ni8_Pi8_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_8BIT)
+#define Vertex_Ni8_Pi16_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_16BIT)
 
 void gu_draw_fullscreen_quad(f32 uv0, f32 uv1) {
-	Vertex_UVf32_XYZf32* v = sceGuGetMemory(2 * sizeof(Vertex_UVf32_XYZf32));
-	v[0] = (Vertex_UVf32_XYZf32) {
+	Vertex_Tf32_Pf32* v = sceGuGetMemory(2 * sizeof(Vertex_Tf32_Pf32));
+	v[0] = (Vertex_Tf32_Pf32) {
 		.uv = { 1, 1 }, // UV is 1 rather than 0; avoids slight wraparound in the top-left corner; GU_CLAMP doesn't seem to fix it
 		.position = { 0, 0, 0 },
 	};
-	v[1] = (Vertex_UVf32_XYZf32) {
+	v[1] = (Vertex_Tf32_Pf32) {
 		.uv = { uv0, uv1 },
 		.position = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, 0 },
 	};
-	sceGuDrawArray(GU_SPRITES, Vertex_UVf32_XYZf32_FORMAT | GU_TRANSFORM_2D, 2, 0, v);
+	sceGuDrawArray(GU_SPRITES, Vertex_Tf32_Pf32_FORMAT | GU_TRANSFORM_2D, 2, 0, v);
 }
 
 typedef struct {
@@ -466,6 +467,94 @@ void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
 		"sv.q C220, 32 + %0\n"
 		"sv.q C230, 48 + %0\n"
 	: "=m"(*result) : "m"(*a), "m"(*b) : "memory");
+}
+
+//
+//
+// Mesh generators
+//
+//
+
+// Stolen from shadowprojection sample
+void mesh_generate_grid(Vertex_Ni8_Pi16* vertices, u16* indices, size_t rows, size_t columns) {
+	const f32 columns_minus_one_inv = 1.f / (columns - 1.f);
+	const f32 rows_minus_one_inv = 1.f / (rows - 1.f);
+
+	for (size_t j = 0; j < rows; ++j) {
+		for (size_t i = 0; i < columns; ++i) {
+			vertices[j * columns + i] = (Vertex_Ni8_Pi16) {
+				.normal = { 0, INT8_MAX, 0 },
+				.position = {
+					(i * rows_minus_one_inv * 2.f - 1.f) * INT16_MAX,
+					0,
+					(j * columns_minus_one_inv * 2.f - 1.f) * INT16_MAX,
+				},
+			};
+		}
+	}
+
+	for (size_t j = 0; j < rows - 1; ++j) {
+		for (size_t i = 0; i < columns - 1; ++i) {
+			u16* curr = &indices[(i + (j * (columns - 1))) * 6];
+
+			*curr++ = i + j * columns;
+			*curr++ = (i+1) + j * columns;
+			*curr++ = i + (j+1) * columns;
+
+			*curr++ = (i+1) + j * columns;
+			*curr++ = (i+1) + (j+1) * columns;
+			*curr++ = i + (j + 1) * columns;
+		}
+	}
+}
+
+// Stolen from shadowprojection sample
+void mesh_generate_torus(Vertex_Ni8_Pi16* vertices, u16* indices, size_t slices, size_t rows, f32 radius, f32 thickness) {
+	assert(radius + thickness <= 1.f);
+	for (size_t j = 0; j < slices; ++j) {
+		for (size_t i = 0; i < rows; ++i) {
+			const f32 s = i + 0.5f;
+			const f32 t = j;
+
+			const f32 cs = cosf(s * (2 * GU_PI) / slices);
+			const f32 ct = cosf(t * (2 * GU_PI) / rows);
+			const f32 ss = sinf(s * (2 * GU_PI) / slices);
+			const f32 st = sinf(t * (2 * GU_PI) / rows);
+
+			f32 n[3] = { cs * ct, cs * st, ss };
+			f32 p[3] = {
+				(radius + thickness * cs) * ct,
+				(radius + thickness * cs) * st,
+				thickness * ss,
+			};
+
+			for (size_t d = 0; d < 3; ++d) {
+				n[d] *= INT8_MAX;
+				p[d] *= INT16_MAX;
+			}
+
+			vertices[j * rows + i] = (Vertex_Ni8_Pi16) {
+				.normal = { n[0], n[1], n[2] },
+				.position = { p[0], p[1], p[2] },
+			};
+		}
+	}
+
+	for (size_t j = 0; j < slices; ++j) {
+		for (size_t i = 0; i < rows; ++i) {
+			u16* curr = &indices[(i + (j * rows)) * 6];
+			const size_t i1 = (i + 1) % rows;
+			const size_t j1 = (j + 1) % slices;
+
+			*curr++ = i + j * rows;
+			*curr++ = i1 + j * rows;
+			*curr++ = i + j1 * rows;
+
+			*curr++ = i1 + j * rows;
+			*curr++ = i1 + j1 * rows;
+			*curr++ = i + j1 * rows;
+		}
+	}
 }
 
 //
