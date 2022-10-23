@@ -410,6 +410,62 @@ void texture_destroy(Texture* m) {
 	*m = (Texture) {0};
 }
 
+// From http://hitmen.c02.at/files/yapspd/psp_doc/chap27.html :
+//
+// Internally, the GE processes textures as 16 bytes by 8 rows blocks (independent of actual pixelformat, so a 32*32 32-bit texture is a 128*32 texture from the swizzlings point of view). When you are not swizzling, this means it will have to do scattered reads from the texture as it moves the block into its texture-cache, which has a big impact on performance. To improve on this, you can re-order your textures into these blocks so that it can fetch one entire block by reading sequentially.
+//
+// 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 0G 0H 0I 0J 0K 0L 0M 0N 0O 0P 0Q 0R 0S 0T 0U 0V
+// 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 1G 1H 1I 1J 1K 1L 1M 1N 1O 1P 1Q 1R 1S 1T 1U 1V
+// 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F 2G 2H 2I 2J 2K 2L 2M 2N 2O 2P 2Q 2R 2S 2T 2U 2V
+// 30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F 3G 3H 3I 3J 3K 3L 3M 3N 3O 3P 3Q 3R 3S 3T 3U 3V
+// 40 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 4G 4H 4I 4J 4K 4L 4M 4N 4O 4P 4Q 4R 4S 4T 4U 4V
+// 50 51 52 53 54 55 56 57 58 59 5A 5B 5C 5D 5E 5F 5G 5H 5I 5J 5K 5L 5M 5N 5O 5P 5Q 5R 5S 5T 5U 5V
+// 60 61 62 63 64 65 66 67 68 69 6A 6B 6C 6D 6E 6F 6G 6H 6I 6J 6K 6L 6M 6N 6O 6P 6Q 6R 6S 6T 6U 6V
+// 70 71 72 73 74 75 76 77 78 79 7A 7B 7C 7D 7E 7F 7G 7H 7I 7J 7K 7L 7M 7N 7O 7P 7Q 7R 7S 7T 7U 7V
+//
+// The block above is a 32 bytes by 8 lines texture block (so it could be a 8*8 32-bit block, or a 16*8 16-bit block). Each pixel is represented here by a vertical index (first value) of 0-7. The second index is the horizontal index, ranging from 0-U. When reorganizing this for swizzling, we will order the data so that when the GE needs to read something in the first 16×8 block, if can just fetch that entire block, instead of offsetting into the texture for each line it has to read. The resulting swizzled portion looks like this:
+//
+// 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F
+// 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F 30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F
+// 40 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 50 51 52 53 54 55 56 57 58 59 5A 5B 5C 5D 5E 5F
+// 60 61 62 63 64 65 66 67 68 69 6A 6B 6C 6D 6E 6F 70 71 72 73 74 75 76 77 78 79 7A 7B 7C 7D 7E 7F
+// 0G 0H 0I 0J 0K 0L 0M 0N 0O 0P 0Q 0R 0S 0T 0U 0V 1G 1H 1I 1J 1K 1L 1M 1N 1O 1P 1Q 1R 1S 1T 1U 1V
+// 2G 2H 2I 2J 2K 2L 2M 2N 2O 2P 2Q 2R 2S 2T 2U 2V 3G 3H 3I 3J 3K 3L 3M 3N 3O 3P 3Q 3R 3S 3T 3U 3V
+// 4G 4H 4I 4J 4K 4L 4M 4N 4O 4P 4Q 4R 4S 4T 4U 4V 5G 5H 5I 5J 5K 5L 5M 5N 5O 5P 5Q 5R 5S 5T 5U 5V
+// 6G 6H 6I 6J 6K 6L 6M 6N 6O 6P 6Q 6R 6S 6T 6U 6V 7G 7H 7I 7J 7K 7L 7M 7N 7O 7P 7Q 7R 7S 7T 7U 7V
+//
+//
+// Notice how the rectangular 16*8 blocks have ended up as sequential data, ready for direct reading by the GE.
+
+// NOTE: Courtesy of samples/gu/blit/blit.c
+void swizzle_fast(void* out, const void* in, uint32_t width_in_bytes, uint32_t height) {
+	const u32 width_blocks = (width_in_bytes / 16);
+	const u32 height_blocks = (height / 8);
+	const u32 src_pitch = (width_in_bytes - 16) / 4;
+	const u32 src_row = width_in_bytes * 8;
+
+	assert(ptr_is_aligned(in, 4));
+	assert(ptr_is_aligned(out, 4));
+	const u8* ysrc = in;
+	u32* dst = (u32*) out;
+
+	for (u32 blocky = 0; blocky < height_blocks; ++blocky) {
+		const u8* xsrc = ysrc;
+		for (u32 blockx = 0; blockx < width_blocks; ++blockx) {
+			const u32* src = (u32*) (void*) xsrc;
+			for (u32 j = 0; j < 8; ++j) {
+				*(dst++) = *(src++);
+				*(dst++) = *(src++);
+				*(dst++) = *(src++);
+				*(dst++) = *(src++);
+				src += src_pitch;
+			}
+			xsrc += 16;
+		}
+		ysrc += src_row;
+	}
+}
+
 void gu_set_offset(u32 w, u32 h) {
 	sceGuOffset(2048 - (w / 2), 2048 - (h / 2));
 }
@@ -613,6 +669,253 @@ u32 ALIGN16 g_gu_main_list[256 * 1024] = {0}; // Zeroing should not be necessary
 
 //
 //
+// Assets
+//
+//
+
+void chdir_to_assets_directory(const char* argv0) {
+	char pathbuf[256];
+
+	// ----- Compute res path
+	snprintf(pathbuf, sizeof pathbuf, "%s", argv0);
+	if (!strncmp(argv0, "host0:/", 7)) {
+		// PSPLINK
+		// expected: host0:/.../bin/psp-xxx/foo.prx
+		// final   : host0:/.../assets
+	} else if (!strncmp(argv0, "ms0:/", 5)) {
+		// Memory stick
+		// expected: ms0:/PSP/GAME/foo/EBOOT.PBP
+		// final   : ms0:/PSP/GAME/foo/assets
+	}
+
+	memcpy(strrchr(pathbuf, '/') + 1, "assets", strlen("assets") + 1);
+
+	assert(pathbuf[0] != '\0');
+	printf("Assets path: `%s`\n", pathbuf);
+
+	strcat(pathbuf, "/..");
+	printf("Setting current directory: `%s`\n", pathbuf);
+
+	// ----- Set res path as current dir
+	const int chdir_status = sceIoChdir(pathbuf);
+	assert(chdir_status >= 0);
+}
+
+typedef SceUID Fd;
+
+bool fd_is_valid(Fd fd) {
+	return fd >= 0;
+}
+
+Fd fd_open_readonly(const char* path, bool should_assert) {
+	const Fd fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
+	if (!fd_is_valid(fd)) {
+		fprintf(stderr, "Could not open `%s`\n", path);
+		assert(!should_assert && "Failed to open file");
+	}
+	return fd;
+}
+
+void fd_close(Fd fd) {
+	assert(fd_is_valid(fd));
+	sceIoClose(fd);
+}
+
+ssize_t fd_read(Fd fd, void* data, ssize_t size) {
+	assert(fd_is_valid(fd));
+	return sceIoRead(fd, data, size);
+}
+
+//
+//
+// TGA
+//
+//
+
+// For writing a BGRA (32 bits per pixel) TGA file:
+//	.image_type = 2, // Uncompressed true color
+//	.image_width = vp.w,
+//	.image_height = vp.h,
+//	.bits_per_pixel = 32,
+//	.image_descriptor = 8, // TGA 32
+// Then write the header, then write the pixel data.
+typedef struct TgaHeader {
+	// 0–255 The number of bytes that the image ID field consists of. The image ID field can contain any information, but it is common for it to contain the date and time the image was created or a serial number.
+	// As of version 2.0 of the TGA spec, the date and time the image was created is catered for in the extension area.
+	u8 id_length;
+	// 0 if image file contains no color map
+	// 1 if present
+	// 2–127 reserved by Truevision
+	// 128–255 available for developer use
+	u8 color_map_type;
+	// Is enumerated in the lower three bits, with the fourth bit as a flag for RLE. Some possible values are:
+	//
+	// 0  -  No image data included.
+	// 1  -  Uncompressed, color-mapped images.
+	// 2  -  Uncompressed, RGB images.
+	// 3  -  Uncompressed, black and white images.
+	// 9  -  Runlength encoded color-mapped images.
+	// 10  -  Runlength encoded RGB images.
+	// 11  -  Compressed, black and white images.
+	// 32  -  Compressed color-mapped data, using Huffman, Delta, and
+	//         runlength encoding.
+	// 33  -  Compressed color-mapped data, using Huffman, Delta, and
+	//         runlength encoding.  4-pass quadtree-type process.
+	//
+	// Image type 1 and 9: Depending on the Pixel Depth value, image data representation is an 8, 15, or 16 bit index into a color map that defines the color of the pixel. Image type 2 and 10: The image data is a direct representation of the pixel color. For a Pixel Depth of 15 and 16 bit, each pixel is stored with 5 bits per color. If the pixel depth is 16 bits, the topmost bit is reserved for transparency. For a pixel depth of 24 bits, each pixel is stored with 8 bits per color. A 32-bit pixel depth defines an additional 8-bit alpha channel. Image type 3 and 11: The image data is a direct representation of grayscale data. The pixel depth is 8 bits for images of this type.
+	u8 image_type; // 2 for uncompressed true color
+				   // Has three subfields:
+				   // - First entry index (2 bytes): index of first color map entry that is included in the file
+				   // - Color map length (2 bytes): number of entries of the color map that are included in the file
+				   // - Color map entry size (1 byte): number of bits per color map entry
+				   // In case that not the entire color map is actually used by the image, a non-zero first entry index allows to store only a required part of the color map in the file.
+	u8 color_map[5];
+	u16 x_origin; // absolute coordinate of lower-left corner for displays where origin is at the lower left
+	u16 y_origin; // as for X-origin
+	u16 image_width;
+	u16 image_height;
+	u8 bits_per_pixel;
+	// Bits 3-0 give the alpha channel depth, bits 5-4 give pixel ordering
+	// Bit 4 of the image descriptor byte indicates right-to-left pixel ordering if set.
+	// Bit 5 indicates an ordering of top-to-bottom.
+	// Otherwise, pixels are stored in bottom-to-top, left-to-right order.
+	//
+	// For plain RGB data (no color map):
+	// Bits 3-0 - number of attribute bits associated with each  |
+	//            pixel.  For the Targa 16, this would be 0 or   |
+	//            1.  For the Targa 24, it should be 0.  For     |
+	//            Targa 32, it should be 8.                      |
+	// Bit 4    - reserved.  Must be set to 0.                   |
+	// Bit 5    - screen origin bit.                             |
+	//            0 = Origin in lower left-hand corner.          |
+	//            1 = Origin in upper left-hand corner.          |
+	//            Must be 0 for Truevision images.               |
+	// Bits 7-6 - Data storage interleaving flag.                |
+	//            00 = non-interleaved.                          |
+	//            01 = two-way (even/odd) interleaving.          |
+	//            10 = four way interleaving.                    |
+	//            11 = reserved.
+	//
+	u8 image_descriptor;
+
+	// And after these, the following must appear in memory:
+	// Image ID (length given from id_length)
+	// Color map data (from color_map_type)
+	// Image data (pixel colors)
+	// Developer area (optional)
+	// Extension area (optional)
+	// File footer (optional)
+} TgaHeader;
+
+typedef struct TgaLoadedData {
+	TgaHeader tga_header;
+	void* pixel_data;
+} TgaLoadedData;
+
+TgaLoadedData tga_load(Fd fd) {
+	TgaLoadedData out = { 0 };
+	TgaHeader* hdr = &out.tga_header;
+
+	ssize_t nread = fd_read(fd, hdr, sizeof *hdr);
+	if (nread != sizeof *hdr)
+		return (TgaLoadedData) { 0 }; // Don't risk returning a corrupted header.
+
+	const size_t w = hdr->image_width;
+	const size_t h = hdr->image_height;
+
+	if (hdr->color_map_type
+    || (hdr->image_type != 2) // Uncompressed RGB
+	|| (hdr->bits_per_pixel != 32)
+    || (hdr->image_descriptor & 0x1f) != 8 // Targa 32, include testing that the reserved bit is zero
+	|| (hdr->image_descriptor >> 6) // We want non-interleaved
+	) {
+        assert(0 && "TGA Format isn't TGA32; make sure you saved it with an alpha channel"); // Format doesn't match
+		return out;
+    }
+
+	if (hdr->id_length) {
+		u8 image_id[255];
+		nread = fd_read(fd, image_id, hdr->id_length);
+		if (nread != hdr->id_length) {
+			assert(0); // Invalid image ID
+			return out;
+		}
+	}
+
+	const ssize_t data_size = w * h * (hdr->bits_per_pixel / 8);
+	out.pixel_data = malloc(data_size);
+
+	nread = fd_read(fd, out.pixel_data, data_size);
+
+	if (nread != data_size) {
+		assert(0); // Not enough data for pixels?
+		free(out.pixel_data);
+		return out;
+	}
+
+	const bool is_origin_in_upper_left = !!(hdr->image_descriptor & (1 << 5));
+	assert(is_origin_in_upper_left);
+
+	// Data is BGRA in memory, need to swap to RGBA
+	u8* pixel_data_u8 = out.pixel_data;
+	for (size_t i = 0; i < data_size / 4; ++i) {
+		const u8 tmp = pixel_data_u8[i * 4 + 0];
+		pixel_data_u8[i * 4 + 0] = pixel_data_u8[i * 4 + 2];
+		pixel_data_u8[i * 4 + 2] = tmp;
+	}
+
+	return out;
+}
+
+void tga_destroy(TgaLoadedData* m) {
+	free(m->pixel_data);
+	*m = (TgaLoadedData) {0};
+}
+
+typedef struct {
+	bool should_swizzle;
+} TextureLoadParams;
+
+Texture texture_load_from_tga_fd(const TextureLoadParams* p, Fd fd) {
+	TgaLoadedData tga = tga_load(fd);
+	if (!tga.pixel_data) {
+		tga_destroy(&tga);
+		return (Texture) {0};
+	}
+
+	Texture out = {
+		.psm = GU_PSM_8888,
+		.size_px = { tga.tga_header.image_width, tga.tga_header.image_height },
+		.stride_px = tga.tga_header.image_width,
+		.nb_mipmap_levels = 1,
+	};
+
+	texture_allocate_buffers(&out);
+
+	if (p->should_swizzle) {
+		swizzle_fast(out.data, tga.pixel_data, tga.tga_header.image_width * 4, tga.tga_header.image_height);
+		out.is_swizzled = true;
+	} else {
+		memcpy(out.data, tga.pixel_data, tga.tga_header.image_width * tga.tga_header.image_height * 4);
+	}
+
+	tga_destroy(&tga);
+
+	return out;
+}
+
+Texture texture_load_from_tga_path(const TextureLoadParams* p, const char* path, bool should_assert) {
+	const Fd fd = fd_open_readonly(path, should_assert);
+	if (!fd_is_valid(fd))
+		return (Texture) {0};
+
+	const Texture out = texture_load_from_tga_fd(p, fd);
+	fd_close(fd);
+	return out;
+}
+
+//
+//
 // System callbacks
 //
 //
@@ -790,6 +1093,9 @@ int main(int argc, char* argv[]) {
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
 
+	assert(argc >= 1);
+	chdir_to_assets_directory(argv[0]);
+
 	SceCtrlData previous_pad = {0};
 	sceCtrlSetSamplingCycle(0); // Sync input sampling to VSync
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
@@ -818,6 +1124,8 @@ int main(int argc, char* argv[]) {
 		sceKernelDcacheWritebackRange(pixels, m->size_px[0] * m->size_px[1] * sizeof pixels[0]);
 	}
 
+	Texture horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/horizon_gradient.tga", true);
+
 	Mesh torus_mesh = {0};
 	Mesh grid_mesh = {0};
 	for (size_t i = 0; i < 2; ++i) {
@@ -837,8 +1145,11 @@ int main(int argc, char* argv[]) {
 	ScePspFVector3 grid_scale = { 100.f, 100.f, 100.f };
 
 	ScePspFMatrix4 grid_model_matrix;
+	ScePspFMatrix4 grid_rotation_matrix;
 	ScePspFMatrix4 torus_model_matrix;
+	ScePspFMatrix4 torus_rotation_matrix;
 	ScePspFMatrix4 view_matrix;
+	ScePspFMatrix4 view_rotation_matrix;
 	ScePspFMatrix4 projection_matrix;
 
 	LUT lut = LUT_IDENTITY;
@@ -849,6 +1160,9 @@ int main(int argc, char* argv[]) {
 	f32 last_frame_duration = 1.f / 60.f;
 	f32 time_since_start = 0.f;
 	TickRange current_frame_tick_range = {0};
+
+	f32 fun = 0.f;
+	f32 fun_speed = 0.5f;
 
 	while (!g_exit_requested) {
 		psp_rtc_get_current_tick_checked(&current_frame_tick_range.start);
@@ -880,6 +1194,12 @@ int main(int argc, char* argv[]) {
 				if (pad.Buttons & PSP_CTRL_SQUARE)
 					dither ^= 1;
 			}
+
+			if (pad.Buttons & PSP_CTRL_LEFT)
+				fun -= last_frame_duration * fun_speed;
+			if (pad.Buttons & PSP_CTRL_RIGHT)
+				fun += last_frame_duration * fun_speed;
+
 			previous_pad = pad;
 		}
 
@@ -953,16 +1273,24 @@ int main(int argc, char* argv[]) {
 		gumLoadIdentity(&grid_model_matrix);
 		gumScale(&grid_model_matrix, &grid_scale);
 
+		gumLoadIdentity(&grid_rotation_matrix);
+
+		gumLoadIdentity(&torus_rotation_matrix);
+		gumRotateY(&torus_rotation_matrix, time_since_start * -1.8f);
+
 		gumLoadIdentity(&torus_model_matrix);
 		gumTranslate(&torus_model_matrix, &torus_position);
 		gumScale(&torus_model_matrix, &torus_scale);
-		gumRotateY(&torus_model_matrix, time_since_start * -1.8f);
+		gumMultMatrix(&torus_model_matrix, &torus_model_matrix, &torus_rotation_matrix);
 
 		gumLoadIdentity(&view_matrix);
 		gumLookAt(&view_matrix, &eye_position, &eye_target_position, &up_vector);
 
+		view_rotation_matrix = view_matrix;
+		view_rotation_matrix.w = (ScePspFVector4) { 0, 0, 0, 1 };
+
 		gumLoadIdentity(&projection_matrix);
-		gumPerspective(&projection_matrix, 75.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
+		gumPerspective(&projection_matrix, 60.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
 
 		// Start drawing
 		sceGuStart(GU_DIRECT, g_gu_main_list);
@@ -981,6 +1309,11 @@ int main(int argc, char* argv[]) {
 			sceGuSetMatrix(GU_VIEW, &view_matrix);
 			sceGuSetMatrix(GU_PROJECTION, &projection_matrix);
 
+			sceGuEnable(GU_TEXTURE_2D);
+			gu_set_texture(&horizon_gradient_texture);
+			gu_draw_fullscreen_quad(horizon_gradient_texture.size_px[0], horizon_gradient_texture.size_px[1]);
+			sceGuDisable(GU_TEXTURE_2D);
+
 			sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lightDir);
 			sceGuLightColor(0, GU_DIFFUSE, 0xffffffff);
 			sceGuLightColor(0, GU_SPECULAR, 0xffffffff);
@@ -989,15 +1322,55 @@ int main(int argc, char* argv[]) {
 			sceGuEnable(GU_LIGHTING);
 			sceGuEnable(GU_LIGHT0);
 
-			sceGuAmbientColor(0);
-			sceGuColor(GU_ABGR(0xff, 0xff, 0xff, 0x00));
-			sceGuSetMatrix(GU_MODEL, &grid_model_matrix);
-			mesh_draw_3d(&grid_mesh);
+			{
+				sceGuEnable(GU_TEXTURE_2D);
+				sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
+				sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
+				gu_set_texture(&horizon_gradient_texture);
 
-			sceGuAmbientColor(0);
-			sceGuColor(GU_ABGR(0xff, 0x00, 0xff, 0xff));
-			sceGuSetMatrix(GU_MODEL, &torus_model_matrix);
-			mesh_draw_3d(&torus_mesh);
+				ScePspFMatrix4 texture_matrix;
+				gumLoadIdentity(&texture_matrix);
+				gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
+				gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
+				gumMultMatrix(&texture_matrix, &texture_matrix, &view_rotation_matrix);
+				gumMultMatrix(&texture_matrix, &texture_matrix, &grid_rotation_matrix);
+
+				sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
+
+				sceGuAmbientColor(0);
+				sceGuColor(GU_ABGR(0xff, 0xff, 0xff, 0x00));
+				sceGuSetMatrix(GU_MODEL, &grid_model_matrix);
+				mesh_draw_3d(&grid_mesh);
+
+				sceGuDisable(GU_TEXTURE_2D);
+				sceGuTexProjMapMode(GU_UV);
+				sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+			}
+
+			{
+				sceGuEnable(GU_TEXTURE_2D);
+				sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
+				sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
+				gu_set_texture(&horizon_gradient_texture);
+
+				ScePspFMatrix4 texture_matrix;
+				gumLoadIdentity(&texture_matrix);
+				gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
+				gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
+				gumMultMatrix(&texture_matrix, &texture_matrix, &view_rotation_matrix);
+				gumMultMatrix(&texture_matrix, &texture_matrix, &torus_rotation_matrix);
+
+				sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
+
+				sceGuAmbientColor(0);
+				sceGuColor(GU_ABGR(0xff, 0x00, 0xff, 0xff));
+				sceGuSetMatrix(GU_MODEL, &torus_model_matrix);
+				mesh_draw_3d(&torus_mesh);
+
+				sceGuDisable(GU_TEXTURE_2D);
+				sceGuTexProjMapMode(GU_UV);
+				sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+			}
 
 			sceGuDisable(GU_LIGHTING);
 			sceGuDisable(GU_LIGHT0);
@@ -1098,6 +1471,8 @@ int main(int argc, char* argv[]) {
 		pspDebugScreenPrintf("VFPU MMUL result: %.3f", (f64) vfpu_mmul_result);
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("Dither: %s", dither ? "on" : "off");
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("Fun: %f", (f64) fun);
 
 		sceDisplayWaitVblankStart();
 		fbp1 = fbp0;
@@ -1114,6 +1489,7 @@ int main(int argc, char* argv[]) {
 	mesh_destroy(&grid_mesh);
 
 	texture_destroy(&uv_test_texture);
+	texture_destroy(&horizon_gradient_texture);
 
 	for (size_t i = 0; i < countof(clut); ++i)
 		free(clut[i]);
