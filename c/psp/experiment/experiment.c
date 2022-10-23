@@ -1,4 +1,9 @@
 //
+// Pour cette démo:
+// - Avoir une sky box ou sky sphere
+// - Avoir un modèle qui UV avec ses normales, dans la skybox
+// - Surface d'eau via spline
+//
 // Things I'd like to try:
 // - VFPU benchmark
 // - Number-of-Polygons benchmark
@@ -161,6 +166,8 @@ typedef struct { v4 cols[4]; } m4;
 #define ALIGN_N(x) __attribute__((aligned(x)))
 #define ALIGN16 ALIGN_N(16)
 
+#define countof(x) (sizeof((x)) / sizeof((x)[0]))
+
 static inline void* psp_uncached_ptr_non_null(const void* p) {
 	assert(p); // If you're passing NULL, you'll get an uncached NULL ptr but it won't evaluate to NULL, so that may trick conditionals and do bad stuff.
 	return (void*) (((uintptr_t) p) | 0x40000000ul);
@@ -290,10 +297,10 @@ size_t gu_psm_get_bits_per_pixel(int psm) {
 	case GU_PSM_T8: return 8;
 	case GU_PSM_T16: return 16;
 	case GU_PSM_T32: return 32;
-	case GU_PSM_DXT1: return 0;
-	case GU_PSM_DXT3: return 0;
-	case GU_PSM_DXT5: return 0;
-	default: return 0;
+	case GU_PSM_DXT1: assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
+	case GU_PSM_DXT3: assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
+	case GU_PSM_DXT5: assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
+	default: assert(0 && "Unknown PSM"); return 0;
 	}
 }
 
@@ -392,6 +399,15 @@ void texture_check_as_input(const Texture* m) {
 
 void texture_check_as_rendertarget(const Texture* m) {
 	texture_check_common(m);
+}
+
+void texture_allocate_buffers(Texture* m) {
+	m->data = malloc(m->stride_px * m->size_px[1] * gu_psm_get_bytes_per_pixel(m->psm));
+}
+
+void texture_destroy(Texture* m) {
+	free(m->data);
+	*m = (Texture) {0};
 }
 
 void gu_set_offset(u32 w, u32 h) {
@@ -656,23 +672,6 @@ typedef enum LUTMode {
 
 //
 //
-// Hardcoded resources
-//
-//
-
-u32 ALIGN16 g_clut[4][256];
-u32 ALIGN16 g_test_texture_data[256 * 256];
-Texture g_test_texture = {
-	.psm = GU_PSM_8888,
-	.data = g_test_texture_data,
-	.size_px = { 256, 256 },
-	.stride_px = 256,
-	.nb_mipmap_levels = 1,
-	.is_swizzled = false,
-};
-
-//
-//
 // Main
 //
 //
@@ -722,6 +721,7 @@ int main(int argc, char* argv[]) {
 
 	sceGuFog(0.f, 0.f, 0);
 
+	bool dither = false;
 	sceGuSetAllStatus(0);
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuDisable(GU_DEPTH_TEST);
@@ -762,6 +762,7 @@ int main(int argc, char* argv[]) {
 	// sceGuAmbient(); // commands 92,93 (RGBA) => global ambient light color
 	sceGuModelColor(0, 0xffffffff, 0xffffffff, 0xffffffff); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
 	sceGuSpecular(12.f);
+	// sceGuShadeModel(GU_FLAT);
 	sceGuShadeModel(GU_SMOOTH);
 
 	// sceGuColor = sceGuMaterial(7, c);, so this sets the ambient, diffuse and specular, only the RGB components. The ambient's alpha is unchanged.
@@ -793,11 +794,28 @@ int main(int argc, char* argv[]) {
 	sceCtrlSetSamplingCycle(0); // Sync input sampling to VSync
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
 
+	u32* clut[4];
+	for (size_t i = 0; i < countof(clut); ++i)
+		clut[i] = malloc(256 * sizeof clut[i][0]);
+
+	Texture uv_test_texture = {
+		.psm = GU_PSM_8888,
+		.size_px = { 256, 256 },
+		.stride_px = 256,
+		.nb_mipmap_levels = 1,
+		.is_swizzled = false,
+	};
+
+	texture_allocate_buffers(&uv_test_texture);
+
 	{
-		u32* pixels = psp_uncached_ptr_non_null(g_test_texture_data);
-		for (int y = 0; y < g_test_texture.size_px[1]; ++y)
-			for (int x = 0; x < g_test_texture.size_px[0]; ++x)
-				pixels[y * g_test_texture.size_px[0] + x] = GU_ABGR(0xff, 0xff, y, x);
+		Texture* m = &uv_test_texture;
+		u32* pixels = m->data;
+		for (int y = 0; y < m->size_px[1]; ++y)
+			for (int x = 0; x < m->size_px[0]; ++x)
+				pixels[y * m->stride_px + x] = GU_ABGR(0xff, 0xff, y, x);
+		
+		sceKernelDcacheWritebackRange(pixels, m->size_px[0] * m->size_px[1] * sizeof pixels[0]);
 	}
 
 	Mesh torus_mesh = {0};
@@ -859,13 +877,15 @@ int main(int argc, char* argv[]) {
 					lut = (lut + 1) % LUT_COUNT;
 				if (pad.Buttons & PSP_CTRL_CROSS)
 					use_framebuffer_as_texture ^= 1;
+				if (pad.Buttons & PSP_CTRL_SQUARE)
+					dither ^= 1;
 			}
 			previous_pad = pad;
 		}
 
-		u32* pcr = psp_uncached_ptr_non_null(g_clut[0]);
-		u32* pcg = psp_uncached_ptr_non_null(g_clut[1]);
-		u32* pcb = psp_uncached_ptr_non_null(g_clut[2]);
+		u32* pcr = psp_uncached_ptr_non_null(clut[0]);
+		u32* pcg = psp_uncached_ptr_non_null(clut[1]);
+		u32* pcb = psp_uncached_ptr_non_null(clut[2]);
 		lut_mode = LUT_MODE_1_TO_1;
 		switch (lut) {
 		case LUT_IDENTITY: 
@@ -948,9 +968,14 @@ int main(int argc, char* argv[]) {
 		sceGuStart(GU_DIRECT, g_gu_main_list);
 		gu_insert_clock_start_marker();
 
-		sceGuClearColor(GU_ABGR(0,0xff,0,0));
+		sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
 		sceGuClearDepth(0);
 		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+
+		if (dither)
+			sceGuEnable(GU_DITHER);
+		else
+			sceGuDisable(GU_DITHER);
 
 		{
 			sceGuSetMatrix(GU_VIEW, &view_matrix);
@@ -979,7 +1004,7 @@ int main(int argc, char* argv[]) {
 		}
 
 		if (false) {
-			Texture test_texture_t32 = g_test_texture;
+			Texture test_texture_t32 = uv_test_texture;
 			test_texture_t32.psm = GU_PSM_T32;
 			gu_set_texture(&test_texture_t32);
 
@@ -990,8 +1015,8 @@ int main(int argc, char* argv[]) {
 			sceGuAmbientColor(0xffffffffu);
 			sceGuColor(0xffffffffu);
 
-			f32 fu = g_test_texture.size_px[0];
-			f32 fv = g_test_texture.size_px[1];
+			f32 fu = uv_test_texture.size_px[0];
+			f32 fv = uv_test_texture.size_px[1];
 			if (use_framebuffer_as_texture) {
 				Texture rendertarget = {
 					.psm = fb_psm,
@@ -1002,8 +1027,8 @@ int main(int argc, char* argv[]) {
 				};
 				gu_set_rendertarget(&rendertarget);
 
-				gu_set_texture(&g_test_texture);
-				gu_draw_fullscreen_quad(g_test_texture.size_px[0], g_test_texture.size_px[1]);
+				gu_set_texture(&uv_test_texture);
+				gu_draw_fullscreen_quad(uv_test_texture.size_px[0], uv_test_texture.size_px[1]);
 
 				rendertarget.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp0;
 				gu_set_rendertarget(&rendertarget);
@@ -1023,7 +1048,7 @@ int main(int argc, char* argv[]) {
 
 			switch (lut_mode) {
 			case LUT_MODE_1_TO_1:
-				sceGuClutLoad(256 / 8, g_clut[0]); // upload 32*8 entries (256)
+				sceGuClutLoad(256 / 8, clut[0]); // upload 32*8 entries (256)
 				for (int i = 0; i < 3; ++i) {
 					sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
 					sceGuPixelMask(~(0xffu << (i*8)));
@@ -1036,7 +1061,7 @@ int main(int argc, char* argv[]) {
 				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
 				for (int i = 0; i < 3; ++i) {
 					sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-					sceGuClutLoad(256 / 8, g_clut[i]); // upload 32*8 entries (256)
+					sceGuClutLoad(256 / 8, clut[i]); // upload 32*8 entries (256)
 					gu_draw_fullscreen_quad(fu, fv);
 				}
 				sceGuDisable(GU_BLEND);
@@ -1058,6 +1083,8 @@ int main(int argc, char* argv[]) {
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("%s (toggle via X)", use_framebuffer_as_texture ? "Using FB as texture" : "Not using FB as texture");
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) last_frame_duration);
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("CPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu));
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("GPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.gpu));
@@ -1069,6 +1096,8 @@ int main(int argc, char* argv[]) {
 		pspDebugScreenPrintf("GPU: %" PRIu64 " faces", (u64) g_frame_stats.meshes.nb_faces);
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("VFPU MMUL result: %.3f", (f64) vfpu_mmul_result);
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("Dither: %s", dither ? "on" : "off");
 
 		sceDisplayWaitVblankStart();
 		fbp1 = fbp0;
@@ -1083,6 +1112,11 @@ int main(int argc, char* argv[]) {
 
 	mesh_destroy(&torus_mesh);
 	mesh_destroy(&grid_mesh);
+
+	texture_destroy(&uv_test_texture);
+
+	for (size_t i = 0; i < countof(clut); ++i)
+		free(clut[i]);
 
 	sceGuTerm();
 
