@@ -1125,6 +1125,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	Texture horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/horizon_gradient.tga", true);
+	Texture mountain_bg_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/mountain_bg.tga", true);
 
 	Mesh torus_mesh = {0};
 	Mesh grid_mesh = {0};
@@ -1137,11 +1138,27 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
+#define WAVE_W 7
+#define WAVE_H 5
+	Vertex_Nf32_Pf32 wave_vertices[WAVE_W * WAVE_H];
+	for (size_t y = 0; y < WAVE_H; ++y) {
+		for (size_t x = 0; x < WAVE_W; ++x) {
+			ScePspFVector3 p = { x / (WAVE_W - 1.f) - 0.5f, y / (WAVE_H - 1.f) - 0.5f, 1 };
+			gumNormalize(&p);
+			wave_vertices[y * WAVE_W + x] = (Vertex_Nf32_Pf32) {
+				.position = { p.x, p.y, p.z },
+				.normal = { p.x, p.y, p.z },
+			};
+		}
+	}
+	sceKernelDcacheWritebackRange(wave_vertices, sizeof wave_vertices);
+
 	ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
 	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
-	ScePspFVector3 eye_position = { 0.f, 10.f, 10.f };
+	ScePspFVector3 eye_position = { 0.f, 10.f, 15.f };
 	ScePspFVector3 torus_position = { 0.f, 10.f, -10.f };
 	ScePspFVector3 torus_scale = { 10.f, 10.f, 10.f };
+	ScePspFVector3 wave_position = { 0.f, 10.f, 0.f };
 	ScePspFVector3 grid_scale = { 100.f, 100.f, 100.f };
 
 	ScePspFMatrix4 grid_model_matrix;
@@ -1276,7 +1293,7 @@ int main(int argc, char* argv[]) {
 		gumLoadIdentity(&grid_rotation_matrix);
 
 		gumLoadIdentity(&torus_rotation_matrix);
-		gumRotateY(&torus_rotation_matrix, time_since_start * -1.8f);
+		gumRotateY(&torus_rotation_matrix, fun);
 
 		gumLoadIdentity(&torus_model_matrix);
 		gumTranslate(&torus_model_matrix, &torus_position);
@@ -1351,7 +1368,7 @@ int main(int argc, char* argv[]) {
 				sceGuEnable(GU_TEXTURE_2D);
 				sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
 				sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
-				gu_set_texture(&horizon_gradient_texture);
+				gu_set_texture(&mountain_bg_texture);
 
 				ScePspFMatrix4 texture_matrix;
 				gumLoadIdentity(&texture_matrix);
@@ -1371,6 +1388,17 @@ int main(int argc, char* argv[]) {
 				sceGuTexProjMapMode(GU_UV);
 				sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 			}
+
+			sceGuPatchDivide(4, 4);
+			sceGuDisable(GU_CULL_FACE);
+			sceGuDisable(GU_PATCH_CULL_FACE);
+			//sceGuPatchPrim(GU_LINE_STRIP);
+			sceGuDrawSpline(Vertex_Nf32_Pf32_FORMAT, WAVE_W, WAVE_H, GU_FILL_FILL, GU_FILL_FILL, NULL, wave_vertices);
+			//sceGuDrawBezier(Vertex_Nf32_Pf32_FORMAT, WAVE_W, WAVE_H, NULL, wave_vertices);
+			sceGuColor(GU_ABGR(0xff, 0x00, 0x00, 0xff));
+			sceGuDrawArray(GU_POINTS, Vertex_Nf32_Pf32_FORMAT, WAVE_W * WAVE_H, NULL, wave_vertices);
+			sceGuEnable(GU_CULL_FACE);
+			sceGuEnable(GU_PATCH_CULL_FACE);
 
 			sceGuDisable(GU_LIGHTING);
 			sceGuDisable(GU_LIGHT0);
@@ -1490,6 +1518,7 @@ int main(int argc, char* argv[]) {
 
 	texture_destroy(&uv_test_texture);
 	texture_destroy(&horizon_gradient_texture);
+	texture_destroy(&mountain_bg_texture);
 
 	for (size_t i = 0; i < countof(clut); ++i)
 		free(clut[i]);
