@@ -131,6 +131,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <inttypes.h>
 
 #include <pspctrl.h>
 #include <pspdebug.h>
@@ -301,7 +302,14 @@ size_t gu_psm_get_bytes_per_pixel(int psm) {
 }
 
 typedef struct {
+	u64 nb_elements;
+	u64 nb_vertices;
+	u64 nb_faces;
+} FrameMeshesStats;
+
+typedef struct {
 	TickRange cpu, gpu;
+	FrameMeshesStats meshes;
 } FrameStats;
 
 FrameStats g_frame_stats = {0};
@@ -337,10 +345,12 @@ void gu_insert_clock_end_marker() {
 typedef struct { f32 uv[2]; f32 position[3]; } Vertex_Tf32_Pf32;
 typedef struct { i8 normal[3]; i8 position[3]; } Vertex_Ni8_Pi8;
 typedef struct { i8 normal[3]; i16 position[3]; } Vertex_Ni8_Pi16;
+typedef struct { f32 normal[3]; f32 position[3]; } Vertex_Nf32_Pf32;
 
 #define Vertex_Tf32_Pf32_FORMAT (GU_TEXTURE_32BITF | GU_VERTEX_32BITF)
 #define Vertex_Ni8_Pi8_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_8BIT)
 #define Vertex_Ni8_Pi16_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_16BIT)
+#define Vertex_Nf32_Pf32_FORMAT (GU_NORMAL_32BITF | GU_VERTEX_32BITF)
 
 void gu_draw_fullscreen_quad(f32 uv0, f32 uv1) {
 	Vertex_Tf32_Pf32* v = sceGuGetMemory(2 * sizeof(Vertex_Tf32_Pf32));
@@ -449,6 +459,15 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 		count = m->nb_indices;
 	}
 	sceGuDrawArray(m->gu_topology, vtype, count, m->indices, m->vertices);
+
+	// Stats
+	g_frame_stats.meshes.nb_elements += count;
+	g_frame_stats.meshes.nb_vertices += m->nb_vertices;
+	if (m->gu_topology == GU_TRIANGLES) {
+		g_frame_stats.meshes.nb_faces += count / 3;
+	} else {
+		assert(0 && "Calculating face number from this topology is not implemented yet");
+	}
 }
 
 void mesh_draw_3d(const Mesh* m) {
@@ -466,7 +485,7 @@ void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
 
 	m->gu_topology = GU_TRIANGLES;
 	m->gu_vertex_format = Vertex_Ni8_Pi16_FORMAT;
-	Vertex_Ni8_Pi16* vertices = psp_uncached_ptr_or_null(m->vertices);
+	Vertex_Ni8_Pi16* vertices = m->vertices;
 	m->sizeof_vertex = sizeof vertices[0];
 
 	m->nb_vertices = rows * columns;
@@ -483,14 +502,14 @@ void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
 				};
 			}
 		}
+		sceKernelDcacheWritebackRange(vertices, m->nb_vertices * sizeof vertices[0]);
 	}
 
 	m->nb_indices = (rows - 1) * (columns - 1) * 6;
-	u16* indices = psp_uncached_ptr_or_null(m->indices);
-	if (indices) {
+	if (m->indices) {
 		for (size_t j = 0; j < rows - 1; ++j) {
 			for (size_t i = 0; i < columns - 1; ++i) {
-				u16* curr = &indices[(i + (j * (columns - 1))) * 6];
+				u16* curr = &m->indices[(i + (j * (columns - 1))) * 6];
 
 				*curr++ = i + j * columns;
 				*curr++ = (i+1) + j * columns;
@@ -501,6 +520,7 @@ void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
 				*curr++ = i + (j + 1) * columns;
 			}
 		}
+		sceKernelDcacheWritebackRange(m->indices, m->nb_indices * sizeof m->indices[0]);
 	}
 }
 
@@ -514,7 +534,7 @@ void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 th
 
 	m->gu_topology = GU_TRIANGLES;
 	m->gu_vertex_format = Vertex_Ni8_Pi16_FORMAT;
-	Vertex_Ni8_Pi16* vertices = psp_uncached_ptr_or_null(m->vertices);
+	Vertex_Ni8_Pi16* vertices = /*psp_uncached_ptr_or_null*/(m->vertices);
 	m->sizeof_vertex = sizeof vertices[0];
 
 	m->nb_vertices = slices * rows;
@@ -547,14 +567,14 @@ void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 th
 				};
 			}
 		}
+		sceKernelDcacheWritebackRange(vertices, m->nb_vertices * sizeof vertices[0]);
 	}
 
 	m->nb_indices = slices * rows * 6;
-	u16* indices = psp_uncached_ptr_or_null(m->indices);
-	if (indices) {
+	if (m->indices) {
 		for (size_t j = 0; j < slices; ++j) {
 			for (size_t i = 0; i < rows; ++i) {
-				u16* curr = &indices[(i + (j * rows)) * 6];
+				u16* curr = &m->indices[(i + (j * rows)) * 6];
 				const size_t i1 = (i + 1) % rows;
 				const size_t j1 = (j + 1) % slices;
 
@@ -567,6 +587,7 @@ void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 th
 				*curr++ = i + j1 * rows;
 			}
 		}
+		sceKernelDcacheWritebackRange(m->indices, m->nb_indices * sizeof m->indices[0]);
 	}
 }
 
@@ -730,20 +751,21 @@ int main(int argc, char* argv[]) {
 	sceGuClearStencil(0);
 	sceGuPixelMask(0);
 
-	// sceGuColor = sceGuMaterial(7, c);
-	sceGuColor(0xffffffff); // primitive color, overriden by vertex color
 	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR); // command 83
 	// 84: model emissive (RGB)
 	// 85: model ambient (RGB)
 	// 86: model diffuse (RGB)
 	// 87: model specular (RGB)
 	// 88: model ambient alpha
-	sceGuMaterial(GU_AMBIENT, 0); // 1: 85,88 (RGBA). 2: 86. 4: 87
+	sceGuMaterial(GU_AMBIENT, 0xffffffff); // 1: 85,88 (RGBA). 2: 86. 4: 87
 	// sceGuAmbientColor() // commands 85,88 (RGBA) => model ambient color
 	// sceGuAmbient(); // commands 92,93 (RGBA) => global ambient light color
-	sceGuModelColor(0, 0, 0, 0); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
-	sceGuSpecular(0.f);
+	sceGuModelColor(0, 0xffffffff, 0xffffffff, 0xffffffff); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
+	sceGuSpecular(12.f);
 	sceGuShadeModel(GU_SMOOTH);
+
+	// sceGuColor = sceGuMaterial(7, c);, so this sets the ambient, diffuse and specular, only the RGB components. The ambient's alpha is unchanged.
+	sceGuColor(0xffffffff); // primitive color, overriden by vertex color
 
 	sceGuAmbientColor(0xffffffffu);
 
@@ -752,7 +774,7 @@ int main(int argc, char* argv[]) {
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
 	sceGuEnable(GU_SCISSOR_TEST);
-	sceGuEnable(GU_TEXTURE_2D);
+	// sceGuEnable(GU_TEXTURE_2D);
 	sceGuEnable(GU_DEPTH_TEST);
 	sceGuEnable(GU_CULL_FACE);
 
@@ -781,8 +803,8 @@ int main(int argc, char* argv[]) {
 	Mesh torus_mesh = {0};
 	Mesh grid_mesh = {0};
 	for (size_t i = 0; i < 2; ++i) {
-		mesh_generate_torus(&torus_mesh, 48, 48, 0.5f, 0.4f);
-		mesh_generate_grid(&grid_mesh, 32, 32);
+		mesh_generate_torus(&torus_mesh, 48, 48, 0.5f, 0.3f);
+		mesh_generate_grid(&grid_mesh, 16, 16);
 		if (i == 0) {
 			mesh_allocate_buffers(&torus_mesh);
 			mesh_allocate_buffers(&grid_mesh);
@@ -792,8 +814,8 @@ int main(int argc, char* argv[]) {
 	ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
 	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
 	ScePspFVector3 eye_position = { 0.f, 10.f, 10.f };
-	ScePspFVector3 torus_position = { 0.f, 10.f, 0.f };
-	ScePspFVector3 torus_scale = { 4.f, 4.f, 4.f };
+	ScePspFVector3 torus_position = { 0.f, 10.f, -10.f };
+	ScePspFVector3 torus_scale = { 10.f, 10.f, 10.f };
 	ScePspFVector3 grid_scale = { 100.f, 100.f, 100.f };
 
 	ScePspFMatrix4 grid_model_matrix;
@@ -801,22 +823,20 @@ int main(int argc, char* argv[]) {
 	ScePspFMatrix4 view_matrix;
 	ScePspFMatrix4 projection_matrix;
 
-	gumLoadIdentity(&grid_model_matrix);
-	gumScale(&grid_model_matrix, &grid_scale);
-	gumLoadIdentity(&torus_model_matrix);
-	gumRotateX(&torus_model_matrix, 90.f * GU_PI / 180.f);
-	gumScale(&torus_model_matrix, &torus_scale);
-	gumTranslate(&torus_model_matrix, &torus_position);
-	gumLookAt(&view_matrix, &eye_position, &eye_target_position, &up_vector);
-	gumPerspective(&projection_matrix, 75.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
-
 	LUT lut = LUT_IDENTITY;
 	LUTMode lut_mode = LUT_MODE_1_TO_1;
 
 	bool use_framebuffer_as_texture = false;
 
+	f32 last_frame_duration = 1.f / 60.f;
+	f32 time_since_start = 0.f;
+	TickRange current_frame_tick_range = {0};
+
 	while (!g_exit_requested) {
-		psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.start);
+		psp_rtc_get_current_tick_checked(&current_frame_tick_range.start);
+
+		g_frame_stats = (FrameStats) {0};
+		g_frame_stats.cpu.start = current_frame_tick_range.start;
 
 		f32 vfpu_mmul_result = 0.f;
 		if (false) {
@@ -890,119 +910,140 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 
+		ScePspFMatrix4 lightMatrix;
+
+		// orbiting light
+		{
+			ScePspFVector3 lightLookAt = eye_target_position;
+			ScePspFVector3 rot1 = { 0, 1.f * 0.79f * (GU_PI / 180.0f), 0 };
+			ScePspFVector3 rot2 = { -(GU_PI / 180.0f) * 60.0f, 0, 0 };
+			ScePspFVector3 pos = {0, 0, 6.f };
+
+			gumLoadIdentity(&lightMatrix);
+			gumTranslate(&lightMatrix,&lightLookAt);
+			gumRotateXYZ(&lightMatrix,&rot1);
+			gumRotateXYZ(&lightMatrix,&rot2);
+			gumTranslate(&lightMatrix,&pos);
+		}
+
+		ScePspFVector3 lightPos = { lightMatrix.w.x, lightMatrix.w.y, lightMatrix.w.z };
+		ScePspFVector3 lightDir = { lightMatrix.z.x, lightMatrix.z.y, lightMatrix.z.z };
+
+		// Object matrices
+		gumLoadIdentity(&grid_model_matrix);
+		gumScale(&grid_model_matrix, &grid_scale);
+
+		gumLoadIdentity(&torus_model_matrix);
+		gumTranslate(&torus_model_matrix, &torus_position);
+		gumScale(&torus_model_matrix, &torus_scale);
+		gumRotateY(&torus_model_matrix, time_since_start * -1.8f);
+
+		gumLoadIdentity(&view_matrix);
+		gumLookAt(&view_matrix, &eye_position, &eye_target_position, &up_vector);
+
+		gumLoadIdentity(&projection_matrix);
+		gumPerspective(&projection_matrix, 75.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
+
+		// Start drawing
 		sceGuStart(GU_DIRECT, g_gu_main_list);
 		gu_insert_clock_start_marker();
 
-		sceGuClearColor(GU_ABGR(0,0,0,0));
+		sceGuClearColor(GU_ABGR(0,0xff,0,0));
 		sceGuClearDepth(0);
 		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 
 		{
-			ScePspFMatrix4 lightMatrix;
+			sceGuSetMatrix(GU_VIEW, &view_matrix);
+			sceGuSetMatrix(GU_PROJECTION, &projection_matrix);
 
-			// orbiting light
-			{
-				ScePspFVector3 lightLookAt = eye_target_position;
-				ScePspFVector3 rot1 = { 0, 1.f * 0.79f * (GU_PI / 180.0f), 0 };
-				ScePspFVector3 rot2 = { -(GU_PI / 180.0f) * 60.0f, 0, 0 };
-				ScePspFVector3 pos = {0, 0, 6.f };
-
-				gumLoadIdentity(&lightMatrix);
-				gumTranslate(&lightMatrix,&lightLookAt);
-				gumRotateXYZ(&lightMatrix,&rot1);
-				gumRotateXYZ(&lightMatrix,&rot2);
-				gumTranslate(&lightMatrix,&pos);
-			}
-
-			ScePspFVector3 lightPos = { lightMatrix.w.x, lightMatrix.w.y, lightMatrix.w.z };
-			ScePspFVector3 lightDir = { lightMatrix.z.x, lightMatrix.z.y, lightMatrix.z.z };
-
-			sceGuLight(0, GU_SPOTLIGHT, GU_DIFFUSE, &lightPos);
-			sceGuLightSpot(0, &lightDir, 5.0, 0.6);
-			sceGuLightColor(0, GU_DIFFUSE, 0x00ff4040);
+			sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lightDir);
+			sceGuLightColor(0, GU_DIFFUSE, 0xffffffff);
+			sceGuLightColor(0, GU_SPECULAR, 0xffffffff);
 			sceGuLightAtt(0, 1.0f, 0.0f, 0.0f);
 			sceGuAmbient(0x00202020);
 			sceGuEnable(GU_LIGHTING);
 			sceGuEnable(GU_LIGHT0);
 
-			sceGuSetMatrix(GU_VIEW, &view_matrix);
-			sceGuSetMatrix(GU_PROJECTION, &projection_matrix);
-
-			sceGuSetMatrix(GU_MODEL, &torus_model_matrix);
-			mesh_draw_3d(&torus_mesh);
-
+			sceGuAmbientColor(0);
+			sceGuColor(GU_ABGR(0xff, 0xff, 0xff, 0x00));
 			sceGuSetMatrix(GU_MODEL, &grid_model_matrix);
 			mesh_draw_3d(&grid_mesh);
+
+			sceGuAmbientColor(0);
+			sceGuColor(GU_ABGR(0xff, 0x00, 0xff, 0xff));
+			sceGuSetMatrix(GU_MODEL, &torus_model_matrix);
+			mesh_draw_3d(&torus_mesh);
 
 			sceGuDisable(GU_LIGHTING);
 			sceGuDisable(GU_LIGHT0);
 		}
 
+		if (false) {
+			Texture test_texture_t32 = g_test_texture;
+			test_texture_t32.psm = GU_PSM_T32;
+			gu_set_texture(&test_texture_t32);
 
-		Texture test_texture_t32 = g_test_texture;
-		test_texture_t32.psm = GU_PSM_T32;
-		gu_set_texture(&test_texture_t32);
+			sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+			sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+			sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
-		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
-		sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+			sceGuAmbientColor(0xffffffffu);
+			sceGuColor(0xffffffffu);
 
-		sceGuAmbientColor(0xffffffffu);
-		sceGuColor(0xffffffffu);
+			f32 fu = g_test_texture.size_px[0];
+			f32 fv = g_test_texture.size_px[1];
+			if (use_framebuffer_as_texture) {
+				Texture rendertarget = {
+					.psm = fb_psm,
+					.nb_mipmap_levels = 1,
+					.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
+					.stride_px = PSP_SCREEN_STRIDE,
+					.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
+				};
+				gu_set_rendertarget(&rendertarget);
 
-		f32 fu = g_test_texture.size_px[0];
-		f32 fv = g_test_texture.size_px[1];
-		if (use_framebuffer_as_texture) {
-			Texture rendertarget = {
-				.psm = fb_psm,
-				.nb_mipmap_levels = 1,
-				.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
-				.stride_px = PSP_SCREEN_STRIDE,
-				.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
-			};
-			gu_set_rendertarget(&rendertarget);
+				gu_set_texture(&g_test_texture);
+				gu_draw_fullscreen_quad(g_test_texture.size_px[0], g_test_texture.size_px[1]);
 
-			gu_set_texture(&g_test_texture);
-			gu_draw_fullscreen_quad(g_test_texture.size_px[0], g_test_texture.size_px[1]);
+				rendertarget.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp0;
+				gu_set_rendertarget(&rendertarget);
 
-			rendertarget.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp0;
-			gu_set_rendertarget(&rendertarget);
+				const Texture src_texture = {
+					.psm = GU_PSM_T32,
+					.nb_mipmap_levels = 1,
+					.size_px = { 512, 512 },
+					.stride_px = PSP_SCREEN_STRIDE,
+					.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
+				};
+				gu_set_texture(&src_texture);
 
-			const Texture src_texture = {
-				.psm = GU_PSM_T32,
-				.nb_mipmap_levels = 1,
-				.size_px = { 512, 512 },
-				.stride_px = PSP_SCREEN_STRIDE,
-				.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
-			};
-			gu_set_texture(&src_texture);
-
-			fu = PSP_SCREEN_WIDTH;
-			fv = PSP_SCREEN_HEIGHT;
-		}
-
-		switch (lut_mode) {
-		case LUT_MODE_1_TO_1:
-			sceGuClutLoad(256 / 8, g_clut[0]); // upload 32*8 entries (256)
-			for (int i = 0; i < 3; ++i) {
-				sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-				sceGuPixelMask(~(0xffu << (i*8)));
-				gu_draw_fullscreen_quad(fu, fv);
+				fu = PSP_SCREEN_WIDTH;
+				fv = PSP_SCREEN_HEIGHT;
 			}
-			sceGuPixelMask(0);
-			break;
-		case LUT_MODE_3_TO_3:
-			sceGuEnable(GU_BLEND);
-			sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
-			for (int i = 0; i < 3; ++i) {
-				sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-				sceGuClutLoad(256 / 8, g_clut[i]); // upload 32*8 entries (256)
-				gu_draw_fullscreen_quad(fu, fv);
+
+			switch (lut_mode) {
+			case LUT_MODE_1_TO_1:
+				sceGuClutLoad(256 / 8, g_clut[0]); // upload 32*8 entries (256)
+				for (int i = 0; i < 3; ++i) {
+					sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+					sceGuPixelMask(~(0xffu << (i*8)));
+					gu_draw_fullscreen_quad(fu, fv);
+				}
+				sceGuPixelMask(0);
+				break;
+			case LUT_MODE_3_TO_3:
+				sceGuEnable(GU_BLEND);
+				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
+				for (int i = 0; i < 3; ++i) {
+					sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+					sceGuClutLoad(256 / 8, g_clut[i]); // upload 32*8 entries (256)
+					gu_draw_fullscreen_quad(fu, fv);
+				}
+				sceGuDisable(GU_BLEND);
+				break;
+			default:
+				break;
 			}
-			sceGuDisable(GU_BLEND);
-			break;
-		default:
-			break;
 		}
 
 		psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.end);
@@ -1010,7 +1051,7 @@ int main(int argc, char* argv[]) {
 		sceGuFinish();
 		sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
 
-		int debug_screen_pos[2] = { 4, 16 };
+		int debug_screen_pos[2] = { 1, 1 };
 		pspDebugScreenSetOffset((intptr_t)fbp0);
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(lut));
@@ -1021,6 +1062,12 @@ int main(int argc, char* argv[]) {
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("GPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.gpu));
 		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("GPU: %" PRIu64 " elements", (u64) g_frame_stats.meshes.nb_elements);
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("GPU: %" PRIu64 " vertices", (u64) g_frame_stats.meshes.nb_vertices);
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("GPU: %" PRIu64 " faces", (u64) g_frame_stats.meshes.nb_faces);
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 		pspDebugScreenPrintf("VFPU MMUL result: %.3f", (f64) vfpu_mmul_result);
 
 		sceDisplayWaitVblankStart();
@@ -1028,6 +1075,10 @@ int main(int argc, char* argv[]) {
 		fbp0 = sceGuSwapBuffers();
 
 		g_frame_counter++;
+
+		psp_rtc_get_current_tick_checked(&current_frame_tick_range.end);
+		last_frame_duration = tick_range_get_duration(current_frame_tick_range);
+		time_since_start += last_frame_duration;
 	}
 
 	mesh_destroy(&torus_mesh);

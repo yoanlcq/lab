@@ -9,7 +9,7 @@ ASFLAGS := $(CFLAGS)
 
 LIBDIR :=
 LDFLAGS :=
-LIBS := -lpspgu -lpspfpu -lpspgum_vfpu
+LIBS := -lpspgu -lpspfpu -lpspgum_vfpu -lpspvfpu
 
 EXTRA_TARGETS := EBOOT.PBP
 PSP_EBOOT_TITLE := Experiment
