@@ -44,6 +44,9 @@
 //   May be set via sceGuMaterial() or sceGuModelColor().
 // - Specular power (sceGuSpecular())
 // - Shade model: smooth or flat (sceGuShadeModel())
+// - Q: So what does sceGuColor() do?
+//   A: It's equivalent to sceGuMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR, rgb), which is also equivalent to passing the same color to all arguments of sceGuModelColor(), except the emissive.
+//      The ambient's alpha component is not set by this function.
 //
 // The global lighting model:
 // - Either GU_SINGLE_COLOR or GU_SEPARATE_SPECULAR_COLOR
@@ -321,6 +324,20 @@ void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
 #define PSP_SCREEN_WIDTH  480
 #define PSP_SCREEN_HEIGHT 272
 
+// Make an absolute pointer relative to VRAM
+void* psp_ptr_to_vram(const void* p) {
+	assert((uintptr_t) p >= (uintptr_t) sceGeEdramGetAddr());
+	assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetAddr() + (uintptr_t) sceGeEdramGetSize());
+	return (void*) ((const u8*) p - (intptr_t) sceGeEdramGetAddr());
+}
+
+// Makes an absolute pointer from a pointer relative to VRAM
+void* psp_ptr_from_vram(const void* p) {
+	assert((intptr_t) p >= 0);
+	assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetSize());
+	return (void*) ((const u8*) p + (intptr_t) sceGeEdramGetAddr());
+}
+
 size_t gu_psm_get_bits_per_pixel(int psm) {
 	switch (psm) {
 	case GU_PSM_5650: return 16;
@@ -393,7 +410,7 @@ typedef struct { f32 normal[3]; f32 position[3]; } Vertex_Nf32_Pf32;
 #define Vertex_Ni8_Pi16_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_16BIT)
 #define Vertex_Nf32_Pf32_FORMAT (GU_NORMAL_32BITF | GU_VERTEX_32BITF)
 
-void gu_draw_fullscreen_quad(f32 uv0, f32 uv1) {
+void gu_draw_fullscreen_textured_quad(f32 uv0, f32 uv1) {
 	Vertex_Tf32_Pf32* v = sceGuGetMemory(2 * sizeof(Vertex_Tf32_Pf32));
 	v[0] = (Vertex_Tf32_Pf32) {
 		.uv = { 1, 1 }, // UV is 1 rather than 0; avoids slight wraparound in the top-left corner; GU_CLAMP doesn't seem to fix it
@@ -520,7 +537,7 @@ void gu_set_offset_and_viewport_and_scissor(u32 w, u32 h) {
 
 void gu_set_rendertarget(const Texture* m) {
 	texture_check_as_rendertarget(m);
-	sceGuDrawBufferList(m->psm, m->data, m->stride_px);
+	sceGuDrawBufferList(m->psm, psp_ptr_to_vram(m->data), m->stride_px);
 	gu_set_offset_and_viewport_and_scissor(m->size_px[0], m->size_px[1]);
 }
 
@@ -1115,9 +1132,9 @@ u32 ALIGN16 g_gu_main_list[256 * 1024] = {0}; // Zeroing should not be necessary
 typedef struct {
 	u8 framebuffer_psm;
 	u8* vram_cursor;
-	u8* framebuffers[2];
-	u8* z_buffer;
-	u8* pingpong0_fb;
+	Texture framebuffers[2];
+	Texture z_buffer;
+	Texture pingpong0_fb;
 } AppGfx;
 
 typedef struct {
@@ -1135,6 +1152,7 @@ typedef struct {
 
 typedef struct {
 	ScePspFMatrix4 view_matrix;
+	ScePspFMatrix4 view_matrix_r; // Only rotation
 	ScePspFMatrix4 proj_matrix;
 	PostProcessingParams post_processing;
 } Camera;
@@ -1146,6 +1164,7 @@ typedef struct {
 typedef struct {
 	const Mesh* mesh;
 	ScePspFMatrix4 model_matrix;
+	ScePspFMatrix4 model_matrix_tr; // Only translation and rotation, no scale
 } MeshInstance;
 
 typedef struct {
@@ -1184,33 +1203,33 @@ void* app_gfx_vram_linear_alloc(AppGfx* m, size_t size, size_t alignment) {
 }
 
 void app_gfx_allocate_vram_resources(AppGfx* m) {
-	m->framebuffer_psm = GU_PSM_8888;
-	const size_t fb_size = PSP_SCREEN_STRIDE * PSP_SCREEN_HEIGHT * gu_psm_get_bytes_per_pixel(m->framebuffer_psm);
-	const size_t zb_size = PSP_SCREEN_STRIDE * PSP_SCREEN_HEIGHT * 2;
+	for (size_t i = 0; i < 4; ++i) {
+		Texture* it = NULL;
+		u32 psm = m->framebuffer_psm;
 
-	for (size_t i = 0; i < 2; ++i)
-		m->framebuffers[i] = app_gfx_vram_linear_alloc(m, fb_size, 16);
+		if (i < 2) {
+			it = &m->framebuffers[i];
+		} else if (i == 3) {
+		 	it = &m->pingpong0_fb;
+		} else if (i == 4) {
+		 	it = &m->z_buffer;
+			psm = GU_PSM_4444; // Doesn't really matter as long as we pick a 16-bit format for the size calculation
+		}
 
-	m->z_buffer = app_gfx_vram_linear_alloc(m, zb_size, 16);
-	m->pingpong0_fb = app_gfx_vram_linear_alloc(m, fb_size, 16);
+		assert(it);
+
+		*it = (Texture) {
+			.nb_mipmap_levels = 1,
+			.psm = psm,
+			.stride_px = PSP_SCREEN_STRIDE,
+			.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
+		};
+		const size_t size = it->stride_px * it->size_px[1] * gu_psm_get_bytes_per_pixel(it->psm);
+		it->data = psp_ptr_from_vram(app_gfx_vram_linear_alloc(m, size, 16));
+	}
 }
 
-void app_gfx_init(AppGfx* m) {
-	// We try it, but we don't mind if it fails
-	const int vram_set_size_status = sceGeEdramSetSize(0x400000);
-	printf("sceGeEdramSetSize(0x400000) returned 0x%08x\n", vram_set_size_status);
-
-	app_gfx_allocate_vram_resources(m);
-
-	sceGuInit();
-	sceGuStart(GU_DIRECT, g_gu_main_list);
-
-	sceGuDrawBuffer(m->framebuffer_psm, m->framebuffers[0], PSP_SCREEN_STRIDE);
-	sceGuDispBuffer(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, m->framebuffers[1], PSP_SCREEN_STRIDE);
-	sceGuDepthBuffer(m->z_buffer, PSP_SCREEN_STRIDE);
-
-	gu_set_offset_and_viewport_and_scissor(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
-
+void gu_reset_state_to_app_defaults() {
 	sceGuSetAllStatus(0);
 
 	sceGuDepthFunc(GU_GEQUAL);
@@ -1218,31 +1237,19 @@ void app_gfx_init(AppGfx* m) {
 	sceGuDepthOffset(0);
 	sceGuDepthRange(0xffff, 0x0000);
 
-	sceGuFog(0.f, 0.f, 0);
-
 	sceGuClearColor(0);
 	sceGuClearDepth(0);
 	sceGuClearStencil(0);
 	sceGuPixelMask(0);
 
-	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR); // command 83
-	// 84: model emissive (RGB)
-	// 85: model ambient (RGB)
-	// 86: model diffuse (RGB)
-	// 87: model specular (RGB)
-	// 88: model ambient alpha
-	sceGuMaterial(GU_AMBIENT, 0xffffffff); // 1: 85,88 (RGBA). 2: 86. 4: 87
-	// sceGuAmbientColor() // commands 85,88 (RGBA) => model ambient color
-	// sceGuAmbient(); // commands 92,93 (RGBA) => global ambient light color
-	sceGuModelColor(0, 0xffffffff, 0xffffffff, 0xffffffff); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
+	sceGuAmbient(0);
+	sceGuFog(0.f, 0.f, 0);
+
+	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR);
+	sceGuModelColor(0, 0, 0, 0); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
+	sceGuAmbientColor(0); // Just to set the model's ambient alpha
 	sceGuSpecular(12.f);
-	// sceGuShadeModel(GU_FLAT);
 	sceGuShadeModel(GU_SMOOTH);
-
-	// sceGuColor = sceGuMaterial(7, c);, so this sets the ambient, diffuse and specular, only the RGB components. The ambient's alpha is unchanged.
-	sceGuColor(0xffffffff); // primitive color, overriden by vertex color
-
-	sceGuAmbientColor(0xffffffffu);
 
 	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
 	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
@@ -1255,8 +1262,23 @@ void app_gfx_init(AppGfx* m) {
 	// sceGuEnable(GU_TEXTURE_2D);
 
 	sceGuFrontFace(GU_CW);
+}
+
+void app_gfx_init(AppGfx* m) {
+	sceGuInit();
+	sceGuStart(GU_DIRECT, g_gu_main_list);
 
 	sceGuSetCallback(GU_CALLBACK_SIGNAL, gu_on_signal);
+
+	const Texture* fb0 = &m->framebuffers[0];
+	const Texture* fb1 = &m->framebuffers[1];
+	const Texture* zb = &m->z_buffer;
+	sceGuDrawBuffer(m->framebuffer_psm, psp_ptr_to_vram(fb0->data), fb0->stride_px);
+	sceGuDispBuffer(fb1->size_px[0], fb1->size_px[1], psp_ptr_to_vram(fb1->data), fb1->stride_px);
+	sceGuDepthBuffer(psp_ptr_to_vram(zb->data), zb->stride_px);
+	gu_set_offset_and_viewport_and_scissor(fb0->size_px[0], fb1->size_px[1]);
+
+	gu_reset_state_to_app_defaults();
 
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 	sceGuFinish();
@@ -1264,8 +1286,8 @@ void app_gfx_init(AppGfx* m) {
 }
 
 void app_gfx_swap_buffers(AppGfx* m) {
-	m->framebuffers[1] = m->framebuffers[0];
-	m->framebuffers[0] = sceGuSwapBuffers();
+	m->framebuffers[1].data = m->framebuffers[0].data;
+	m->framebuffers[0].data = sceGuSwapBuffers();
 }
 
 void app_assets_init(AppAssets* m) {
@@ -1312,6 +1334,22 @@ void app_assets_init(AppAssets* m) {
 	}
 }
 
+void app_assets_deinit(AppAssets* m) {
+	mesh_destroy(&m->torus_mesh);
+	mesh_destroy(&m->grid_mesh);
+
+	texture_destroy(&m->uv_test_texture);
+	texture_destroy(&m->horizon_gradient_texture);
+	texture_destroy(&m->mountain_bg_texture);
+
+	{
+		ColorLutsMemory* c = &m->color_luts_mem;
+		for (size_t i = 0; i < countof(c->color_luts_rgba8888); ++i) {
+			free(c->color_luts_rgba8888[i]);
+		}
+	}
+}
+
 void app_scene_init(AppScene* m, const AppAssets* assets) {
 	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
 
@@ -1323,6 +1361,9 @@ void app_scene_init(AppScene* m, const AppAssets* assets) {
 		Camera* c = &m->camera;
 		gumLoadIdentity(&c->view_matrix);
 		gumLookAt(&c->view_matrix, &eye_position, &eye_target_position, &up_vector);
+
+		c->view_matrix_r = c->view_matrix;
+		c->view_matrix_r.w = (ScePspFVector4) { 0, 0, 0, 1 }; // Remove translation
 
 		gumLoadIdentity(&c->proj_matrix);
 		gumPerspective(&c->proj_matrix, 60.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
@@ -1354,6 +1395,7 @@ void app_scene_init(AppScene* m, const AppAssets* assets) {
 
 		gumLoadIdentity(&mi->model_matrix);
 		gumTranslate(&mi->model_matrix, &torus_position);
+		mi->model_matrix_tr = mi->model_matrix;
 		gumScale(&mi->model_matrix, &torus_scale);
 	}
 
@@ -1365,8 +1407,193 @@ void app_scene_init(AppScene* m, const AppAssets* assets) {
 		mi->mesh = &assets->grid_mesh;
 
 		gumLoadIdentity(&mi->model_matrix);
+		mi->model_matrix_tr = mi->model_matrix;
 		gumScale(&mi->model_matrix, &grid_scale);
 	}
+}
+
+void mesh_instance_draw(const MeshInstance* mi) {
+	sceGuSetMatrix(GU_MODEL, &mi->model_matrix);
+	mesh_draw_3d(mi->mesh);
+}
+
+void mesh_instance_draw_skyboxed(const MeshInstance* mi, const Camera* camera) {
+	sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
+	sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
+
+	ScePspFMatrix4 model_matrix_r = mi->model_matrix_tr;
+	model_matrix_r.w = (ScePspFVector4) { 0, 0, 0, 1 };
+
+	ScePspFMatrix4 texture_matrix;
+	gumLoadIdentity(&texture_matrix);
+	gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
+	gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
+	gumMultMatrix(&texture_matrix, &texture_matrix, &camera->view_matrix_r);
+	gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
+	sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
+}
+
+void app_draw(App* app) {
+	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
+	sceGuClearDepth(0);
+
+	Texture* scene3d_fb = &app->gfx.pingpong0_fb;
+	gu_set_rendertarget(scene3d_fb);
+
+	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+
+	// Camera
+	sceGuSetMatrix(GU_VIEW, &app->scene.camera.view_matrix);
+	sceGuSetMatrix(GU_PROJECTION, &app->scene.camera.proj_matrix);
+
+	// Light
+	sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, (ScePspFVector3*) &app->scene.light.model_matrix.z);
+	sceGuLightColor(0, GU_DIFFUSE, 0xffffffff);
+	sceGuLightColor(0, GU_SPECULAR, 0xffffffff);
+	sceGuLightAtt(0, 1.0f, 0.0f, 0.0f);
+
+	// Skybox
+	{
+		const Texture* t = &app->assets.horizon_gradient_texture;
+		sceGuEnable(GU_TEXTURE_2D);
+		gu_set_texture(t);
+		gu_draw_fullscreen_textured_quad(t->size_px[0], t->size_px[1]);
+	}
+
+	// Grid (floor)
+	{
+		sceGuEnable(GU_LIGHTING);
+		sceGuEnable(GU_LIGHT0);
+		sceGuEnable(GU_TEXTURE_2D);
+
+		gu_set_texture(&app->assets.horizon_gradient_texture);
+
+		mesh_instance_draw_skyboxed(&app->scene.grid, &app->scene.camera);
+	}
+
+	// Torus
+	{
+		sceGuEnable(GU_LIGHTING);
+		sceGuEnable(GU_LIGHT0);
+		sceGuEnable(GU_TEXTURE_2D);
+
+		gu_set_texture(&app->assets.mountain_bg_texture);
+
+		mesh_instance_draw_skyboxed(&app->scene.torus, &app->scene.camera);
+	}
+
+	sceGuDisable(GU_LIGHTING);
+	sceGuDisable(GU_LIGHT0);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexProjMapMode(GU_UV);
+	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+
+	gu_set_rendertarget(&app->gfx.framebuffers[0]);
+
+	// Can work with other formats, but then :
+	// - Need to change GU_PSM_T32
+	// - Need to change the mask and shift passed to sceGuClutMode()
+	assert(app->gfx.framebuffer_psm == GU_PSM_8888);
+
+	Texture scene3d_fb_t32 = *scene3d_fb;
+	scene3d_fb_t32.psm = GU_PSM_T32;
+	scene3d_fb_t32.size_px[0] = 512;
+	scene3d_fb_t32.size_px[1] = 512;
+	gu_set_texture(&scene3d_fb_t32);
+
+	const LUTMode lut_mode = lut_get_mode(app->scene.camera.post_processing.lut);
+	switch (lut_mode) {
+	case LUT_MODE_1_TO_1:
+		for (int i = 0; i < 3; ++i) {
+			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+
+			if (i == 0) // Only need to do this at the 1st iteration, but after sceGuClutMode()
+				sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[0]); // upload 32*8 entries (256)
+
+			sceGuPixelMask(~(0xffu << (i*8)));
+			gu_draw_fullscreen_textured_quad(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
+		}
+		sceGuPixelMask(0);
+		break;
+	case LUT_MODE_3_TO_3:
+		sceGuEnable(GU_BLEND);
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
+		for (int i = 0; i < 3; ++i) {
+			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+			sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[i]); // upload 32*8 entries (256)
+			gu_draw_fullscreen_textured_quad(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
+		}
+		sceGuDisable(GU_BLEND);
+		break;
+	default:
+		break;
+	}
+}
+
+void app_process_input(App* app) {
+	app->input.previous = app->input.current;
+	if (sceCtrlReadBufferPositive(&app->input.current, 1)) {
+		if (app->input.current.Buttons != app->input.previous.Buttons) {
+			if (app->input.current.Buttons & PSP_CTRL_LTRIGGER)
+				app->scene.camera.post_processing.lut = (app->scene.camera.post_processing.lut + LUT_COUNT - 1) % LUT_COUNT;
+
+			if (app->input.current.Buttons & PSP_CTRL_RTRIGGER)
+				app->scene.camera.post_processing.lut = (app->scene.camera.post_processing.lut + 1) % LUT_COUNT;
+		}
+	}
+}
+
+void app_draw_debug_overlay(App* app) {
+	int debug_screen_pos[2] = { 1, 1 };
+	pspDebugScreenSetOffset((intptr_t) app->gfx.framebuffers[0].data);
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(app->scene.camera.post_processing.lut));
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) app->loop.last_frame_duration);
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("CPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu));
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("GPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.gpu));
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("GPU: %" PRIu64 " elements", (u64) g_frame_stats.meshes.nb_elements);
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("GPU: %" PRIu64 " vertices", (u64) g_frame_stats.meshes.nb_vertices);
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("GPU: %" PRIu64 " faces", (u64) g_frame_stats.meshes.nb_faces);
+}
+
+void app_frame_inner(App* app) {
+	app_process_input(app);
+
+	sceGuStart(GU_DIRECT, g_gu_main_list);
+	gu_insert_clock_start_marker();
+	gu_reset_state_to_app_defaults();
+	app_draw(app);
+	gu_insert_clock_end_marker();
+	sceGuFinish();
+
+	psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.end); // End CPU timing now, don't count the sync with GPU
+	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+
+	app_draw_debug_overlay(app);
+}
+
+void app_frame(App* app) {
+	TickRange current_frame_tick_range;
+	psp_rtc_get_current_tick_checked(&current_frame_tick_range.start);
+
+	g_frame_stats = (FrameStats) {0};
+	g_frame_stats.cpu.start = current_frame_tick_range.start;
+
+	app_frame_inner(app);
+
+	sceDisplayWaitVblankStart();
+	app_gfx_swap_buffers(&app->gfx);
+
+	psp_rtc_get_current_tick_checked(&current_frame_tick_range.end);
+	app->loop.last_frame_duration = tick_range_get_duration(current_frame_tick_range);
+	app->loop.time_since_start += app->loop.last_frame_duration;
+	app->loop.nb_frames += 1;
 }
 
 void app_init_fpu() {
@@ -1375,13 +1602,26 @@ void app_init_fpu() {
 	pspFpuSetFS(1); // flush denormals to zero instead of causing an exception
 }
 
+// Assert at compile-time that they are equal, meaning we can safely pass GU_PSM_* constants to pspDebugScreenInitEx()
+static_assert(GU_PSM_5650 == PSP_DISPLAY_PIXEL_FORMAT_565, "");
+static_assert(GU_PSM_5551 == PSP_DISPLAY_PIXEL_FORMAT_5551, "");
+static_assert(GU_PSM_4444 == PSP_DISPLAY_PIXEL_FORMAT_4444, "");
+static_assert(GU_PSM_8888 == PSP_DISPLAY_PIXEL_FORMAT_8888, "");
+
 int main(int argc, char* argv[]) {
 	App app = {0};
-	app.loop.last_frame_duration = 1.f / 60.f;
 
 	app_init_fpu();
 	psp_setup_callbacks();
-	pspDebugScreenInit();
+
+	// We try it, but we don't mind if it fails
+	const int vram_set_size_status = sceGeEdramSetSize(0x400000);
+	printf("sceGeEdramSetSize(0x400000) returned 0x%08x\n", vram_set_size_status);
+
+	app_gfx_allocate_vram_resources(&app.gfx);
+
+	// Note: this initializes global variables then clears the screen
+	pspDebugScreenInitEx(NULL, app.gfx.framebuffer_psm, true /* Call sceDisplaySetMode() and sceDisplaySetFrameBuf() */);
 
 	app_gfx_init(&app.gfx);
 
@@ -1397,228 +1637,11 @@ int main(int argc, char* argv[]) {
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
 
-	while (!g_exit_requested) {
-		TickRange current_frame_tick_range;
-		psp_rtc_get_current_tick_checked(&current_frame_tick_range.start);
+	app.loop.last_frame_duration = 1.f / 60.f;
+	while (!g_exit_requested)
+		app_frame(&app);
 
-		g_frame_stats = (FrameStats) {0};
-		g_frame_stats.cpu.start = current_frame_tick_range.start;
-
-		if (sceCtrlPeekBufferPositive(&app.input.current, 1)) {
-			if (app.input.current.Buttons != app.input.previous.Buttons) {
-				if (app.input.current.Buttons & PSP_CTRL_LTRIGGER)
-					app.scene.camera.post_processing.lut = (app.scene.camera.post_processing.lut + LUT_COUNT - 1) % LUT_COUNT;
-
-				if (app.input.current.Buttons & PSP_CTRL_RTRIGGER)
-					app.scene.camera.post_processing.lut = (app.scene.camera.post_processing.lut + 1) % LUT_COUNT;
-			}
-		}
-	
-
-		// Start drawing
-		sceGuStart(GU_DIRECT, g_gu_main_list);
-		gu_insert_clock_start_marker();
-
-		sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
-		sceGuClearDepth(0);
-		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-
-		{
-			sceGuSetMatrix(GU_VIEW, &view_matrix);
-			sceGuSetMatrix(GU_PROJECTION, &projection_matrix);
-
-			sceGuEnable(GU_TEXTURE_2D);
-			gu_set_texture(&horizon_gradient_texture);
-			gu_draw_fullscreen_quad(horizon_gradient_texture.size_px[0], horizon_gradient_texture.size_px[1]);
-			sceGuDisable(GU_TEXTURE_2D);
-
-			sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, (ScePspFVector3*) &app.scene.light.model_matrix.z);
-			sceGuLightColor(0, GU_DIFFUSE, 0xffffffff);
-			sceGuLightColor(0, GU_SPECULAR, 0xffffffff);
-			sceGuLightAtt(0, 1.0f, 0.0f, 0.0f);
-			sceGuAmbient(0x00202020);
-			sceGuEnable(GU_LIGHTING);
-			sceGuEnable(GU_LIGHT0);
-
-			{
-				sceGuEnable(GU_TEXTURE_2D);
-				sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
-				sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
-				gu_set_texture(&horizon_gradient_texture);
-
-				ScePspFMatrix4 texture_matrix;
-				gumLoadIdentity(&texture_matrix);
-				gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
-				gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
-				gumMultMatrix(&texture_matrix, &texture_matrix, &view_rotation_matrix);
-				gumMultMatrix(&texture_matrix, &texture_matrix, &grid_rotation_matrix);
-
-				sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
-
-				sceGuAmbientColor(0);
-				sceGuColor(GU_ABGR(0xff, 0xff, 0xff, 0x00));
-				sceGuSetMatrix(GU_MODEL, &grid_model_matrix);
-				mesh_draw_3d(&grid_mesh);
-
-				sceGuDisable(GU_TEXTURE_2D);
-				sceGuTexProjMapMode(GU_UV);
-				sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
-			}
-
-			{
-				sceGuEnable(GU_TEXTURE_2D);
-				sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
-				sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
-				gu_set_texture(&mountain_bg_texture);
-
-				ScePspFMatrix4 texture_matrix;
-				gumLoadIdentity(&texture_matrix);
-				gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
-				gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
-				gumMultMatrix(&texture_matrix, &texture_matrix, &view_rotation_matrix);
-				gumMultMatrix(&texture_matrix, &texture_matrix, &torus_rotation_matrix);
-
-				sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
-
-				sceGuAmbientColor(0);
-				sceGuColor(GU_ABGR(0xff, 0x00, 0xff, 0xff));
-				sceGuSetMatrix(GU_MODEL, &torus_model_matrix);
-				mesh_draw_3d(&torus_mesh);
-
-				sceGuDisable(GU_TEXTURE_2D);
-				sceGuTexProjMapMode(GU_UV);
-				sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
-			}
-
-			sceGuPatchDivide(4, 4);
-			sceGuDisable(GU_CULL_FACE);
-			sceGuDisable(GU_PATCH_CULL_FACE);
-			//sceGuPatchPrim(GU_LINE_STRIP);
-			sceGuDrawSpline(Vertex_Nf32_Pf32_FORMAT, WAVE_W, WAVE_H, GU_FILL_FILL, GU_FILL_FILL, NULL, wave_vertices);
-			//sceGuDrawBezier(Vertex_Nf32_Pf32_FORMAT, WAVE_W, WAVE_H, NULL, wave_vertices);
-			sceGuColor(GU_ABGR(0xff, 0x00, 0x00, 0xff));
-			sceGuDrawArray(GU_POINTS, Vertex_Nf32_Pf32_FORMAT, WAVE_W * WAVE_H, NULL, wave_vertices);
-			sceGuEnable(GU_CULL_FACE);
-			sceGuEnable(GU_PATCH_CULL_FACE);
-
-			sceGuDisable(GU_LIGHTING);
-			sceGuDisable(GU_LIGHT0);
-		}
-
-		if (false) {
-			Texture test_texture_t32 = uv_test_texture;
-			test_texture_t32.psm = GU_PSM_T32;
-			gu_set_texture(&test_texture_t32);
-
-			sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-			sceGuTexFilter(GU_LINEAR, GU_LINEAR);
-			sceGuTexWrap(GU_CLAMP, GU_CLAMP);
-
-			sceGuAmbientColor(0xffffffffu);
-			sceGuColor(0xffffffffu);
-
-			f32 fu = uv_test_texture.size_px[0];
-			f32 fv = uv_test_texture.size_px[1];
-			if (use_framebuffer_as_texture) {
-				Texture rendertarget = {
-					.psm = fb_psm,
-					.nb_mipmap_levels = 1,
-					.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
-					.stride_px = PSP_SCREEN_STRIDE,
-					.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
-				};
-				gu_set_rendertarget(&rendertarget);
-
-				gu_set_texture(&uv_test_texture);
-				gu_draw_fullscreen_quad(uv_test_texture.size_px[0], uv_test_texture.size_px[1]);
-
-				rendertarget.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp0;
-				gu_set_rendertarget(&rendertarget);
-
-				const Texture src_texture = {
-					.psm = GU_PSM_T32,
-					.nb_mipmap_levels = 1,
-					.size_px = { 512, 512 },
-					.stride_px = PSP_SCREEN_STRIDE,
-					.data = (u8*) sceGeEdramGetAddr() + (uintptr_t) fbp2,
-				};
-				gu_set_texture(&src_texture);
-
-				fu = PSP_SCREEN_WIDTH;
-				fv = PSP_SCREEN_HEIGHT;
-			}
-
-			switch (lut_mode) {
-			case LUT_MODE_1_TO_1:
-				sceGuClutLoad(256 / 8, clut[0]); // upload 32*8 entries (256)
-				for (int i = 0; i < 3; ++i) {
-					sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-					sceGuPixelMask(~(0xffu << (i*8)));
-					gu_draw_fullscreen_quad(fu, fv);
-				}
-				sceGuPixelMask(0);
-				break;
-			case LUT_MODE_3_TO_3:
-				sceGuEnable(GU_BLEND);
-				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
-				for (int i = 0; i < 3; ++i) {
-					sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-					sceGuClutLoad(256 / 8, clut[i]); // upload 32*8 entries (256)
-					gu_draw_fullscreen_quad(fu, fv);
-				}
-				sceGuDisable(GU_BLEND);
-				break;
-			default:
-				break;
-			}
-		}
-
-		psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.end);
-		gu_insert_clock_end_marker();
-		sceGuFinish();
-		sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
-
-		int debug_screen_pos[2] = { 1, 1 };
-		pspDebugScreenSetOffset((intptr_t)fbp0);
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(lut));
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("%s (toggle via X)", use_framebuffer_as_texture ? "Using FB as texture" : "Not using FB as texture");
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) last_frame_duration);
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("CPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu));
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("GPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.gpu));
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("GPU: %" PRIu64 " elements", (u64) g_frame_stats.meshes.nb_elements);
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("GPU: %" PRIu64 " vertices", (u64) g_frame_stats.meshes.nb_vertices);
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("GPU: %" PRIu64 " faces", (u64) g_frame_stats.meshes.nb_faces);
-		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-		pspDebugScreenPrintf("VFPU MMUL result: %.3f", (f64) vfpu_mmul_result);
-
-		sceDisplayWaitVblankStart();
-		app_gfx_swap_buffers(&app.gfx);
-
-		app.input.previous = app.input.current;
-		app.loop.nb_frames += 1;
-
-		psp_rtc_get_current_tick_checked(&current_frame_tick_range.end);
-		last_frame_duration = tick_range_get_duration(current_frame_tick_range);
-		time_since_start += last_frame_duration;
-	}
-
-	mesh_destroy(&torus_mesh);
-	mesh_destroy(&grid_mesh);
-
-	texture_destroy(&uv_test_texture);
-	texture_destroy(&horizon_gradient_texture);
-	texture_destroy(&mountain_bg_texture);
-
-	for (size_t i = 0; i < countof(clut); ++i)
-		free(clut[i]);
+	app_assets_deinit(&app.assets);
 
 	sceGuTerm();
 
