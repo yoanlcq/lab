@@ -368,7 +368,7 @@ typedef struct {
 } FrameMeshesStats;
 
 typedef struct {
-	TickRange cpu, gpu;
+	TickRange cpu, gpu, cpu_with_gpu_sync;
 	FrameMeshesStats meshes;
 } FrameStats;
 
@@ -403,26 +403,120 @@ void gu_insert_clock_end_marker() {
 }
 
 typedef struct { f32 uv[2]; f32 position[3]; } Vertex_Tf32_Pf32;
+typedef struct { i16 uv[2]; i16 position[3]; } Vertex_Ti16_Pi16;
 typedef struct { i8 normal[3]; i8 position[3]; } Vertex_Ni8_Pi8;
 typedef struct { i8 normal[3]; i16 position[3]; } Vertex_Ni8_Pi16;
 typedef struct { f32 normal[3]; f32 position[3]; } Vertex_Nf32_Pf32;
 
 #define Vertex_Tf32_Pf32_FORMAT (GU_TEXTURE_32BITF | GU_VERTEX_32BITF)
+#define Vertex_Ti16_Pi16_FORMAT (GU_TEXTURE_16BIT | GU_VERTEX_16BIT)
 #define Vertex_Ni8_Pi8_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_8BIT)
 #define Vertex_Ni8_Pi16_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_16BIT)
 #define Vertex_Nf32_Pf32_FORMAT (GU_NORMAL_32BITF | GU_VERTEX_32BITF)
 
-void gu_draw_fullscreen_textured_quad(f32 uv0, f32 uv1) {
-	Vertex_Tf32_Pf32* v = sceGuGetMemory(2 * sizeof(Vertex_Tf32_Pf32));
-	v[0] = (Vertex_Tf32_Pf32) {
-		.uv = { 1, 1 }, // UV is 1 rather than 0; avoids slight wraparound in the top-left corner; GU_CLAMP doesn't seem to fix it
-		.position = { 0, 0, 0 },
-	};
-	v[1] = (Vertex_Tf32_Pf32) {
-		.uv = { uv0, uv1 },
-		.position = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, 0 },
-	};
-	sceGuDrawArray(GU_SPRITES, Vertex_Tf32_Pf32_FORMAT | GU_TRANSFORM_2D, 2, 0, v);
+void gu_draw_fullscreen_textured_quad_i16(i16 uv0, i16 uv1, u32 x_tile_size_px, u32 y_tile_size_px, u32 subdiv_x, u32 subdiv_y) {
+	if (x_tile_size_px == 0 && y_tile_size_px == 0 && subdiv_x == 0 && subdiv_y == 0) {
+		Vertex_Ti16_Pi16* v = sceGuGetMemory(2 * sizeof(Vertex_Ti16_Pi16));
+		v[0] = (Vertex_Ti16_Pi16) {
+			.uv = { 0, 0 },
+			.position = { 0, 0, 0 },
+		};
+		v[1] = (Vertex_Ti16_Pi16) {
+			.uv = { uv0, uv1 },
+			.position = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, 0 },
+		};
+		sceGuDrawArray(GU_SPRITES, Vertex_Ti16_Pi16_FORMAT | GU_TRANSFORM_2D, 2, NULL, v);
+	} else if (subdiv_x >= 1 && subdiv_y >= 1) {
+		// TODO: best setting (at least for 32-bit input texture format, unswizzled) seems to be:
+		// - subdiv_x = 5
+		// - subdiv_y = 1
+		//
+		// Setting subdiv_x >= 4 immediately gives a very noticeable boost.
+		//
+		// So :
+		// - subdiv_x = 4, tile size X = 480 / 4 = 120
+		// - subdiv_x = 5, tile size X = 480 / 5 = 96
+		// - subdiv_x = 6, tile size X = 480 / 6 = 80
+		const f32 subdiv_x_inv = 1.f / subdiv_x;
+		const f32 subdiv_y_inv = 1.f / subdiv_y;
+
+		const size_t nb_vertices = subdiv_x * subdiv_y * 2;
+		Vertex_Ti16_Pi16* v = sceGuGetMemory(nb_vertices * sizeof(Vertex_Ti16_Pi16));
+		Vertex_Ti16_Pi16* current_vertex = v;
+
+		for (size_t y = 0; y < subdiv_y; ++y) {
+			const f32 yt = y * subdiv_y_inv;
+			const f32 yb = (y + 1) * subdiv_y_inv;
+			for (size_t x = 0; x < subdiv_x; ++x) {
+				const f32 xt = x * subdiv_x_inv;
+				const f32 xb = (x + 1) * subdiv_x_inv;
+				*current_vertex++ = (Vertex_Ti16_Pi16) {
+					.uv = { floorf(xt * uv0), floorf(yt * uv1) },
+					.position = { floorf(xt * PSP_SCREEN_WIDTH), floorf(yt * PSP_SCREEN_HEIGHT), 0 },
+				};
+				*current_vertex++ = (Vertex_Ti16_Pi16) {
+					.uv = { floorf(xb * uv0), floorf(yb * uv1) },
+					.position = { floorf(xb * PSP_SCREEN_WIDTH), floorf(yb * PSP_SCREEN_HEIGHT), 0 },
+				};
+			}
+		}
+
+		sceGuDrawArray(GU_SPRITES, Vertex_Ti16_Pi16_FORMAT | GU_TRANSFORM_2D, nb_vertices, NULL, v);
+	} else if (x_tile_size_px >= 1 && y_tile_size_px >= 1) {
+		// My notes from researching the optimal tile size by measuring (the timing is for some scene + 3 fullscreen quad draw calls):
+		// The time it takes to render the scene alone (without fullscreen quads) was 5.160 ms, so you can subtract that and divide by 3 to get the time for a single fullscreen quad.
+		//
+		// These are the fastest configurations I've found:
+		//
+		// Time (ms) ; Tile size X ; Tile size Y
+		// 8.625     ; 32          ; 272
+		// 8.860     ; 96          ; 272
+		// 8.888     ; 24          ; 272
+		// 8.888     ; 112         ; 272
+		// 8.890     ; 16          ; 272
+		// 8.930     ; 64          ; 272
+		//
+		// Testing with Y = 136 gives almost the same results as with Y = 272, but with ever so slightly less performance, so it's not worth it.
+		// Perf degrades noticeably as X moves away from the noted values, especially past the hundred.
+		// Perf also degrades as Y moves away from 136 and 272.
+		//
+		// I have no explanation for this. Perhaps it's because it makes better use of the 8K texture cache... Or is it, really? There is no pixel reuse in my use case.
+		// And why wouldn't the GE figure out the optimal "fetch" pattern when you send a single fullscreen-sized quad (especially since it's a sprite)?
+		// That looks like a design issue to me, and licensees were probably given recommendations accordingly.
+		// At least, if breaking up a large quad into smaller pieces improves perf from 27 ms to 8.6 ms for the same result, then there's no reason the engine shouldn't be able to figure that out and do the equivalent. But that's probably just the way it is for old hardware.
+		//
+		// I note that there's a similar idea with GU_FAST_CLEAR_BIT and that apparently drawing multiple vertical quads is the fast way to draw to the entire screen.
+		// For instance see the IsReallyAClear() function in PPSSPP (https://github.com/hrydgard/ppsspp/blob/17d807197d2da9e41dd6523bcbe94a92bbedb019/GPU/Common/SoftwareTransformCommon.cpp#L92)
+
+		const f32 x_tile_size_pct = x_tile_size_px / (f32) PSP_SCREEN_WIDTH;
+		const f32 y_tile_size_pct = y_tile_size_px / (f32) PSP_SCREEN_HEIGHT;
+		const u32 nb_tiles_y = (PSP_SCREEN_HEIGHT + y_tile_size_px - 1) / y_tile_size_px;
+		const u32 nb_tiles_x = (PSP_SCREEN_WIDTH + x_tile_size_px - 1) / x_tile_size_px;
+
+		const size_t nb_vertices = nb_tiles_y * nb_tiles_x * 2;
+		Vertex_Ti16_Pi16* v = sceGuGetMemory(nb_vertices * sizeof(Vertex_Ti16_Pi16));
+		Vertex_Ti16_Pi16* current_vertex = v;
+
+		for (size_t y = 0; y < nb_tiles_y; ++y) {
+			const f32 yt = fminf(1, y * y_tile_size_pct);
+			const f32 yb = fminf(1, (y + 1) * y_tile_size_pct);
+			for (size_t x = 0; x < nb_tiles_x; ++x) {
+				const f32 xt = fminf(1, x * x_tile_size_pct);
+				const f32 xb = fminf(1, (x + 1) * x_tile_size_pct);
+
+				*current_vertex++ = (Vertex_Ti16_Pi16) {
+					.uv = { floorf(xt * uv0), floorf(yt * uv1) },
+					.position = { floorf(xt * PSP_SCREEN_WIDTH), floorf(yt * PSP_SCREEN_HEIGHT), 0 },
+				};
+				*current_vertex++ = (Vertex_Ti16_Pi16) {
+					.uv = { floorf(xb * uv0), floorf(yb * uv1) },
+					.position = { floorf(xb * PSP_SCREEN_WIDTH), floorf(yb * PSP_SCREEN_HEIGHT), 0 },
+				};
+			}
+		}
+		
+		sceGuDrawArray(GU_SPRITES, Vertex_Ti16_Pi16_FORMAT | GU_TRANSFORM_2D, nb_vertices, NULL, v);
+	}
 }
 
 typedef struct {
@@ -1140,12 +1234,14 @@ typedef struct {
 } AppGfx;
 
 typedef struct {
+	bool enabled;
 	LUT lut;
 } PostProcessingParams;
 
 typedef struct {
 	ColorLutsMemory color_luts_mem;
 	Texture uv_test_texture;
+	Texture huge_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
 	Mesh torus_mesh;
@@ -1187,12 +1283,37 @@ typedef struct {
 	SceCtrlData current;
 } AppInput;
 
+typedef enum {
+	VAR_ID__INVALID = 0,
+	VAR_ID__FULLSCREEN_QUAD_SUBDIV_X,
+	VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y,
+	VAR_ID__FULLSCREEN_QUAD_X_EXP,
+	VAR_ID__FULLSCREEN_QUAD_Y_EXP,
+	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
+	VAR_ID__COUNT // Keep last
+} AppVariableID;
+
+#define VAR_FLAG_ROUND           (1 << 0)
+#define VAR_FLAG_SMOOTH_EDIT     (1 << 1)
+#define VAR_FLAG_STEP_PER_SECOND (1 << 2)
+
+typedef struct {
+	const char* name;
+	f32 value;
+	f32 min;
+	f32 max;
+	f32 step;
+	u32 flags; // VAR_FLAG_*
+} AppVariable;
+
 typedef struct {
 	MainLoop loop;
 	AppGfx gfx;
 	AppAssets assets;
 	AppScene scene;
 	AppInput input;
+	AppVariable vars[VAR_ID__COUNT];
+	size_t selected_var_index;
 } App;
 
 // Returned pointer is relative to VRAM base
@@ -1304,7 +1425,8 @@ void app_assets_init(AppAssets* m) {
 
 	// UV test texture
 	{
-		m->uv_test_texture = (Texture) {
+		Texture* t = &m->uv_test_texture;
+		*t = (Texture) {
 			.psm = GU_PSM_8888,
 			.size_px = { 256, 256 },
 			.stride_px = 256,
@@ -1312,9 +1434,28 @@ void app_assets_init(AppAssets* m) {
 			.is_swizzled = false,
 		};
 
-		texture_allocate_buffers(&m->uv_test_texture);
+		texture_allocate_buffers(t);
 
-		Texture* t = &m->uv_test_texture;
+		u32* pixels = t->data;
+		for (int y = 0; y < t->size_px[1]; ++y)
+			for (int x = 0; x < t->size_px[0]; ++x)
+				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0xff, y, x);
+		
+		sceKernelDcacheWritebackRange(pixels, t->size_px[0] * t->size_px[1] * sizeof pixels[0]);
+	}
+
+	{
+		Texture* t = &m->huge_texture;
+		*t = (Texture) {
+			.psm = GU_PSM_8888,
+			.size_px = { 512, 512 },
+			.stride_px = 512,
+			.nb_mipmap_levels = 1,
+			.is_swizzled = false,
+		};
+
+		texture_allocate_buffers(t);
+
 		u32* pixels = t->data;
 		for (int y = 0; y < t->size_px[1]; ++y)
 			for (int x = 0; x < t->size_px[0]; ++x)
@@ -1438,13 +1579,58 @@ void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, con
 	mesh_instance_draw(mi);
 }
 
+void app_draw_postprocessing(App* app) {
+	sceGuDepthMask(1);
+	sceGuDisable(GU_DEPTH_TEST);
+
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+
+	if (false) {
+		Texture t = app->assets.huge_texture;
+		t.is_swizzled = true;
+		gu_set_texture(&t);
+	}
+
+	const LUTMode lut_mode = lut_get_mode(app->scene.camera.post_processing.lut);
+	switch (lut_mode) {
+	case LUT_MODE_1_TO_1:
+		for (int i = 0; i < 3; ++i) {
+			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+
+			if (i == 0) // Only need to do this at the 1st iteration, but after sceGuClutMode()
+				sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[0]); // upload 32*8 entries (256)
+
+			sceGuPixelMask(~(0xffu << (i*8)));
+			gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, app->vars[VAR_ID__FULLSCREEN_QUAD_X_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y].value);
+		}
+		sceGuPixelMask(0);
+		break;
+	case LUT_MODE_3_TO_3:
+		for (int i = 0; i < 3; ++i) {
+			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+			sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[i]); // upload 32*8 entries (256)
+
+			if (i >= 1) {
+				sceGuEnable(GU_BLEND);
+				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
+			}
+
+			gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, app->vars[VAR_ID__FULLSCREEN_QUAD_X_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y].value);
+		}
+		sceGuDisable(GU_BLEND);
+		break;
+	default:
+		break;
+	}
+}
+
 void app_draw(App* app) {
-	Texture* scene3d_fb = &app->gfx.pingpong0_fb;
+	Texture* scene3d_fb = app->scene.camera.post_processing.enabled ? &app->gfx.pingpong0_fb : &app->gfx.framebuffers[0];
 	gu_set_rendertarget(scene3d_fb);
 
 	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
 	sceGuClearDepth(0);
-	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_FAST_CLEAR_BIT); // GU_FAST_CLEAR_BIT is really not that much faster, just very slightly. It consumes more memory in the display list but it's also negligible.
 
 	// Camera
 	sceGuSetMatrix(GU_VIEW, &app->scene.camera.view_matrix);
@@ -1464,13 +1650,13 @@ void app_draw(App* app) {
 		const Texture* t = &app->assets.horizon_gradient_texture;
 		sceGuEnable(GU_TEXTURE_2D);
 		gu_set_texture(t);
-		gu_draw_fullscreen_textured_quad(t->size_px[0], t->size_px[1]);
+		gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1], app->vars[VAR_ID__FULLSCREEN_QUAD_X_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y].value);
 	}
 
 	// Grid (floor)
 	{
-		//sceGuEnable(GU_LIGHTING);
-		//sceGuEnable(GU_LIGHT0);
+		sceGuEnable(GU_LIGHTING);
+		sceGuEnable(GU_LIGHT0);
 		sceGuEnable(GU_TEXTURE_2D);
 
 		gu_set_texture(&app->assets.horizon_gradient_texture);
@@ -1480,8 +1666,8 @@ void app_draw(App* app) {
 
 	// Torus
 	{
-		//sceGuEnable(GU_LIGHTING);
-		//sceGuEnable(GU_LIGHT0);
+		sceGuEnable(GU_LIGHTING);
+		sceGuEnable(GU_LIGHT0);
 		sceGuEnable(GU_TEXTURE_2D);
 
 		gu_set_texture(&app->assets.mountain_bg_texture);
@@ -1495,54 +1681,24 @@ void app_draw(App* app) {
 	sceGuTexProjMapMode(GU_UV);
 	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 
-	sceGuDepthMask(1);
-	sceGuDisable(GU_DEPTH_TEST);
+	if (app->scene.camera.post_processing.enabled) {
+		// Can work with other formats, but then :
+		// - Need to change GU_PSM_T32
+		// - Need to change the mask and shift passed to sceGuClutMode()
+		app_assert(app->gfx.framebuffer_psm == GU_PSM_8888);
 
-	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+		const u32 sz_px = 512 >> (u32) app->vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP].value;
 
-	gu_set_rendertarget(&app->gfx.framebuffers[0]);
+		Texture scene3d_fb_t32 = *scene3d_fb;
+		scene3d_fb_t32.psm = GU_PSM_T32;
+		scene3d_fb_t32.stride_px = sz_px;
+		scene3d_fb_t32.size_px[0] = sz_px;
+		scene3d_fb_t32.size_px[1] = sz_px;
+		gu_set_texture(&scene3d_fb_t32);
 
-	// Can work with other formats, but then :
-	// - Need to change GU_PSM_T32
-	// - Need to change the mask and shift passed to sceGuClutMode()
-	app_assert(app->gfx.framebuffer_psm == GU_PSM_8888);
+		gu_set_rendertarget(&app->gfx.framebuffers[0]);
 
-	Texture scene3d_fb_t32 = *scene3d_fb;
-	scene3d_fb_t32.psm = GU_PSM_T32;
-	scene3d_fb_t32.size_px[0] = 512;
-	scene3d_fb_t32.size_px[1] = 512;
-	gu_set_texture(&scene3d_fb_t32);
-
-	const LUTMode lut_mode = lut_get_mode(app->scene.camera.post_processing.lut);
-	switch (lut_mode) {
-	case LUT_MODE_1_TO_1:
-		for (int i = 0; i < 3; ++i) {
-			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-
-			if (i == 0) // Only need to do this at the 1st iteration, but after sceGuClutMode()
-				sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[0]); // upload 32*8 entries (256)
-
-			sceGuPixelMask(~(0xffu << (i*8)));
-			gu_draw_fullscreen_textured_quad(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
-		}
-		sceGuPixelMask(0);
-		break;
-	case LUT_MODE_3_TO_3:
-		for (int i = 0; i < 3; ++i) {
-			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-			sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[i]); // upload 32*8 entries (256)
-
-			if (i >= 1) {
-				sceGuEnable(GU_BLEND);
-				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
-			}
-
-			gu_draw_fullscreen_textured_quad(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
-		}
-		sceGuDisable(GU_BLEND);
-		break;
-	default:
-		break;
+		app_draw_postprocessing(app);
 	}
 }
 
@@ -1557,6 +1713,60 @@ void app_process_input(App* app) {
 
 			if (app->input.current.Buttons & PSP_CTRL_RTRIGGER)
 				app->scene.camera.post_processing.lut = (app->scene.camera.post_processing.lut + 1) % LUT_COUNT;
+
+			if (app->input.current.Buttons & PSP_CTRL_CROSS)
+				app->scene.camera.post_processing.enabled ^= 1;
+
+			if (app->input.current.Buttons & PSP_CTRL_UP) {
+				if (app->selected_var_index > 1)
+					app->selected_var_index -= 1;
+				else if (VAR_ID__COUNT >= 1)
+					app->selected_var_index = VAR_ID__COUNT - 1;
+			}
+
+			if (app->input.current.Buttons & PSP_CTRL_DOWN) {
+				app->selected_var_index = (app->selected_var_index + 1) % VAR_ID__COUNT;
+				if (app->selected_var_index == 0 && VAR_ID__COUNT > 1)
+					app->selected_var_index = 1;
+			}
+		}
+
+		{
+			AppVariable* v = &app->vars[app->selected_var_index];
+			i32 variable_edit_direction = 0;
+
+			if ((v->flags & VAR_FLAG_SMOOTH_EDIT) || app->input.current.Buttons != app->input.previous.Buttons) {
+				if (app->input.current.Buttons & PSP_CTRL_LEFT)
+					variable_edit_direction = -1;
+
+				if (app->input.current.Buttons & PSP_CTRL_RIGHT)
+					variable_edit_direction = 1;
+			}
+
+			if (variable_edit_direction != 0 && v->step != 0) {
+				f32 step = variable_edit_direction * v->step;
+				if (v->flags & VAR_FLAG_STEP_PER_SECOND)
+					step *= app->loop.last_frame_duration;
+
+				v->value += step;
+
+				if (v->flags & VAR_FLAG_ROUND) {
+					const f32 prev_value = v->value;
+					v->value = roundf(v->value);
+					if (v->value != prev_value) {
+						if (step > 0)
+							v->value = roundf(v->value + 1);
+						else
+							v->value = roundf(v->value - 1);
+					}
+				}
+
+				if (v->value > v->max)
+					v->value = v->max;
+
+				if (v->value < v->min)
+					v->value = v->min;
+			}
 		}
 	}
 
@@ -1568,9 +1778,9 @@ void app_draw_debug_overlay(App* app) {
 	int debug_screen_pos[2] = { 1, 1 };
 	pspDebugScreenSetOffset((intptr_t) psp_ptr_to_vram(app->gfx.framebuffers[0].data));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-	pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(app->scene.camera.post_processing.lut));
-	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) app->loop.last_frame_duration);
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("CPU with GPU sync: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu_with_gpu_sync));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("CPU: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
@@ -1581,6 +1791,19 @@ void app_draw_debug_overlay(App* app) {
 	pspDebugScreenPrintf("GPU: %" PRIu64 " vertices", (u64) g_frame_stats.meshes.nb_vertices);
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("GPU: %" PRIu64 " faces", (u64) g_frame_stats.meshes.nb_faces);
+
+	if (app->selected_var_index) {
+		const AppVariable* v = &app->vars[app->selected_var_index];
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("%s: %f", v->name, (f64) v->value);
+	}
+
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("Post-processing (Toggle via X): %s", app->scene.camera.post_processing.enabled  ? "on" : "off");
+	if (app->scene.camera.post_processing.enabled) {
+		pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+		pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(app->scene.camera.post_processing.lut));
+	}
 }
 
 void app_frame_inner(App* app) {
@@ -1595,6 +1818,7 @@ void app_frame_inner(App* app) {
 
 	psp_rtc_get_current_tick_sync(&g_frame_stats.cpu.end); // End CPU timing now, don't count the sync with GPU
 	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+	psp_rtc_get_current_tick_checked(&g_frame_stats.cpu_with_gpu_sync.end);
 
 	app_draw_debug_overlay(app);
 }
@@ -1605,6 +1829,7 @@ void app_frame(App* app) {
 
 	g_frame_stats = (FrameStats) {0};
 	g_frame_stats.cpu.start = current_frame_tick_range.start;
+	g_frame_stats.cpu_with_gpu_sync.start = current_frame_tick_range.start;
 
 	app_frame_inner(app);
 
@@ -1631,6 +1856,13 @@ static_assert(GU_PSM_8888 == PSP_DISPLAY_PIXEL_FORMAT_8888, "");
 
 int main(int argc, char* argv[]) {
 	App app = {0};
+	app.selected_var_index = 1;
+	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X] = (AppVariable) { "Fs Quad Subdiv X", 0, 0, 8, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y] = (AppVariable) { "Fs Quad Subdiv Y", 0, 0, 8, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__FULLSCREEN_QUAD_X_EXP] = (AppVariable) { "Fs Quad X Tile Size", 32, 0, PSP_SCREEN_WIDTH, 8, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP] = (AppVariable) { "Fs Quad Y Tile Size", PSP_SCREEN_HEIGHT, 0, PSP_SCREEN_HEIGHT, 8, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
 
 	app_init_fpu();
 	psp_setup_callbacks();
