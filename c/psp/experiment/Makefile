@@ -3,7 +3,7 @@ TARGET := experiment
 OBJS := experiment.o
 
 INCDIR :=
-CFLAGS := -Wall -Wdouble-promotion -O3
+CFLAGS := -Wall -Wdouble-promotion -O3 -g
 CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS := $(CFLAGS)
 

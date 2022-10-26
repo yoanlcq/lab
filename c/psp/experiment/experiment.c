@@ -197,6 +197,8 @@ typedef int64_t i64;
 typedef float f32;
 typedef double f64;
 
+#define app_assert(x) do { if (!(x)) { *(char*)NULL = 0; } } while (0)
+
 typedef f32 __attribute__((vector_size(16))) v4;
 typedef struct { v4 cols[4]; } m4;
 
@@ -206,7 +208,7 @@ typedef struct { v4 cols[4]; } m4;
 #define countof(x) (sizeof((x)) / sizeof((x)[0]))
 
 static inline void* psp_uncached_ptr_non_null(const void* p) {
-	assert(p); // If you're passing NULL, you'll get an uncached NULL ptr but it won't evaluate to NULL, so that may trick conditionals and do bad stuff.
+	app_assert(p); // If you're passing NULL, you'll get an uncached NULL ptr but it won't evaluate to NULL, so that may trick conditionals and do bad stuff.
 	return (void*) (((uintptr_t) p) | 0x40000000ul);
 }
 
@@ -223,12 +225,12 @@ static inline bool size_is_power_of_two_or_zero(size_t x) {
 }
 
 static inline void* ptr_align(const void* p, uintptr_t a) {
-	assert(size_is_power_of_two_nonzero(a));
+	app_assert(size_is_power_of_two_nonzero(a));
 	return (void*) ((((uintptr_t) p) + a - 1) & ~(a - 1));
 }
 
 static inline bool ptr_is_aligned(const void* p, uintptr_t a) {
-	assert(size_is_power_of_two_nonzero(a));
+	app_assert(size_is_power_of_two_nonzero(a));
 	return (((uintptr_t) p) & (a - 1)) == 0;
 }
 
@@ -290,9 +292,9 @@ static float tick_range_get_duration(TickRange m) {
 //
 
 void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
-	assert(ptr_is_aligned(result, 64));
-	assert(ptr_is_aligned(a, 64));
-	assert(ptr_is_aligned(b, 64));
+	app_assert(ptr_is_aligned(result, 64));
+	app_assert(ptr_is_aligned(a, 64));
+	app_assert(ptr_is_aligned(b, 64));
 	__asm__ volatile
 	(
 		"lv.q C000,  0 + %1\n"
@@ -326,15 +328,15 @@ void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
 
 // Make an absolute pointer relative to VRAM
 void* psp_ptr_to_vram(const void* p) {
-	assert((uintptr_t) p >= (uintptr_t) sceGeEdramGetAddr());
-	assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetAddr() + (uintptr_t) sceGeEdramGetSize());
+	app_assert((uintptr_t) p >= (uintptr_t) sceGeEdramGetAddr());
+	app_assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetAddr() + (uintptr_t) sceGeEdramGetSize());
 	return (void*) ((const u8*) p - (intptr_t) sceGeEdramGetAddr());
 }
 
 // Makes an absolute pointer from a pointer relative to VRAM
 void* psp_ptr_from_vram(const void* p) {
-	assert((intptr_t) p >= 0);
-	assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetSize());
+	app_assert((intptr_t) p >= 0);
+	app_assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetSize());
 	return (void*) ((const u8*) p + (intptr_t) sceGeEdramGetAddr());
 }
 
@@ -348,10 +350,10 @@ size_t gu_psm_get_bits_per_pixel(int psm) {
 	case GU_PSM_T8: return 8;
 	case GU_PSM_T16: return 16;
 	case GU_PSM_T32: return 32;
-	case GU_PSM_DXT1: assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
-	case GU_PSM_DXT3: assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
-	case GU_PSM_DXT5: assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
-	default: assert(0 && "Unknown PSM"); return 0;
+	case GU_PSM_DXT1: app_assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
+	case GU_PSM_DXT3: app_assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
+	case GU_PSM_DXT5: app_assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
+	default: app_assert(0 && "Unknown PSM"); return 0;
 	}
 }
 
@@ -433,19 +435,19 @@ typedef struct {
 } Texture;
 
 void texture_check_common(const Texture* m) {
-	assert(m->nb_mipmap_levels >= 1);
+	app_assert(m->nb_mipmap_levels >= 1);
 	if (m->size_px[0] && m->size_px[1]) {
-		assert(size_is_power_of_two_nonzero(m->stride_px));
-		assert(m->data);
+		app_assert(size_is_power_of_two_nonzero(m->stride_px));
+		app_assert(m->data);
 	} else {
-		assert(size_is_power_of_two_or_zero(m->stride_px));
+		app_assert(size_is_power_of_two_or_zero(m->stride_px));
 	}
 }
 
 void texture_check_as_input(const Texture* m) {
 	texture_check_common(m);
-	assert(size_is_power_of_two_or_zero(m->size_px[0]));
-	assert(size_is_power_of_two_or_zero(m->size_px[1]));
+	app_assert(size_is_power_of_two_or_zero(m->size_px[0]));
+	app_assert(size_is_power_of_two_or_zero(m->size_px[1]));
 }
 
 void texture_check_as_rendertarget(const Texture* m) {
@@ -495,8 +497,8 @@ void swizzle_fast(void* out, const void* in, uint32_t width_in_bytes, uint32_t h
 	const u32 src_pitch = (width_in_bytes - 16) / 4;
 	const u32 src_row = width_in_bytes * 8;
 
-	assert(ptr_is_aligned(in, 4));
-	assert(ptr_is_aligned(out, 4));
+	app_assert(ptr_is_aligned(in, 4));
+	app_assert(ptr_is_aligned(out, 4));
 	const u8* ysrc = in;
 	u32* dst = (u32*) out;
 
@@ -543,7 +545,7 @@ void gu_set_rendertarget(const Texture* m) {
 
 void gu_set_texture(const Texture* m) {
 	texture_check_as_input(m);
-	assert(m->nb_mipmap_levels == 1); // TODO: m->data should support multiple levels; needs to handle offset calculation
+	app_assert(m->nb_mipmap_levels == 1); // TODO: m->data should support multiple levels; needs to handle offset calculation
 	sceGuTexMode(m->psm, m->nb_mipmap_levels - 1, 0, m->is_swizzled);
 	for (size_t level = 0; level < m->nb_mipmap_levels; ++level)
 		sceGuTexImage(level, m->size_px[0] >> level, m->size_px[1] >> level, m->stride_px >> level, m->data);
@@ -579,10 +581,10 @@ typedef struct {
 void mesh_allocate_buffers(Mesh* m) {
 	m->vertices = malloc(m->nb_vertices * m->sizeof_vertex);
 	m->indices = malloc(m->nb_indices * sizeof m->indices[0]);
-	assert(m->nb_vertices * m->sizeof_vertex == 0 || m->vertices);
-	assert(m->nb_indices == 0 || m->indices);
-	assert(ptr_is_aligned(m->vertices, 16));
-	assert(ptr_is_aligned(m->indices, 16));
+	app_assert(m->nb_vertices * m->sizeof_vertex == 0 || m->vertices);
+	app_assert(m->nb_indices == 0 || m->indices);
+	app_assert(ptr_is_aligned(m->vertices, 16));
+	app_assert(ptr_is_aligned(m->indices, 16));
 }
 
 void mesh_destroy(Mesh* m) {
@@ -609,7 +611,7 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 		if (m->gu_topology == GU_TRIANGLES) {
 			g_frame_stats.meshes.nb_faces += count / 3;
 		} else {
-			assert(0 && "Calculating face number from this topology is not implemented yet");
+			app_assert(0 && "Calculating face number from this topology is not implemented yet");
 		}
 	} else {
 		sceGuPatchDivide(m->patch.divide[0], m->patch.divide[1]);
@@ -682,7 +684,7 @@ void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
 // Stolen from shadowprojection sample
 void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 thickness) {
 	// We're going to fit positions in a normalized integer format
-	assert(radius + thickness <= 1.f);
+	app_assert(radius + thickness <= 1.f);
 
 	const f32 slices_inv = 1.f / slices;
 	const f32 rows_inv = 1.f / rows;
@@ -769,7 +771,7 @@ void chdir_to_assets_directory(const char* argv0) {
 
 	memcpy(strrchr(pathbuf, '/') + 1, "assets", strlen("assets") + 1);
 
-	assert(pathbuf[0] != '\0');
+	app_assert(pathbuf[0] != '\0');
 	printf("Assets path: `%s`\n", pathbuf);
 
 	strcat(pathbuf, "/..");
@@ -777,7 +779,7 @@ void chdir_to_assets_directory(const char* argv0) {
 
 	// ----- Set res path as current dir
 	const int chdir_status = sceIoChdir(pathbuf);
-	assert(chdir_status >= 0);
+	app_assert(chdir_status >= 0);
 }
 
 typedef SceUID Fd;
@@ -790,18 +792,18 @@ Fd fd_open_readonly(const char* path, bool should_assert) {
 	const Fd fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
 	if (!fd_is_valid(fd)) {
 		fprintf(stderr, "Could not open `%s`\n", path);
-		assert(!should_assert && "Failed to open file");
+		app_assert(!should_assert && "Failed to open file");
 	}
 	return fd;
 }
 
 void fd_close(Fd fd) {
-	assert(fd_is_valid(fd));
+	app_assert(fd_is_valid(fd));
 	sceIoClose(fd);
 }
 
 ssize_t fd_read(Fd fd, void* data, ssize_t size) {
-	assert(fd_is_valid(fd));
+	app_assert(fd_is_valid(fd));
 	return sceIoRead(fd, data, size);
 }
 
@@ -908,7 +910,7 @@ TgaLoadedData tga_load(Fd fd) {
     || (hdr->image_descriptor & 0x1f) != 8 // Targa 32, include testing that the reserved bit is zero
 	|| (hdr->image_descriptor >> 6) // We want non-interleaved
 	) {
-        assert(0 && "TGA Format isn't TGA32; make sure you saved it with an alpha channel"); // Format doesn't match
+        app_assert(0 && "TGA Format isn't TGA32; make sure you saved it with an alpha channel"); // Format doesn't match
 		return out;
     }
 
@@ -916,7 +918,7 @@ TgaLoadedData tga_load(Fd fd) {
 		u8 image_id[255];
 		nread = fd_read(fd, image_id, hdr->id_length);
 		if (nread != hdr->id_length) {
-			assert(0); // Invalid image ID
+			app_assert(0); // Invalid image ID
 			return out;
 		}
 	}
@@ -927,13 +929,13 @@ TgaLoadedData tga_load(Fd fd) {
 	nread = fd_read(fd, out.pixel_data, data_size);
 
 	if (nread != data_size) {
-		assert(0); // Not enough data for pixels?
+		app_assert(0); // Not enough data for pixels?
 		free(out.pixel_data);
 		return out;
 	}
 
 	const bool is_origin_in_upper_left = !!(hdr->image_descriptor & (1 << 5));
-	assert(is_origin_in_upper_left);
+	app_assert(is_origin_in_upper_left);
 
 	// Data is BGRA in memory, need to swap to RGBA
 	u8* pixel_data_u8 = out.pixel_data;
@@ -1198,7 +1200,7 @@ void* app_gfx_vram_linear_alloc(AppGfx* m, size_t size, size_t alignment) {
 	m->vram_cursor = ptr_align(m->vram_cursor, alignment);
 	void* out = m->vram_cursor;
 	m->vram_cursor += size;
-	assert((uintptr_t) m->vram_cursor <= sceGeEdramGetSize());
+	app_assert((uintptr_t) m->vram_cursor <= sceGeEdramGetSize());
 	return out;
 }
 
@@ -1209,14 +1211,14 @@ void app_gfx_allocate_vram_resources(AppGfx* m) {
 
 		if (i < 2) {
 			it = &m->framebuffers[i];
-		} else if (i == 3) {
+		} else if (i == 2) {
 		 	it = &m->pingpong0_fb;
-		} else if (i == 4) {
+		} else if (i == 3) {
 		 	it = &m->z_buffer;
 			psm = GU_PSM_4444; // Doesn't really matter as long as we pick a 16-bit format for the size calculation
 		}
 
-		assert(it);
+		app_assert(it);
 
 		*it = (Texture) {
 			.nb_mipmap_levels = 1,
@@ -1245,9 +1247,10 @@ void gu_reset_state_to_app_defaults() {
 	sceGuAmbient(0);
 	sceGuFog(0.f, 0.f, 0);
 
+	const u32 c = 0xffffffffu;
 	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR);
-	sceGuModelColor(0, 0, 0, 0); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
-	sceGuAmbientColor(0); // Just to set the model's ambient alpha
+	sceGuModelColor(c, c, c, c); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
+	sceGuAmbientColor(0xffffffff); // Just to set the model's ambient alpha
 	sceGuSpecular(12.f);
 	sceGuShadeModel(GU_SMOOTH);
 
@@ -1287,7 +1290,7 @@ void app_gfx_init(AppGfx* m) {
 
 void app_gfx_swap_buffers(AppGfx* m) {
 	m->framebuffers[1].data = m->framebuffers[0].data;
-	m->framebuffers[0].data = sceGuSwapBuffers();
+	m->framebuffers[0].data = psp_ptr_from_vram(sceGuSwapBuffers());
 }
 
 void app_assets_init(AppAssets* m) {
@@ -1295,7 +1298,7 @@ void app_assets_init(AppAssets* m) {
 		ColorLutsMemory* c = &m->color_luts_mem;
 		for (size_t i = 0; i < countof(c->color_luts_rgba8888); ++i) {
 			c->color_luts_rgba8888[i] = malloc(256 * sizeof c->color_luts_rgba8888[i][0]);
-			assert(ptr_is_aligned(c->color_luts_rgba8888[i], 16));
+			app_assert(ptr_is_aligned(c->color_luts_rgba8888[i], 16));
 		}
 	}
 
@@ -1417,7 +1420,7 @@ void mesh_instance_draw(const MeshInstance* mi) {
 	mesh_draw_3d(mi->mesh);
 }
 
-void mesh_instance_draw_skyboxed(const MeshInstance* mi, const Camera* camera) {
+void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, const Camera* camera) {
 	sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
 	sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
 
@@ -1431,15 +1434,16 @@ void mesh_instance_draw_skyboxed(const MeshInstance* mi, const Camera* camera) {
 	gumMultMatrix(&texture_matrix, &texture_matrix, &camera->view_matrix_r);
 	gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
 	sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
+
+	mesh_instance_draw(mi);
 }
 
 void app_draw(App* app) {
-	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
-	sceGuClearDepth(0);
-
 	Texture* scene3d_fb = &app->gfx.pingpong0_fb;
 	gu_set_rendertarget(scene3d_fb);
 
+	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
+	sceGuClearDepth(0);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 
 	// Camera
@@ -1452,6 +1456,9 @@ void app_draw(App* app) {
 	sceGuLightColor(0, GU_SPECULAR, 0xffffffff);
 	sceGuLightAtt(0, 1.0f, 0.0f, 0.0f);
 
+	sceGuDisable(GU_LIGHTING);
+	sceGuDisable(GU_LIGHT0);
+
 	// Skybox
 	{
 		const Texture* t = &app->assets.horizon_gradient_texture;
@@ -1462,24 +1469,24 @@ void app_draw(App* app) {
 
 	// Grid (floor)
 	{
-		sceGuEnable(GU_LIGHTING);
-		sceGuEnable(GU_LIGHT0);
+		//sceGuEnable(GU_LIGHTING);
+		//sceGuEnable(GU_LIGHT0);
 		sceGuEnable(GU_TEXTURE_2D);
 
 		gu_set_texture(&app->assets.horizon_gradient_texture);
 
-		mesh_instance_draw_skyboxed(&app->scene.grid, &app->scene.camera);
+		mesh_instance_draw_sampling_texture_via_normals(&app->scene.grid, &app->scene.camera);
 	}
 
 	// Torus
 	{
-		sceGuEnable(GU_LIGHTING);
-		sceGuEnable(GU_LIGHT0);
+		//sceGuEnable(GU_LIGHTING);
+		//sceGuEnable(GU_LIGHT0);
 		sceGuEnable(GU_TEXTURE_2D);
 
 		gu_set_texture(&app->assets.mountain_bg_texture);
 
-		mesh_instance_draw_skyboxed(&app->scene.torus, &app->scene.camera);
+		mesh_instance_draw_sampling_texture_via_normals(&app->scene.torus, &app->scene.camera);
 	}
 
 	sceGuDisable(GU_LIGHTING);
@@ -1488,12 +1495,17 @@ void app_draw(App* app) {
 	sceGuTexProjMapMode(GU_UV);
 	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 
+	sceGuDepthMask(1);
+	sceGuDisable(GU_DEPTH_TEST);
+
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+
 	gu_set_rendertarget(&app->gfx.framebuffers[0]);
 
 	// Can work with other formats, but then :
 	// - Need to change GU_PSM_T32
 	// - Need to change the mask and shift passed to sceGuClutMode()
-	assert(app->gfx.framebuffer_psm == GU_PSM_8888);
+	app_assert(app->gfx.framebuffer_psm == GU_PSM_8888);
 
 	Texture scene3d_fb_t32 = *scene3d_fb;
 	scene3d_fb_t32.psm = GU_PSM_T32;
@@ -1516,11 +1528,15 @@ void app_draw(App* app) {
 		sceGuPixelMask(0);
 		break;
 	case LUT_MODE_3_TO_3:
-		sceGuEnable(GU_BLEND);
-		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
 		for (int i = 0; i < 3; ++i) {
 			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
 			sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[i]); // upload 32*8 entries (256)
+
+			if (i >= 1) {
+				sceGuEnable(GU_BLEND);
+				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
+			}
+
 			gu_draw_fullscreen_textured_quad(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 		}
 		sceGuDisable(GU_BLEND);
@@ -1531,6 +1547,8 @@ void app_draw(App* app) {
 }
 
 void app_process_input(App* app) {
+	LUT prev_lut = app->scene.camera.post_processing.lut;
+
 	app->input.previous = app->input.current;
 	if (sceCtrlReadBufferPositive(&app->input.current, 1)) {
 		if (app->input.current.Buttons != app->input.previous.Buttons) {
@@ -1541,11 +1559,14 @@ void app_process_input(App* app) {
 				app->scene.camera.post_processing.lut = (app->scene.camera.post_processing.lut + 1) % LUT_COUNT;
 		}
 	}
+
+	if (app->loop.nb_frames == 0 || app->scene.camera.post_processing.lut != prev_lut)
+		lut_fill(&app->assets.color_luts_mem, app->scene.camera.post_processing.lut);
 }
 
 void app_draw_debug_overlay(App* app) {
 	int debug_screen_pos[2] = { 1, 1 };
-	pspDebugScreenSetOffset((intptr_t) app->gfx.framebuffers[0].data);
+	pspDebugScreenSetOffset((intptr_t) psp_ptr_to_vram(app->gfx.framebuffers[0].data));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("LUT (cycle via L/R): %s", lut_get_name(app->scene.camera.post_processing.lut));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
@@ -1618,6 +1639,8 @@ int main(int argc, char* argv[]) {
 	const int vram_set_size_status = sceGeEdramSetSize(0x400000);
 	printf("sceGeEdramSetSize(0x400000) returned 0x%08x\n", vram_set_size_status);
 
+	app.gfx.framebuffer_psm = GU_PSM_8888;
+
 	app_gfx_allocate_vram_resources(&app.gfx);
 
 	// Note: this initializes global variables then clears the screen
@@ -1625,7 +1648,7 @@ int main(int argc, char* argv[]) {
 
 	app_gfx_init(&app.gfx);
 
-	assert(argc >= 1);
+	app_assert(argc >= 1);
 	chdir_to_assets_directory(argv[0]);
 
 	app_assets_init(&app.assets);
