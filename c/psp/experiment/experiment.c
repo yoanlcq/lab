@@ -197,7 +197,7 @@ typedef int64_t i64;
 typedef float f32;
 typedef double f64;
 
-#define app_assert(x) do { if (!(x)) { *(char*)NULL = 0; } } while (0)
+#define app_assert(x) do { if (!(x)) { fprintf(stderr, "Assertion failed: %s\n", #x); fflush(stderr); *(char*)NULL = 0; } } while (0)
 
 typedef f32 __attribute__((vector_size(16))) v4;
 typedef struct { v4 cols[4]; } m4;
@@ -414,111 +414,6 @@ typedef struct { f32 normal[3]; f32 position[3]; } Vertex_Nf32_Pf32;
 #define Vertex_Ni8_Pi16_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_16BIT)
 #define Vertex_Nf32_Pf32_FORMAT (GU_NORMAL_32BITF | GU_VERTEX_32BITF)
 
-void gu_draw_fullscreen_textured_quad_i16(i16 uv0, i16 uv1, u32 x_tile_size_px, u32 y_tile_size_px, u32 subdiv_x, u32 subdiv_y) {
-	if (x_tile_size_px == 0 && y_tile_size_px == 0 && subdiv_x == 0 && subdiv_y == 0) {
-		Vertex_Ti16_Pi16* v = sceGuGetMemory(2 * sizeof(Vertex_Ti16_Pi16));
-		v[0] = (Vertex_Ti16_Pi16) {
-			.uv = { 0, 0 },
-			.position = { 0, 0, 0 },
-		};
-		v[1] = (Vertex_Ti16_Pi16) {
-			.uv = { uv0, uv1 },
-			.position = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, 0 },
-		};
-		sceGuDrawArray(GU_SPRITES, Vertex_Ti16_Pi16_FORMAT | GU_TRANSFORM_2D, 2, NULL, v);
-	} else if (subdiv_x >= 1 && subdiv_y >= 1) {
-		// TODO: best setting (at least for 32-bit input texture format, unswizzled) seems to be:
-		// - subdiv_x = 5
-		// - subdiv_y = 1
-		//
-		// Setting subdiv_x >= 4 immediately gives a very noticeable boost.
-		//
-		// So :
-		// - subdiv_x = 4, tile size X = 480 / 4 = 120
-		// - subdiv_x = 5, tile size X = 480 / 5 = 96
-		// - subdiv_x = 6, tile size X = 480 / 6 = 80
-		const f32 subdiv_x_inv = 1.f / subdiv_x;
-		const f32 subdiv_y_inv = 1.f / subdiv_y;
-
-		const size_t nb_vertices = subdiv_x * subdiv_y * 2;
-		Vertex_Ti16_Pi16* v = sceGuGetMemory(nb_vertices * sizeof(Vertex_Ti16_Pi16));
-		Vertex_Ti16_Pi16* current_vertex = v;
-
-		for (size_t y = 0; y < subdiv_y; ++y) {
-			const f32 yt = y * subdiv_y_inv;
-			const f32 yb = (y + 1) * subdiv_y_inv;
-			for (size_t x = 0; x < subdiv_x; ++x) {
-				const f32 xt = x * subdiv_x_inv;
-				const f32 xb = (x + 1) * subdiv_x_inv;
-				*current_vertex++ = (Vertex_Ti16_Pi16) {
-					.uv = { floorf(xt * uv0), floorf(yt * uv1) },
-					.position = { floorf(xt * PSP_SCREEN_WIDTH), floorf(yt * PSP_SCREEN_HEIGHT), 0 },
-				};
-				*current_vertex++ = (Vertex_Ti16_Pi16) {
-					.uv = { floorf(xb * uv0), floorf(yb * uv1) },
-					.position = { floorf(xb * PSP_SCREEN_WIDTH), floorf(yb * PSP_SCREEN_HEIGHT), 0 },
-				};
-			}
-		}
-
-		sceGuDrawArray(GU_SPRITES, Vertex_Ti16_Pi16_FORMAT | GU_TRANSFORM_2D, nb_vertices, NULL, v);
-	} else if (x_tile_size_px >= 1 && y_tile_size_px >= 1) {
-		// My notes from researching the optimal tile size by measuring (the timing is for some scene + 3 fullscreen quad draw calls):
-		// The time it takes to render the scene alone (without fullscreen quads) was 5.160 ms, so you can subtract that and divide by 3 to get the time for a single fullscreen quad.
-		//
-		// These are the fastest configurations I've found:
-		//
-		// Time (ms) ; Tile size X ; Tile size Y
-		// 8.625     ; 32          ; 272
-		// 8.860     ; 96          ; 272
-		// 8.888     ; 24          ; 272
-		// 8.888     ; 112         ; 272
-		// 8.890     ; 16          ; 272
-		// 8.930     ; 64          ; 272
-		//
-		// Testing with Y = 136 gives almost the same results as with Y = 272, but with ever so slightly less performance, so it's not worth it.
-		// Perf degrades noticeably as X moves away from the noted values, especially past the hundred.
-		// Perf also degrades as Y moves away from 136 and 272.
-		//
-		// I have no explanation for this. Perhaps it's because it makes better use of the 8K texture cache... Or is it, really? There is no pixel reuse in my use case.
-		// And why wouldn't the GE figure out the optimal "fetch" pattern when you send a single fullscreen-sized quad (especially since it's a sprite)?
-		// That looks like a design issue to me, and licensees were probably given recommendations accordingly.
-		// At least, if breaking up a large quad into smaller pieces improves perf from 27 ms to 8.6 ms for the same result, then there's no reason the engine shouldn't be able to figure that out and do the equivalent. But that's probably just the way it is for old hardware.
-		//
-		// I note that there's a similar idea with GU_FAST_CLEAR_BIT and that apparently drawing multiple vertical quads is the fast way to draw to the entire screen.
-		// For instance see the IsReallyAClear() function in PPSSPP (https://github.com/hrydgard/ppsspp/blob/17d807197d2da9e41dd6523bcbe94a92bbedb019/GPU/Common/SoftwareTransformCommon.cpp#L92)
-
-		const f32 x_tile_size_pct = x_tile_size_px / (f32) PSP_SCREEN_WIDTH;
-		const f32 y_tile_size_pct = y_tile_size_px / (f32) PSP_SCREEN_HEIGHT;
-		const u32 nb_tiles_y = (PSP_SCREEN_HEIGHT + y_tile_size_px - 1) / y_tile_size_px;
-		const u32 nb_tiles_x = (PSP_SCREEN_WIDTH + x_tile_size_px - 1) / x_tile_size_px;
-
-		const size_t nb_vertices = nb_tiles_y * nb_tiles_x * 2;
-		Vertex_Ti16_Pi16* v = sceGuGetMemory(nb_vertices * sizeof(Vertex_Ti16_Pi16));
-		Vertex_Ti16_Pi16* current_vertex = v;
-
-		for (size_t y = 0; y < nb_tiles_y; ++y) {
-			const f32 yt = fminf(1, y * y_tile_size_pct);
-			const f32 yb = fminf(1, (y + 1) * y_tile_size_pct);
-			for (size_t x = 0; x < nb_tiles_x; ++x) {
-				const f32 xt = fminf(1, x * x_tile_size_pct);
-				const f32 xb = fminf(1, (x + 1) * x_tile_size_pct);
-
-				*current_vertex++ = (Vertex_Ti16_Pi16) {
-					.uv = { floorf(xt * uv0), floorf(yt * uv1) },
-					.position = { floorf(xt * PSP_SCREEN_WIDTH), floorf(yt * PSP_SCREEN_HEIGHT), 0 },
-				};
-				*current_vertex++ = (Vertex_Ti16_Pi16) {
-					.uv = { floorf(xb * uv0), floorf(yb * uv1) },
-					.position = { floorf(xb * PSP_SCREEN_WIDTH), floorf(yb * PSP_SCREEN_HEIGHT), 0 },
-				};
-			}
-		}
-		
-		sceGuDrawArray(GU_SPRITES, Vertex_Ti16_Pi16_FORMAT | GU_TRANSFORM_2D, nb_vertices, NULL, v);
-	}
-}
-
 typedef struct {
 	void* data;
 	u16 size_px[2];
@@ -672,13 +567,23 @@ typedef struct {
 	MeshPatch patch;
 } Mesh;
 
+void mesh_check_pointers(const Mesh* m) {
+	app_assert(m->nb_vertices * m->sizeof_vertex == 0 || m->vertices);
+	app_assert(m->nb_indices == 0 || m->indices);
+	//app_assert(ptr_is_aligned(m->vertices, 16));
+	//app_assert(ptr_is_aligned(m->indices, 16));
+}
+
 void mesh_allocate_buffers(Mesh* m) {
 	m->vertices = malloc(m->nb_vertices * m->sizeof_vertex);
 	m->indices = malloc(m->nb_indices * sizeof m->indices[0]);
-	app_assert(m->nb_vertices * m->sizeof_vertex == 0 || m->vertices);
-	app_assert(m->nb_indices == 0 || m->indices);
-	app_assert(ptr_is_aligned(m->vertices, 16));
-	app_assert(ptr_is_aligned(m->indices, 16));
+	mesh_check_pointers(m);
+}
+
+void mesh_allocate_buffers_in_current_display_list(Mesh* m) {
+	m->vertices = sceGuGetMemory(m->nb_vertices * m->sizeof_vertex);
+	m->indices = sceGuGetMemory(m->nb_indices * sizeof m->indices[0]);
+	mesh_check_pointers(m);
 }
 
 void mesh_destroy(Mesh* m) {
@@ -702,10 +607,16 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 		// Stats
 		g_frame_stats.meshes.nb_elements += count;
 		g_frame_stats.meshes.nb_vertices += m->nb_vertices;
-		if (m->gu_topology == GU_TRIANGLES) {
+		switch (m->gu_topology) {
+		case GU_TRIANGLES:
 			g_frame_stats.meshes.nb_faces += count / 3;
-		} else {
+			break;
+		case GU_SPRITES:
+			g_frame_stats.meshes.nb_faces += count / 2;
+			break;
+		default:
 			app_assert(0 && "Calculating face number from this topology is not implemented yet");
+			break;
 		}
 	} else {
 		sceGuPatchDivide(m->patch.divide[0], m->patch.divide[1]);
@@ -840,6 +751,92 @@ void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 th
 		}
 		sceKernelDcacheWritebackRange(m->indices, m->nb_indices * sizeof m->indices[0]);
 	}
+}
+
+// My notes from researching the optimal tile size by measuring (the timing is for some scene + 3 fullscreen quad draw calls):
+// The time it takes to render the scene alone (without fullscreen quads) was 5.160 ms, so you can subtract that and divide by 3 to get the time for a single fullscreen quad.
+//
+// These are the fastest configurations I've found:
+//
+// Time (ms) ; Tile size X ; Tile size Y
+// 8.625     ; 32          ; 272
+// 8.860     ; 96          ; 272
+// 8.888     ; 24          ; 272
+// 8.888     ; 112         ; 272
+// 8.890     ; 16          ; 272
+// 8.930     ; 64          ; 272
+//
+// Testing with Y = 136 gives almost the same results as with Y = 272, but with ever so slightly less performance, so it's not worth it.
+// Perf degrades noticeably as X moves away from the noted values, especially past the hundred.
+// Perf also degrades as Y moves away from 136 and 272.
+//
+// I have no explanation for this. Perhaps it's because it makes better use of the 8K texture cache... Or is it, really? There is no pixel reuse in my use case.
+// And why wouldn't the GE figure out the optimal "fetch" pattern when you send a single fullscreen-sized quad (especially since it's a sprite)?
+// That looks like a design issue to me, and licensees were probably given recommendations accordingly.
+// At least, if breaking up a large quad into smaller pieces improves perf from 27 ms to 8.6 ms for the same result, then there's no reason the engine shouldn't be able to figure that out and do the equivalent. But that's probably just the way it is for old hardware.
+//
+// I note that there's a similar idea with GU_FAST_CLEAR_BIT and that apparently drawing multiple vertical quads is the fast way to draw to the entire screen.
+// For instance see the IsReallyAClear() function in PPSSPP (https://github.com/hrydgard/ppsspp/blob/17d807197d2da9e41dd6523bcbe94a92bbedb019/GPU/Common/SoftwareTransformCommon.cpp#L92)
+//
+// Also it doesn't make a difference at all whether the mesh is indexed or not; but I do find the indexed version more elegant, and it's good practice anyway (for vertex cache reuse in modern GPUs)
+
+// These constants are mostly to make it easier to search for code that assumes these values; they don't have to be used in all cases.
+#define FULLSCREENQUAD_BEST_TILE_SIZE_X 32
+#define FULLSCREENQUAD_BEST_TILE_SIZE_Y PSP_SCREEN_HEIGHT
+
+void mesh_generate_fullscreen_quad_i16(Mesh* m, u32 screen_width, u32 screen_height, u32 tile_size_x_px, u32 tile_size_y_px, i16 uv0, i16 uv1) {
+	const u32 nb_tiles_y = (screen_height + tile_size_y_px - 1) / tile_size_y_px;
+	const u32 nb_tiles_x = (screen_width + tile_size_x_px - 1) / tile_size_x_px;
+
+	m->gu_topology = GU_SPRITES;
+	m->gu_vertex_format = Vertex_Ti16_Pi16_FORMAT;
+	Vertex_Ti16_Pi16* vertices = m->vertices;
+	m->sizeof_vertex = sizeof vertices[0];
+
+	m->nb_vertices = (nb_tiles_y + 1) * (nb_tiles_x + 1);
+	if (vertices) {
+		const f32 tile_size_x_percentage = tile_size_x_px / (f32) screen_width;
+		const f32 tile_size_y_percentage = tile_size_y_px / (f32) screen_height;
+
+		Vertex_Ti16_Pi16* current_vertex = vertices;
+		for (size_t y = 0; y <= nb_tiles_y; ++y) {
+			// For yt and xt, we min() with 1 to guarantee that we never sample outside of the given UV range.
+			// This may be important for preventing invalid memory accesses; for instance we may use a framebuffer texture, pretending its width is larger than what it really is, in order to satisfy the power-of-two constraint.
+			const f32 yt = fminf(1, y * tile_size_y_percentage);
+			for (size_t x = 0; x <= nb_tiles_x; ++x) {
+				const f32 xt = fminf(1, x * tile_size_x_percentage);
+
+				// I use floorf() in order not to assume the default rounding mode
+				*current_vertex++ = (Vertex_Ti16_Pi16) {
+					.uv = { floorf(xt * uv0), floorf(yt * uv1) },
+					.position = { floorf(xt * screen_width), floorf(yt * screen_height), 0 },
+				};
+			}
+		}
+		sceKernelDcacheWritebackRange(vertices, m->nb_vertices * sizeof vertices[0]);
+	}
+
+	m->nb_indices = nb_tiles_y * nb_tiles_x * 2;
+	if (m->indices) {
+		u16* current_index = m->indices;
+		for (size_t y = 0; y < nb_tiles_y; ++y) {
+			for (size_t x = 0; x < nb_tiles_x; ++x) {
+				*current_index++ = (y + 0) * (nb_tiles_x + 1) + x + 0;
+				*current_index++ = (y + 1) * (nb_tiles_x + 1) + x + 1;
+			}
+		}
+		sceKernelDcacheWritebackRange(m->indices, m->nb_indices * sizeof m->indices[0]);
+	}
+}
+
+void gu_draw_fullscreen_textured_quad_i16(i16 uv0, i16 uv1) {
+	Mesh mesh = {0};
+	for (size_t i = 0; i < 2; ++i) {
+		mesh_generate_fullscreen_quad_i16(&mesh, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, FULLSCREENQUAD_BEST_TILE_SIZE_X, FULLSCREENQUAD_BEST_TILE_SIZE_Y, uv0, uv1);
+		if (i == 0)
+			mesh_allocate_buffers_in_current_display_list(&mesh);
+	}
+	mesh_draw_2d(&mesh);
 }
 
 //
@@ -1246,6 +1243,7 @@ typedef struct {
 	Texture mountain_bg_texture;
 	Mesh torus_mesh;
 	Mesh grid_mesh;
+	Mesh fullscreen_quad_2d_mesh;
 } AppAssets;
 
 typedef struct {
@@ -1285,10 +1283,6 @@ typedef struct {
 
 typedef enum {
 	VAR_ID__INVALID = 0,
-	VAR_ID__FULLSCREEN_QUAD_SUBDIV_X,
-	VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y,
-	VAR_ID__FULLSCREEN_QUAD_X_EXP,
-	VAR_ID__FULLSCREEN_QUAD_Y_EXP,
 	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
 	VAR_ID__COUNT // Keep last
 } AppVariableID;
@@ -1444,6 +1438,7 @@ void app_assets_init(AppAssets* m) {
 		sceKernelDcacheWritebackRange(pixels, t->size_px[0] * t->size_px[1] * sizeof pixels[0]);
 	}
 
+	// Huge texture
 	{
 		Texture* t = &m->huge_texture;
 		*t = (Texture) {
@@ -1467,13 +1462,15 @@ void app_assets_init(AppAssets* m) {
 	m->horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/horizon_gradient.tga", true);
 	m->mountain_bg_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/mountain_bg.tga", true);
 
-	// Torus and grid
+	// Meshes. First pass is for determining size requirements then allocate buffers, second pass is for filling buffers
 	for (size_t i = 0; i < 2; ++i) {
 		mesh_generate_torus(&m->torus_mesh, 48, 48, 0.5f, 0.3f);
 		mesh_generate_grid(&m->grid_mesh, 16, 16);
+		mesh_generate_fullscreen_quad_i16(&m->fullscreen_quad_2d_mesh, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, FULLSCREENQUAD_BEST_TILE_SIZE_X, FULLSCREENQUAD_BEST_TILE_SIZE_Y, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 		if (i == 0) {
 			mesh_allocate_buffers(&m->torus_mesh);
 			mesh_allocate_buffers(&m->grid_mesh);
+			mesh_allocate_buffers(&m->fullscreen_quad_2d_mesh);
 		}
 	}
 }
@@ -1481,6 +1478,7 @@ void app_assets_init(AppAssets* m) {
 void app_assets_deinit(AppAssets* m) {
 	mesh_destroy(&m->torus_mesh);
 	mesh_destroy(&m->grid_mesh);
+	mesh_destroy(&m->fullscreen_quad_2d_mesh);
 
 	texture_destroy(&m->uv_test_texture);
 	texture_destroy(&m->horizon_gradient_texture);
@@ -1601,7 +1599,7 @@ void app_draw_postprocessing(App* app) {
 				sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[0]); // upload 32*8 entries (256)
 
 			sceGuPixelMask(~(0xffu << (i*8)));
-			gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, app->vars[VAR_ID__FULLSCREEN_QUAD_X_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y].value);
+			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
 		}
 		sceGuPixelMask(0);
 		break;
@@ -1615,7 +1613,7 @@ void app_draw_postprocessing(App* app) {
 				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
 			}
 
-			gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, app->vars[VAR_ID__FULLSCREEN_QUAD_X_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y].value);
+			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
 		}
 		sceGuDisable(GU_BLEND);
 		break;
@@ -1650,7 +1648,7 @@ void app_draw(App* app) {
 		const Texture* t = &app->assets.horizon_gradient_texture;
 		sceGuEnable(GU_TEXTURE_2D);
 		gu_set_texture(t);
-		gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1], app->vars[VAR_ID__FULLSCREEN_QUAD_X_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X].value, app->vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y].value);
+		gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1]);
 	}
 
 	// Grid (floor)
@@ -1687,6 +1685,12 @@ void app_draw(App* app) {
 		// - Need to change the mask and shift passed to sceGuClutMode()
 		app_assert(app->gfx.framebuffer_psm == GU_PSM_8888);
 
+		// Perf notes for various right shifts (drawing the scene alone is 5.160 ms):
+		// 0 (512 x 512): 8.625 ms
+		// 1 (256 x 256): 7.333 ms
+		// 2 (128 x 128): 6.725 ms
+		// 3 ( 64 x  64): 6.020 ms
+		// 4 ( 32 x  32): 5.875 ms
 		const u32 sz_px = 512 >> (u32) app->vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP].value;
 
 		Texture scene3d_fb_t32 = *scene3d_fb;
@@ -1858,10 +1862,6 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_X] = (AppVariable) { "Fs Quad Subdiv X", 0, 0, 8, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__FULLSCREEN_QUAD_SUBDIV_Y] = (AppVariable) { "Fs Quad Subdiv Y", 0, 0, 8, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__FULLSCREEN_QUAD_X_EXP] = (AppVariable) { "Fs Quad X Tile Size", 32, 0, PSP_SCREEN_WIDTH, 8, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
-	app.vars[VAR_ID__FULLSCREEN_QUAD_Y_EXP] = (AppVariable) { "Fs Quad Y Tile Size", PSP_SCREEN_HEIGHT, 0, PSP_SCREEN_HEIGHT, 8, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
 
 	app_init_fpu();
