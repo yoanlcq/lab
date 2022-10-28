@@ -340,24 +340,42 @@ void* psp_ptr_from_vram(const void* p) {
 	return (void*) ((const u8*) p + (intptr_t) sceGeEdramGetAddr());
 }
 
-size_t gu_psm_get_bits_per_pixel(int psm) {
+typedef struct {
+	u8 nb_bits;
+} PsmChannelInfo;
+
+typedef struct {
+	u8 psm; // The psm itself, for convenience
+	u8 nb_bits;
+	PsmChannelInfo channels[4];
+} PsmInfo;
+
+PsmInfo gu_psm_get_info(u32 psm) {
 	switch (psm) {
-	case GU_PSM_5650: return 16;
-	case GU_PSM_5551: return 16;
-	case GU_PSM_4444: return 16;
-	case GU_PSM_8888: return 32;
-	case GU_PSM_T4: return 4;
-	case GU_PSM_T8: return 8;
-	case GU_PSM_T16: return 16;
-	case GU_PSM_T32: return 32;
-	case GU_PSM_DXT1: app_assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
-	case GU_PSM_DXT3: app_assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
-	case GU_PSM_DXT5: app_assert(0 && "Attempted to get bits per pixel for DXT; this doesn't make sense, must count of a per 4x4 block basis instead"); return 0;
-	default: app_assert(0 && "Unknown PSM"); return 0;
+	case GU_PSM_5650: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 5 }, { .nb_bits = 6 }, { .nb_bits = 5 }, { .nb_bits = 0 } } };
+	case GU_PSM_5551: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 5 }, { .nb_bits = 5 }, { .nb_bits = 1 }, { .nb_bits = 1 } } };
+	case GU_PSM_4444: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 4 }, { .nb_bits = 4 }, { .nb_bits = 4 }, { .nb_bits = 4 } } };
+	case GU_PSM_8888: return (PsmInfo) { .psm = psm, .nb_bits = 32, .channels = { { .nb_bits = 8 }, { .nb_bits = 8 }, { .nb_bits = 8 }, { .nb_bits = 8 } } };
+	case GU_PSM_T4  : return (PsmInfo) { .psm = psm, .nb_bits = 4 };
+	case GU_PSM_T8  : return (PsmInfo) { .psm = psm, .nb_bits = 8 };
+	case GU_PSM_T16 : return (PsmInfo) { .psm = psm, .nb_bits = 16 };
+	case GU_PSM_T32 : return (PsmInfo) { .psm = psm, .nb_bits = 32 };
+	case GU_PSM_DXT1:
+	case GU_PSM_DXT3:
+	case GU_PSM_DXT5:
+		app_assert(0 && "DXT is not representable yet in PsmInfo and doesn't have bits-per-pixel since it operates on 4x4 blocks instead");
+		return (PsmInfo) {0};
+	default:
+		app_assert(0 && "Unknown PSM");
+		return (PsmInfo) {0};
 	}
 }
 
-size_t gu_psm_get_bytes_per_pixel(int psm) {
+size_t gu_psm_get_bits_per_pixel(u32 psm) {
+	return gu_psm_get_info(psm).nb_bits;
+}
+
+size_t gu_psm_get_bytes_per_pixel(u32 psm) {
 	return gu_psm_get_bits_per_pixel(psm) / 8;
 }
 
@@ -1150,7 +1168,8 @@ typedef enum LUTMode {
 } LUTMode;
 
 typedef struct {
-	u32* color_luts_rgba8888[4];
+	u32 psm;
+	void* clut_per_channel[4];
 } ColorLutsMemory;
 
 LUTMode lut_get_mode(LUT lut) {
@@ -1164,47 +1183,117 @@ LUTMode lut_get_mode(LUT lut) {
 	}
 }
 
-void lut_fill(ColorLutsMemory* m, LUT lut) {
+static u32 safe_round_to_u32(f32 f, u32 max) {
+	return roundf(fminf(fmaxf(f, 0), 1) * max);
+}
+
+// https://github.com/pspdev/pspsdk/blob/d019dbc7ecc198102229d0cdfe02976b6bef4e4d/src/debug/scr_printf.c#L42
+u16 gu_color_8888_to_5650(u32 c) {
+	const u32 b = (c >> 19) & 0x1F;
+	const u32 g = (c >> 10) & 0x3F;
+	const u32 r = (c >> 3) & 0x1F;
+	return r | (g << 5) | (b << 11);
+}
+
+u16 gu_color_8888_to_5551(u32 c) {
+	const u32 a = (c >> 24) ? 0x8000 : 0;
+	const u32 b = (c >> 19) & 0x1F;
+	const u32 g = (c >> 11) & 0x1F;
+	const u32 r = (c >> 3) & 0x1F;
+	return a | r | (g << 5) | (b << 10);
+}
+
+u16 gu_color_8888_to_4444(u32 c) {
+	const u32 a = (c >> 28) & 0xF; 
+	const u32 b = (c >> 20) & 0xF;
+	const u32 g = (c >> 12) & 0xF;
+	const u32 r = (c >> 4) & 0xF;
+	return (a << 12) | r | (g << 4) | (b << 8);
+}
+
+void gu_color_store_from_rgbaf(void* out, u32 psm, const f32* rgbaf) {
+	const u32 rgba8888 = GU_ABGR(
+		safe_round_to_u32(rgbaf[3], 0xff),
+		safe_round_to_u32(rgbaf[2], 0xff),
+		safe_round_to_u32(rgbaf[1], 0xff),
+		safe_round_to_u32(rgbaf[0], 0xff)
+	);
+		
+	switch (psm) {
+	case GU_PSM_5650: *(u16*) out = gu_color_8888_to_5650(rgba8888); break;
+	case GU_PSM_5551: *(u16*) out = gu_color_8888_to_5551(rgba8888); break;
+	case GU_PSM_4444: *(u16*) out = gu_color_8888_to_4444(rgba8888); break;
+	case GU_PSM_8888: *(u32*) out = rgba8888; break;
+	default: app_assert(0); break;
+	}
+}
+
+typedef void (*RgbafFromScalarFn)(f32*, f32);
+
+void rgbaf_identity(f32* rgbaf, f32 x) {
+	rgbaf[0] = rgbaf[1] = rgbaf[2] = x;
+}
+
+void rgbaf_invert(f32* rgbaf, f32 x) {
+	rgbaf[0] = rgbaf[1] = rgbaf[2] = 1 - x;
+}
+
+void rgbaf_srgb_to_linear(f32* rgbaf, f32 x) {
+	rgbaf[0] = rgbaf[1] = rgbaf[2] = powf(x, 2.2f);
+}
+
+void rgbaf_linear_to_srgb(f32* rgbaf, f32 x) {
+	rgbaf[0] = rgbaf[1] = rgbaf[2] = powf(x, 1.f / 2.2f);
+}
+
+// outputRed   = (inputRed * .393) + (inputGreen * .769) + (inputBlue * .189)
+// outputGreen = (inputRed * .349) + (inputGreen * .686) + (inputBlue * .168)
+// outputBlue  = (inputRed * .272) + (inputGreen * .534) + (inputBlue * .131)
+void sepia_func_r(f32* rgbaf, f32 x) { rgbaf[0] = .393f; rgbaf[1] = .349f; rgbaf[2] = .272f; }
+void sepia_func_g(f32* rgbaf, f32 x) { rgbaf[0] = .769f; rgbaf[1] = .686f; rgbaf[2] = .534f; }
+void sepia_func_b(f32* rgbaf, f32 x) { rgbaf[0] = .189f; rgbaf[1] = .168f; rgbaf[2] = .131f; }
+
+const RgbafFromScalarFn sepia_funcs[] = { sepia_func_r, sepia_func_g, sepia_func_b };
+
+void lut_fill_helper_3_funcs(ColorLutsMemory* m, const PsmInfo* psm_info, const RgbafFromScalarFn* f) {
+	for (size_t channel = 0; channel < 3; ++channel) {
+		const u32 channel_max = (1u << psm_info->channels[channel].nb_bits) - 1u;
+		u8* clut_ptr = m->clut_per_channel[channel];
+		for (u32 i = 0; i <= channel_max; ++i) {
+			f32 rgbaf[4] = { 0, 0, 0, 1 };
+			f[channel](rgbaf, i / (f32) channel_max);
+
+			gu_color_store_from_rgbaf(clut_ptr, psm_info->psm, rgbaf);
+			clut_ptr += psm_info->nb_bits / 8;
+		}
+
+		sceKernelDcacheWritebackRange(m->clut_per_channel[channel], (channel_max + 1) * psm_info->nb_bits / 8);
+	}
+}
+
+void lut_fill_helper_1_func(ColorLutsMemory* m, const PsmInfo* psm_info, RgbafFromScalarFn f) {
+	const RgbafFromScalarFn fa[] = { f, f, f };
+	lut_fill_helper_3_funcs(m, psm_info, fa);
+}
+
+void lut_fill(ColorLutsMemory* m, LUT lut, u32 psm) {
+	m->psm = psm;
+	const PsmInfo psm_info = gu_psm_get_info(psm);
 	switch (lut) {
 	case LUT_IDENTITY: 
-		for (int i = 0; i < 256; ++i) {
-			m->color_luts_rgba8888[0][i] = GU_ABGR(0xff, i, i, i);
-		}
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[0], 256 * 4);
+		lut_fill_helper_1_func(m, &psm_info, rgbaf_identity);
 		break;
 	case LUT_INVERT: 
-		for (int i = 0; i < 256; ++i) {
-			int x = 256 - i;
-			m->color_luts_rgba8888[0][i] = GU_ABGR(0xff, x, x, x);
-		}
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[0], 256 * 4);
+		lut_fill_helper_1_func(m, &psm_info, rgbaf_invert);
 		break;
 	case LUT_SRGB_TO_LINEAR: 
-		for (int i = 0; i < 256; ++i) {
-			const int x = 255 * powf(i / 255.f, 2.2f);
-			m->color_luts_rgba8888[0][i] = GU_ABGR(0xff, x, x, x);
-		}
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[0], 256 * 4);
+		lut_fill_helper_1_func(m, &psm_info, rgbaf_srgb_to_linear);
 		break;
 	case LUT_LINEAR_TO_SRGB: 
-		for (int i = 0; i < 256; ++i) {
-			const int x = 255 * powf(i / 255.f, 1.f / 2.2f);
-			m->color_luts_rgba8888[0][i] = GU_ABGR(0xff, x, x, x);
-		}
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[0], 256 * 4);
+		lut_fill_helper_1_func(m, &psm_info, rgbaf_linear_to_srgb);
 		break;
 	case LUT_SEPIA:
-		for (int i = 0; i < 256; ++i) {
-			// outputRed   = (inputRed * .393) + (inputGreen * .769) + (inputBlue * .189)
-			// outputGreen = (inputRed * .349) + (inputGreen * .686) + (inputBlue * .168)
-			// outputBlue  = (inputRed * .272) + (inputGreen * .534) + (inputBlue * .131)
-			m->color_luts_rgba8888[0][i] = GU_ABGR(0xff, (u32) (.272f * i), (u32) (.349f * i), (u32) (.393f * i));
-			m->color_luts_rgba8888[1][i] = GU_ABGR(0xff, (u32) (.534f * i), (u32) (.686f * i), (u32) (.769f * i));
-			m->color_luts_rgba8888[2][i] = GU_ABGR(0xff, (u32) (.131f * i), (u32) (.168f * i), (u32) (.189f * i));
-		}
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[0], 256 * 4);
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[1], 256 * 4);
-		sceKernelDcacheWritebackRange(m->color_luts_rgba8888[2], 256 * 4);
+		lut_fill_helper_3_funcs(m, &psm_info, sepia_funcs);
 		break;
 	default:
 		break;
@@ -1223,7 +1312,6 @@ PSP_MAIN_THREAD_ATTR(PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU);
 u32 ALIGN16 g_gu_main_list[256 * 1024] = {0}; // Zeroing should not be necessary, but samples declare it as static, which zeroes it, so...
 
 typedef struct {
-	u8 framebuffer_psm;
 	u8* vram_cursor;
 	Texture framebuffers[2];
 	Texture z_buffer;
@@ -1283,6 +1371,7 @@ typedef struct {
 
 typedef enum {
 	VAR_ID__INVALID = 0,
+	VAR_ID__FB_PSM,
 	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
 	VAR_ID__COUNT // Keep last
 } AppVariableID;
@@ -1319,10 +1408,10 @@ void* app_gfx_vram_linear_alloc(AppGfx* m, size_t size, size_t alignment) {
 	return out;
 }
 
-void app_gfx_allocate_vram_resources(AppGfx* m) {
+void app_gfx_allocate_vram_resources(AppGfx* m, u32 framebuffer_psm) {
 	for (size_t i = 0; i < 4; ++i) {
 		Texture* it = NULL;
-		u32 psm = m->framebuffer_psm;
+		u32 psm = framebuffer_psm;
 
 		if (i < 2) {
 			it = &m->framebuffers[i];
@@ -1344,6 +1433,16 @@ void app_gfx_allocate_vram_resources(AppGfx* m) {
 		const size_t size = it->stride_px * it->size_px[1] * gu_psm_get_bytes_per_pixel(it->psm);
 		it->data = psp_ptr_from_vram(app_gfx_vram_linear_alloc(m, size, 16));
 	}
+}
+
+void app_gfx_use_vram_resources(AppGfx* m) {
+	const Texture* fb0 = &m->framebuffers[0];
+	const Texture* fb1 = &m->framebuffers[1];
+	const Texture* zb = &m->z_buffer;
+	sceGuDrawBuffer(fb0->psm, psp_ptr_to_vram(fb0->data), fb0->stride_px);
+	sceGuDispBuffer(fb1->size_px[0], fb1->size_px[1], psp_ptr_to_vram(fb1->data), fb1->stride_px);
+	sceGuDepthBuffer(psp_ptr_to_vram(zb->data), zb->stride_px);
+	gu_set_offset_and_viewport_and_scissor(fb0->size_px[0], fb1->size_px[1]);
 }
 
 void gu_reset_state_to_app_defaults() {
@@ -1388,13 +1487,7 @@ void app_gfx_init(AppGfx* m) {
 
 	sceGuSetCallback(GU_CALLBACK_SIGNAL, gu_on_signal);
 
-	const Texture* fb0 = &m->framebuffers[0];
-	const Texture* fb1 = &m->framebuffers[1];
-	const Texture* zb = &m->z_buffer;
-	sceGuDrawBuffer(m->framebuffer_psm, psp_ptr_to_vram(fb0->data), fb0->stride_px);
-	sceGuDispBuffer(fb1->size_px[0], fb1->size_px[1], psp_ptr_to_vram(fb1->data), fb1->stride_px);
-	sceGuDepthBuffer(psp_ptr_to_vram(zb->data), zb->stride_px);
-	gu_set_offset_and_viewport_and_scissor(fb0->size_px[0], fb1->size_px[1]);
+	app_gfx_use_vram_resources(m);
 
 	gu_reset_state_to_app_defaults();
 
@@ -1411,9 +1504,9 @@ void app_gfx_swap_buffers(AppGfx* m) {
 void app_assets_init(AppAssets* m) {
 	{
 		ColorLutsMemory* c = &m->color_luts_mem;
-		for (size_t i = 0; i < countof(c->color_luts_rgba8888); ++i) {
-			c->color_luts_rgba8888[i] = malloc(256 * sizeof c->color_luts_rgba8888[i][0]);
-			app_assert(ptr_is_aligned(c->color_luts_rgba8888[i], 16));
+		for (size_t i = 0; i < countof(c->clut_per_channel); ++i) {
+			c->clut_per_channel[i] = malloc(256 * 4);
+			app_assert(ptr_is_aligned(c->clut_per_channel[i], 16));
 		}
 	}
 
@@ -1486,8 +1579,8 @@ void app_assets_deinit(AppAssets* m) {
 
 	{
 		ColorLutsMemory* c = &m->color_luts_mem;
-		for (size_t i = 0; i < countof(c->color_luts_rgba8888); ++i) {
-			free(c->color_luts_rgba8888[i]);
+		for (size_t i = 0; i < countof(c->clut_per_channel); ++i) {
+			free(c->clut_per_channel[i]);
 		}
 	}
 }
@@ -1577,36 +1670,47 @@ void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, con
 	mesh_instance_draw(mi);
 }
 
+TODO;
+// - Sepia is broken (white)
+// - FB format 1 has a wrong channel (the image is more green/yellow)
+//   OR, the clut shift is wrong
+// - FB format 3: green line at the horizon (with identity channel)
+// - Consider re-adding the dither feature (to see how it looks with 16-bit formats)
 void app_draw_postprocessing(App* app) {
 	sceGuDepthMask(1);
 	sceGuDisable(GU_DEPTH_TEST);
 
-	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 
+	// Testing how slow it is when reading from main RAM rather than VRAM
 	if (false) {
 		Texture t = app->assets.huge_texture;
 		t.is_swizzled = true;
 		gu_set_texture(&t);
 	}
 
+	const PsmInfo psm_info = gu_psm_get_info(app->assets.color_luts_mem.psm);
+	u32 nb_bits_processed = 0;
 	const LUTMode lut_mode = lut_get_mode(app->scene.camera.post_processing.lut);
 	switch (lut_mode) {
 	case LUT_MODE_1_TO_1:
 		for (int i = 0; i < 3; ++i) {
-			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
+			const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
+			sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
+			sceGuClutLoad(channel_max / 8, app->assets.color_luts_mem.clut_per_channel[i]);
 
-			if (i == 0) // Only need to do this at the 1st iteration, but after sceGuClutMode()
-				sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[0]); // upload 32*8 entries (256)
-
-			sceGuPixelMask(~(0xffu << (i*8)));
+			sceGuPixelMask(~(0xffu << (i*8))); // Format is RGBA8888
 			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+
+			nb_bits_processed += psm_info.channels[i].nb_bits;
 		}
 		sceGuPixelMask(0);
 		break;
 	case LUT_MODE_3_TO_3:
 		for (int i = 0; i < 3; ++i) {
-			sceGuClutMode(GU_PSM_8888, i * 8, 0xff, 0);
-			sceGuClutLoad(256 / 8, app->assets.color_luts_mem.color_luts_rgba8888[i]); // upload 32*8 entries (256)
+			const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
+			sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
+			sceGuClutLoad(channel_max / 8, app->assets.color_luts_mem.clut_per_channel[i]);
 
 			if (i >= 1) {
 				sceGuEnable(GU_BLEND);
@@ -1614,6 +1718,8 @@ void app_draw_postprocessing(App* app) {
 			}
 
 			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+
+			nb_bits_processed += psm_info.channels[i].nb_bits;
 		}
 		sceGuDisable(GU_BLEND);
 		break;
@@ -1622,18 +1728,7 @@ void app_draw_postprocessing(App* app) {
 	}
 }
 
-void app_draw(App* app) {
-	Texture* scene3d_fb = app->scene.camera.post_processing.enabled ? &app->gfx.pingpong0_fb : &app->gfx.framebuffers[0];
-	gu_set_rendertarget(scene3d_fb);
-
-	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
-	sceGuClearDepth(0);
-	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_FAST_CLEAR_BIT); // GU_FAST_CLEAR_BIT is really not that much faster, just very slightly. It consumes more memory in the display list but it's also negligible.
-
-	// Camera
-	sceGuSetMatrix(GU_VIEW, &app->scene.camera.view_matrix);
-	sceGuSetMatrix(GU_PROJECTION, &app->scene.camera.proj_matrix);
-
+void app_draw_scene(App* app) {
 	// Light
 	sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, (ScePspFVector3*) &app->scene.light.model_matrix.z);
 	sceGuLightColor(0, GU_DIFFUSE, 0xffffffff);
@@ -1678,13 +1773,33 @@ void app_draw(App* app) {
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexProjMapMode(GU_UV);
 	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+}
+
+void app_draw(App* app) {
+	if (app->vars[VAR_ID__FB_PSM].value != app->gfx.framebuffers[0].psm) {
+		app->gfx.vram_cursor = NULL;
+		app_gfx_allocate_vram_resources(&app->gfx, app->vars[VAR_ID__FB_PSM].value);
+		app_gfx_use_vram_resources(&app->gfx);
+
+		lut_fill(&app->assets.color_luts_mem, app->scene.camera.post_processing.lut, app->gfx.framebuffers[0].psm);
+
+		pspDebugScreenSetColorMode(app->gfx.framebuffers[0].psm);
+	}
+
+	Texture* scene3d_fb = app->scene.camera.post_processing.enabled ? &app->gfx.pingpong0_fb : &app->gfx.framebuffers[0];
+	gu_set_rendertarget(scene3d_fb);
+
+	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
+	sceGuClearDepth(0);
+	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_FAST_CLEAR_BIT); // GU_FAST_CLEAR_BIT is really not that much faster, just very slightly. It consumes more memory in the display list but it's also negligible.
+
+	// Camera
+	sceGuSetMatrix(GU_VIEW, &app->scene.camera.view_matrix);
+	sceGuSetMatrix(GU_PROJECTION, &app->scene.camera.proj_matrix);
+
+	app_draw_scene(app);
 
 	if (app->scene.camera.post_processing.enabled) {
-		// Can work with other formats, but then :
-		// - Need to change GU_PSM_T32
-		// - Need to change the mask and shift passed to sceGuClutMode()
-		app_assert(app->gfx.framebuffer_psm == GU_PSM_8888);
-
 		// Perf notes for various right shifts (drawing the scene alone is 5.160 ms):
 		// 0 (512 x 512): 8.625 ms
 		// 1 (256 x 256): 7.333 ms
@@ -1694,7 +1809,7 @@ void app_draw(App* app) {
 		const u32 sz_px = 512 >> (u32) app->vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP].value;
 
 		Texture scene3d_fb_t32 = *scene3d_fb;
-		scene3d_fb_t32.psm = GU_PSM_T32;
+		scene3d_fb_t32.psm = scene3d_fb->psm == GU_PSM_8888 ? GU_PSM_T32 : GU_PSM_T16;
 		scene3d_fb_t32.stride_px = sz_px;
 		scene3d_fb_t32.size_px[0] = sz_px;
 		scene3d_fb_t32.size_px[1] = sz_px;
@@ -1775,7 +1890,7 @@ void app_process_input(App* app) {
 	}
 
 	if (app->loop.nb_frames == 0 || app->scene.camera.post_processing.lut != prev_lut)
-		lut_fill(&app->assets.color_luts_mem, app->scene.camera.post_processing.lut);
+		lut_fill(&app->assets.color_luts_mem, app->scene.camera.post_processing.lut, app->gfx.framebuffers[0].psm);
 }
 
 void app_draw_debug_overlay(App* app) {
@@ -1862,21 +1977,16 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
 
 	app_init_fpu();
 	psp_setup_callbacks();
 
-	// We try it, but we don't mind if it fails
-	const int vram_set_size_status = sceGeEdramSetSize(0x400000);
-	printf("sceGeEdramSetSize(0x400000) returned 0x%08x\n", vram_set_size_status);
-
-	app.gfx.framebuffer_psm = GU_PSM_8888;
-
-	app_gfx_allocate_vram_resources(&app.gfx);
+	app_gfx_allocate_vram_resources(&app.gfx, app.vars[VAR_ID__FB_PSM].value);
 
 	// Note: this initializes global variables then clears the screen
-	pspDebugScreenInitEx(NULL, app.gfx.framebuffer_psm, true /* Call sceDisplaySetMode() and sceDisplaySetFrameBuf() */);
+	pspDebugScreenInitEx(NULL, app.gfx.framebuffers[0].psm, true /* Call sceDisplaySetMode() and sceDisplaySetFrameBuf() */);
 
 	app_gfx_init(&app.gfx);
 
