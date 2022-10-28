@@ -1368,6 +1368,7 @@ typedef struct {
 typedef enum {
 	VAR_ID__INVALID = 0,
 	VAR_ID__FB_PSM,
+	VAR_ID__DITHER_GLOBAL,
 	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
 	VAR_ID__COUNT // Keep last
 } AppVariableID;
@@ -1688,8 +1689,6 @@ void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, con
 	mesh_instance_draw(mi);
 }
 
-// TODO:
-// - Consider re-adding the dither feature (to see how it looks with 16-bit formats)
 void app_draw_postprocessing(App* app) {
 	sceGuDepthMask(1);
 	sceGuDisable(GU_DEPTH_TEST);
@@ -1803,6 +1802,11 @@ void app_draw(App* app) {
 	// Camera
 	sceGuSetMatrix(GU_VIEW, &app->scene.camera.view_matrix);
 	sceGuSetMatrix(GU_PROJECTION, &app->scene.camera.proj_matrix);
+
+	if (app->vars[VAR_ID__DITHER_GLOBAL].value)
+		sceGuEnable(GU_DITHER);
+	else
+		sceGuDisable(GU_DITHER);
 
 	app_draw_scene(app);
 
@@ -1985,6 +1989,7 @@ int main(int argc, char* argv[]) {
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__DITHER_GLOBAL] = (AppVariable) { "Dither Global", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
 
 	app_init_fpu();
