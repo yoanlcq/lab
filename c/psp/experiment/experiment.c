@@ -353,7 +353,7 @@ typedef struct {
 PsmInfo gu_psm_get_info(u32 psm) {
 	switch (psm) {
 	case GU_PSM_5650: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 5 }, { .nb_bits = 6 }, { .nb_bits = 5 }, { .nb_bits = 0 } } };
-	case GU_PSM_5551: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 5 }, { .nb_bits = 5 }, { .nb_bits = 1 }, { .nb_bits = 1 } } };
+	case GU_PSM_5551: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 5 }, { .nb_bits = 5 }, { .nb_bits = 5 }, { .nb_bits = 1 } } };
 	case GU_PSM_4444: return (PsmInfo) { .psm = psm, .nb_bits = 16, .channels = { { .nb_bits = 4 }, { .nb_bits = 4 }, { .nb_bits = 4 }, { .nb_bits = 4 } } };
 	case GU_PSM_8888: return (PsmInfo) { .psm = psm, .nb_bits = 32, .channels = { { .nb_bits = 8 }, { .nb_bits = 8 }, { .nb_bits = 8 }, { .nb_bits = 8 } } };
 	case GU_PSM_T4  : return (PsmInfo) { .psm = psm, .nb_bits = 4 };
@@ -1146,19 +1146,11 @@ typedef enum LUT {
 	LUT_LINEAR_TO_SRGB,
 	LUT_SEPIA,
 	LUT_INVERT,
+	LUT_R,
+	LUT_G,
+	LUT_B,
 	LUT_COUNT // Keep last
 } LUT;
-
-static const char* lut_get_name(LUT lut) {
-	switch (lut) {
-	case LUT_IDENTITY: return "Identity";
-	case LUT_INVERT: return "Invert";
-	case LUT_SRGB_TO_LINEAR: return "sRGB to linear";
-	case LUT_LINEAR_TO_SRGB: return "Linear to sRGB";
-	case LUT_SEPIA: return "Sepia";
-	default: return "???";
-	}
-}
 
 typedef enum LUTMode {
 	LUT_MODE_INVALID = 0,
@@ -1172,6 +1164,20 @@ typedef struct {
 	void* clut_per_channel[4];
 } ColorLutsMemory;
 
+static const char* lut_get_name(LUT lut) {
+	switch (lut) {
+	case LUT_IDENTITY: return "Identity";
+	case LUT_INVERT: return "Invert";
+	case LUT_SRGB_TO_LINEAR: return "sRGB to linear";
+	case LUT_LINEAR_TO_SRGB: return "Linear to sRGB";
+	case LUT_SEPIA: return "Sepia";
+	case LUT_R: return "R";
+	case LUT_G: return "G";
+	case LUT_B: return "B";
+	default: return "???";
+	}
+}
+
 LUTMode lut_get_mode(LUT lut) {
 	switch (lut) {
 	case LUT_IDENTITY: return LUT_MODE_1_TO_1;
@@ -1179,6 +1185,9 @@ LUTMode lut_get_mode(LUT lut) {
 	case LUT_SRGB_TO_LINEAR: return LUT_MODE_1_TO_1;
 	case LUT_LINEAR_TO_SRGB: return LUT_MODE_1_TO_1;
 	case LUT_SEPIA: return LUT_MODE_3_TO_3;
+	case LUT_R: return LUT_MODE_1_TO_1;
+	case LUT_G: return LUT_MODE_1_TO_1;
+	case LUT_B: return LUT_MODE_1_TO_1;
 	default: return LUT_MODE_1_TO_1;
 	}
 }
@@ -1230,28 +1239,21 @@ void gu_color_store_from_rgbaf(void* out, u32 psm, const f32* rgbaf) {
 
 typedef void (*RgbafFromScalarFn)(f32*, f32);
 
-void rgbaf_identity(f32* rgbaf, f32 x) {
-	rgbaf[0] = rgbaf[1] = rgbaf[2] = x;
-}
-
-void rgbaf_invert(f32* rgbaf, f32 x) {
-	rgbaf[0] = rgbaf[1] = rgbaf[2] = 1 - x;
-}
-
-void rgbaf_srgb_to_linear(f32* rgbaf, f32 x) {
-	rgbaf[0] = rgbaf[1] = rgbaf[2] = powf(x, 2.2f);
-}
-
-void rgbaf_linear_to_srgb(f32* rgbaf, f32 x) {
-	rgbaf[0] = rgbaf[1] = rgbaf[2] = powf(x, 1.f / 2.2f);
-}
+void rgbaf_identity(f32* rgbaf, f32 x) { rgbaf[0] = rgbaf[1] = rgbaf[2] = x; }
+void rgbaf_invert(f32* rgbaf, f32 x) { rgbaf[0] = rgbaf[1] = rgbaf[2] = 1.f - x; }
+void rgbaf_srgb_to_linear(f32* rgbaf, f32 x) { rgbaf[0] = rgbaf[1] = rgbaf[2] = powf(x, 2.2f); }
+void rgbaf_linear_to_srgb(f32* rgbaf, f32 x) { rgbaf[0] = rgbaf[1] = rgbaf[2] = powf(x, 1.f / 2.2f); }
+void rgbaf_r(f32* rgbaf, f32 x) { rgbaf[0] = x; }
+void rgbaf_g(f32* rgbaf, f32 x) { rgbaf[1] = x; }
+void rgbaf_b(f32* rgbaf, f32 x) { rgbaf[2] = x; }
+void rgbaf_0(f32* rgbaf, f32 x) { }
 
 // outputRed   = (inputRed * .393) + (inputGreen * .769) + (inputBlue * .189)
 // outputGreen = (inputRed * .349) + (inputGreen * .686) + (inputBlue * .168)
 // outputBlue  = (inputRed * .272) + (inputGreen * .534) + (inputBlue * .131)
-void sepia_func_r(f32* rgbaf, f32 x) { rgbaf[0] = .393f; rgbaf[1] = .349f; rgbaf[2] = .272f; }
-void sepia_func_g(f32* rgbaf, f32 x) { rgbaf[0] = .769f; rgbaf[1] = .686f; rgbaf[2] = .534f; }
-void sepia_func_b(f32* rgbaf, f32 x) { rgbaf[0] = .189f; rgbaf[1] = .168f; rgbaf[2] = .131f; }
+void sepia_func_r(f32* rgbaf, f32 x) { rgbaf[0] = x * .393f; rgbaf[1] = x * .349f; rgbaf[2] = x * .272f; }
+void sepia_func_g(f32* rgbaf, f32 x) { rgbaf[0] = x * .769f; rgbaf[1] = x * .686f; rgbaf[2] = x * .534f; }
+void sepia_func_b(f32* rgbaf, f32 x) { rgbaf[0] = x * .189f; rgbaf[1] = x * .168f; rgbaf[2] = x * .131f; }
 
 const RgbafFromScalarFn sepia_funcs[] = { sepia_func_r, sepia_func_g, sepia_func_b };
 
@@ -1267,7 +1269,7 @@ void lut_fill_helper_3_funcs(ColorLutsMemory* m, const PsmInfo* psm_info, const 
 			clut_ptr += psm_info->nb_bits / 8;
 		}
 
-		sceKernelDcacheWritebackRange(m->clut_per_channel[channel], (channel_max + 1) * psm_info->nb_bits / 8);
+		sceKernelDcacheWritebackRange(m->clut_per_channel[channel], clut_ptr - (u8*) m->clut_per_channel[channel]);
 	}
 }
 
@@ -1280,21 +1282,14 @@ void lut_fill(ColorLutsMemory* m, LUT lut, u32 psm) {
 	m->psm = psm;
 	const PsmInfo psm_info = gu_psm_get_info(psm);
 	switch (lut) {
-	case LUT_IDENTITY: 
-		lut_fill_helper_1_func(m, &psm_info, rgbaf_identity);
-		break;
-	case LUT_INVERT: 
-		lut_fill_helper_1_func(m, &psm_info, rgbaf_invert);
-		break;
-	case LUT_SRGB_TO_LINEAR: 
-		lut_fill_helper_1_func(m, &psm_info, rgbaf_srgb_to_linear);
-		break;
-	case LUT_LINEAR_TO_SRGB: 
-		lut_fill_helper_1_func(m, &psm_info, rgbaf_linear_to_srgb);
-		break;
-	case LUT_SEPIA:
-		lut_fill_helper_3_funcs(m, &psm_info, sepia_funcs);
-		break;
+	case LUT_IDENTITY: lut_fill_helper_1_func(m, &psm_info, rgbaf_identity); break;
+	case LUT_INVERT: lut_fill_helper_1_func(m, &psm_info, rgbaf_invert); break;
+	case LUT_SRGB_TO_LINEAR: lut_fill_helper_1_func(m, &psm_info, rgbaf_srgb_to_linear); break;
+	case LUT_LINEAR_TO_SRGB: lut_fill_helper_1_func(m, &psm_info, rgbaf_linear_to_srgb); break;
+	case LUT_SEPIA: lut_fill_helper_3_funcs(m, &psm_info, sepia_funcs); break;
+	case LUT_R: lut_fill_helper_3_funcs(m, &psm_info, (const RgbafFromScalarFn[]) { rgbaf_r, rgbaf_0, rgbaf_0 }); break;
+	case LUT_G: lut_fill_helper_3_funcs(m, &psm_info, (const RgbafFromScalarFn[]) { rgbaf_0, rgbaf_g, rgbaf_0 }); break;
+	case LUT_B: lut_fill_helper_3_funcs(m, &psm_info, (const RgbafFromScalarFn[]) { rgbaf_0, rgbaf_0, rgbaf_b }); break;
 	default:
 		break;
 	}
@@ -1329,6 +1324,7 @@ typedef struct {
 	Texture huge_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
+	Texture test_5551_texture;
 	Mesh torus_mesh;
 	Mesh grid_mesh;
 	Mesh fullscreen_quad_2d_mesh;
@@ -1552,6 +1548,27 @@ void app_assets_init(AppAssets* m) {
 		sceKernelDcacheWritebackRange(pixels, t->size_px[0] * t->size_px[1] * sizeof pixels[0]);
 	}
 
+	// Test 5551 texture
+	{
+		Texture* t = &m->test_5551_texture;
+		*t = (Texture) {
+			.psm = GU_PSM_5551,
+			.size_px = { 4, 4 },
+			.stride_px = 4,
+			.nb_mipmap_levels = 1,
+			.is_swizzled = false,
+		};
+
+		texture_allocate_buffers(t);
+
+		u16* pixels = t->data;
+		for (int y = 0; y < t->size_px[1]; ++y)
+			for (int x = 0; x < t->size_px[0]; ++x)
+				pixels[y * t->stride_px + x] = gu_color_8888_to_5551(GU_ABGR(0xff, 0xff, 0x00, 0x00));
+		
+		sceKernelDcacheWritebackRange(pixels, t->size_px[0] * t->size_px[1] * sizeof pixels[0]);
+	}
+
 	m->horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/horizon_gradient.tga", true);
 	m->mountain_bg_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/mountain_bg.tga", true);
 
@@ -1573,6 +1590,7 @@ void app_assets_deinit(AppAssets* m) {
 	mesh_destroy(&m->grid_mesh);
 	mesh_destroy(&m->fullscreen_quad_2d_mesh);
 
+	texture_destroy(&m->test_5551_texture);
 	texture_destroy(&m->uv_test_texture);
 	texture_destroy(&m->horizon_gradient_texture);
 	texture_destroy(&m->mountain_bg_texture);
@@ -1670,24 +1688,13 @@ void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, con
 	mesh_instance_draw(mi);
 }
 
-TODO;
-// - Sepia is broken (white)
-// - FB format 1 has a wrong channel (the image is more green/yellow)
-//   OR, the clut shift is wrong
-// - FB format 3: green line at the horizon (with identity channel)
+// TODO:
 // - Consider re-adding the dither feature (to see how it looks with 16-bit formats)
 void app_draw_postprocessing(App* app) {
 	sceGuDepthMask(1);
 	sceGuDisable(GU_DEPTH_TEST);
 
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
-
-	// Testing how slow it is when reading from main RAM rather than VRAM
-	if (false) {
-		Texture t = app->assets.huge_texture;
-		t.is_swizzled = true;
-		gu_set_texture(&t);
-	}
 
 	const PsmInfo psm_info = gu_psm_get_info(app->assets.color_luts_mem.psm);
 	u32 nb_bits_processed = 0;
@@ -1697,7 +1704,7 @@ void app_draw_postprocessing(App* app) {
 		for (int i = 0; i < 3; ++i) {
 			const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
 			sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
-			sceGuClutLoad(channel_max / 8, app->assets.color_luts_mem.clut_per_channel[i]);
+			sceGuClutLoad((channel_max + 1) / 8, app->assets.color_luts_mem.clut_per_channel[i]);
 
 			sceGuPixelMask(~(0xffu << (i*8))); // Format is RGBA8888
 			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
@@ -1710,7 +1717,7 @@ void app_draw_postprocessing(App* app) {
 		for (int i = 0; i < 3; ++i) {
 			const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
 			sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
-			sceGuClutLoad(channel_max / 8, app->assets.color_luts_mem.clut_per_channel[i]);
+			sceGuClutLoad((channel_max + 1) / 8, app->assets.color_luts_mem.clut_per_channel[i]);
 
 			if (i >= 1) {
 				sceGuEnable(GU_BLEND);
