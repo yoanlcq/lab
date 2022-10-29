@@ -1355,9 +1355,14 @@ typedef struct {
 } AppScene;
 
 typedef struct {
-	u64 nb_frames;
 	f32 last_frame_duration;
 	f32 time_since_start;
+} AppTimeline;
+
+typedef struct {
+	u64 nb_frames;
+	AppTimeline game_time;
+	AppTimeline real_time;
 } MainLoop;
 
 typedef struct {
@@ -1367,6 +1372,7 @@ typedef struct {
 
 typedef enum {
 	VAR_ID__INVALID = 0,
+	VAR_ID__TIME_DILATION,
 	VAR_ID__FB_PSM,
 	VAR_ID__DITHER_GLOBAL,
 	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
@@ -1604,15 +1610,21 @@ void app_assets_deinit(AppAssets* m) {
 	}
 }
 
-void app_scene_init(AppScene* m, const AppAssets* assets) {
+void app_scene_update(App* app) {
 	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
 
 	// Camera
 	{
 		ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
-		ScePspFVector3 eye_position = { 0.f, 10.f, 15.f };
+		ScePspFVector3 eye_position = { 0.f, 10.f, 25.f };
 
-		Camera* c = &m->camera;
+		ScePspFMatrix4 eye_transform_matrix;
+		gumLoadIdentity(&eye_transform_matrix);
+		gumRotateY(&eye_transform_matrix, -1.f * app->loop.game_time.time_since_start);
+		gumTranslate(&eye_transform_matrix, &eye_position);
+		memcpy(&eye_position, &eye_transform_matrix.w.x, sizeof eye_position);
+
+		Camera* c = &app->scene.camera;
 		gumLoadIdentity(&c->view_matrix);
 		gumLookAt(&c->view_matrix, &eye_position, &eye_target_position, &up_vector);
 
@@ -1621,13 +1633,11 @@ void app_scene_init(AppScene* m, const AppAssets* assets) {
 
 		gumLoadIdentity(&c->proj_matrix);
 		gumPerspective(&c->proj_matrix, 60.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
-
-		c->post_processing.lut = LUT_IDENTITY;
 	}
 
 	// Light
 	{
-		Light* l = &m->light;
+		Light* l = &app->scene.light;
 		ScePspFVector3 rot1 = { 0, 0.79f * (GU_PI / 180.0f), 0 };
 		ScePspFVector3 rot2 = { -(GU_PI / 180.0f) * 60.0f, 0, 0 };
 		ScePspFVector3 pos = {0, 0, 6.f };
@@ -1641,14 +1651,15 @@ void app_scene_init(AppScene* m, const AppAssets* assets) {
 
 	// Torus
 	{
-		ScePspFVector3 torus_position = { 0.f, 10.f, -10.f };
+		ScePspFVector3 torus_position = { 0.f, 10.f, 0.f };
 		ScePspFVector3 torus_scale = { 10.f, 10.f, 10.f };
 
-		MeshInstance* mi = &m->torus;
-		mi->mesh = &assets->torus_mesh;
+		MeshInstance* mi = &app->scene.torus;
+		mi->mesh = &app->assets.torus_mesh;
 
 		gumLoadIdentity(&mi->model_matrix);
 		gumTranslate(&mi->model_matrix, &torus_position);
+		gumRotateY(&mi->model_matrix, -2.f * app->loop.game_time.time_since_start);
 		mi->model_matrix_tr = mi->model_matrix;
 		gumScale(&mi->model_matrix, &torus_scale);
 	}
@@ -1657,8 +1668,8 @@ void app_scene_init(AppScene* m, const AppAssets* assets) {
 	{
 		ScePspFVector3 grid_scale = { 100.f, 100.f, 100.f };
 
-		MeshInstance* mi = &m->grid;
-		mi->mesh = &assets->grid_mesh;
+		MeshInstance* mi = &app->scene.grid;
+		mi->mesh = &app->assets.grid_mesh;
 
 		gumLoadIdentity(&mi->model_matrix);
 		mi->model_matrix_tr = mi->model_matrix;
@@ -1832,7 +1843,7 @@ void app_draw(App* app) {
 	}
 }
 
-void app_process_input(App* app) {
+void app_input_update(App* app) {
 	LUT prev_lut = app->scene.camera.post_processing.lut;
 
 	app->input.previous = app->input.current;
@@ -1876,7 +1887,7 @@ void app_process_input(App* app) {
 			if (variable_edit_direction != 0 && v->step != 0) {
 				f32 step = variable_edit_direction * v->step;
 				if (v->flags & VAR_FLAG_STEP_PER_SECOND)
-					step *= app->loop.last_frame_duration;
+					step *= app->loop.real_time.last_frame_duration;
 
 				v->value += step;
 
@@ -1908,7 +1919,7 @@ void app_draw_debug_overlay(App* app) {
 	int debug_screen_pos[2] = { 1, 1 };
 	pspDebugScreenSetOffset((intptr_t) psp_ptr_to_vram(app->gfx.framebuffers[0].data));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
-	pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) app->loop.last_frame_duration);
+	pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) app->loop.real_time.last_frame_duration);
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("CPU with GPU sync: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu_with_gpu_sync));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
@@ -1937,7 +1948,9 @@ void app_draw_debug_overlay(App* app) {
 }
 
 void app_frame_inner(App* app) {
-	app_process_input(app);
+	app_input_update(app);
+
+	app_scene_update(app);
 
 	sceGuStart(GU_DIRECT, g_gu_main_list);
 	gu_insert_clock_start_marker();
@@ -1967,8 +1980,10 @@ void app_frame(App* app) {
 	app_gfx_swap_buffers(&app->gfx);
 
 	psp_rtc_get_current_tick_checked(&current_frame_tick_range.end);
-	app->loop.last_frame_duration = tick_range_get_duration(current_frame_tick_range);
-	app->loop.time_since_start += app->loop.last_frame_duration;
+	app->loop.real_time.last_frame_duration = tick_range_get_duration(current_frame_tick_range);
+	app->loop.real_time.time_since_start += app->loop.real_time.last_frame_duration;
+	app->loop.game_time.last_frame_duration = app->loop.real_time.last_frame_duration * app->vars[VAR_ID__TIME_DILATION].value;
+	app->loop.game_time.time_since_start += app->loop.game_time.last_frame_duration;
 	app->loop.nb_frames += 1;
 }
 
@@ -1988,12 +2003,15 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 1, 0, 1, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__DITHER_GLOBAL] = (AppVariable) { "Dither Global", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
 
 	app_init_fpu();
 	psp_setup_callbacks();
+
+	gumInit();
 
 	app_gfx_allocate_vram_resources(&app.gfx, app.vars[VAR_ID__FB_PSM].value);
 
@@ -2006,7 +2024,6 @@ int main(int argc, char* argv[]) {
 	chdir_to_assets_directory(argv[0]);
 
 	app_assets_init(&app.assets);
-	app_scene_init(&app.scene, &app.assets);
 
 	sceCtrlSetSamplingCycle(0); // Sync input sampling to VSync
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
@@ -2014,7 +2031,10 @@ int main(int argc, char* argv[]) {
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
 
-	app.loop.last_frame_duration = 1.f / 60.f;
+	app.scene.camera.post_processing.lut = LUT_IDENTITY;
+
+	app.loop.real_time.last_frame_duration = 1.f / 60.f;
+	app.loop.game_time.last_frame_duration = 1.f / 60.f;
 	while (!g_exit_requested)
 		app_frame(&app);
 
