@@ -234,6 +234,10 @@ static inline bool ptr_is_aligned(const void* p, uintptr_t a) {
 	return (((uintptr_t) p) & (a - 1)) == 0;
 }
 
+u32 u32_next_power_of_two(u32 x) {
+	app_assert(x > 1);
+	return 1u << (32u - __builtin_clz(x - 1u));
+}
 
 //
 //
@@ -439,6 +443,12 @@ typedef struct {
 	u8 psm : 4;
 	u8 nb_mipmap_levels : 4; // Must not be 0. Values range from 1 to 9
 	u8 is_swizzled : 1;
+	// NPOT = Non-Power-Of-Two;
+	// This flags tells gu_set_texture() to round the size up to the next power of two (otherwise, it would be rounded down to the previous power of two by the GE when encoding the command).
+	// This pretends that the texture is bigger than it actually is, meaning that there is a region of the texture that will be invalid to access.
+	// So we rely on the UVs to prevent accesses to the invalid region.
+	// In practice this is useful when binding framebuffer memory as an input texture.
+	u8 is_non_power_of_two_on_purpose : 1;
 } Texture;
 
 void texture_check_common(const Texture* m) {
@@ -453,8 +463,8 @@ void texture_check_common(const Texture* m) {
 
 void texture_check_as_input(const Texture* m) {
 	texture_check_common(m);
-	app_assert(size_is_power_of_two_or_zero(m->size_px[0]));
-	app_assert(size_is_power_of_two_or_zero(m->size_px[1]));
+	app_assert(m->is_non_power_of_two_on_purpose || size_is_power_of_two_or_zero(m->size_px[0]));
+	app_assert(m->is_non_power_of_two_on_purpose || size_is_power_of_two_or_zero(m->size_px[1]));
 }
 
 void texture_check_as_rendertarget(const Texture* m) {
@@ -553,9 +563,13 @@ void gu_set_rendertarget(const Texture* m) {
 void gu_set_texture(const Texture* m) {
 	texture_check_as_input(m);
 	app_assert(m->nb_mipmap_levels == 1); // TODO: m->data should support multiple levels; needs to handle offset calculation
+
+	const u32 w = u32_next_power_of_two(m->size_px[0]);
+	const u32 h = u32_next_power_of_two(m->size_px[1]);
+
 	sceGuTexMode(m->psm, m->nb_mipmap_levels - 1, 0, m->is_swizzled);
 	for (size_t level = 0; level < m->nb_mipmap_levels; ++level)
-		sceGuTexImage(level, m->size_px[0] >> level, m->size_px[1] >> level, m->stride_px >> level, m->data);
+		sceGuTexImage(level, w >> level, h >> level, m->stride_px >> level, m->data);
 }
 
 typedef enum {
@@ -799,10 +813,17 @@ void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 th
 // Also it doesn't make a difference at all whether the mesh is indexed or not; but I do find the indexed version more elegant, and it's good practice anyway (for vertex cache reuse in modern GPUs)
 
 // These constants are mostly to make it easier to search for code that assumes these values; they don't have to be used in all cases.
+// TODO: Is it faster yet when scaled proportionnaly to the input texture's size?
 #define FULLSCREENQUAD_BEST_TILE_SIZE_X 32
 #define FULLSCREENQUAD_BEST_TILE_SIZE_Y PSP_SCREEN_HEIGHT
 
-void mesh_generate_fullscreen_quad_i16(Mesh* m, u32 screen_width, u32 screen_height, u32 tile_size_x_px, u32 tile_size_y_px, i16 uv0, i16 uv1) {
+void mesh_generate_fullscreen_quad_i16(Mesh* m, i16 screen_width, i16 screen_height, i16 uv0, i16 uv1, i16 tile_size_x_px, i16 tile_size_y_px) {
+	if (tile_size_x_px <= 0)
+		tile_size_x_px = FULLSCREENQUAD_BEST_TILE_SIZE_X;
+
+	if (tile_size_y_px <= 0)
+		tile_size_y_px = FULLSCREENQUAD_BEST_TILE_SIZE_Y;
+
 	const u32 nb_tiles_y = (screen_height + tile_size_y_px - 1) / tile_size_y_px;
 	const u32 nb_tiles_x = (screen_width + tile_size_x_px - 1) / tile_size_x_px;
 
@@ -847,10 +868,10 @@ void mesh_generate_fullscreen_quad_i16(Mesh* m, u32 screen_width, u32 screen_hei
 	}
 }
 
-void gu_draw_fullscreen_textured_quad_i16(i16 uv0, i16 uv1) {
+void gu_draw_fullscreen_textured_quad_i16(i16 screen_width, i16 screen_height, i16 uv0, i16 uv1, i16 tile_size_x_px, i16 tile_size_y_px) {
 	Mesh mesh = {0};
 	for (size_t i = 0; i < 2; ++i) {
-		mesh_generate_fullscreen_quad_i16(&mesh, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, FULLSCREENQUAD_BEST_TILE_SIZE_X, FULLSCREENQUAD_BEST_TILE_SIZE_Y, uv0, uv1);
+		mesh_generate_fullscreen_quad_i16(&mesh, screen_width, screen_height, uv0, uv1, tile_size_x_px, tile_size_y_px);
 		if (i == 0)
 			mesh_allocate_buffers_in_current_display_list(&mesh);
 	}
@@ -1311,6 +1332,7 @@ typedef struct {
 	Texture framebuffers[2];
 	Texture z_buffer;
 	Texture pingpong0_fb;
+	Texture halfres_fb;
 } AppGfx;
 
 typedef struct {
@@ -1377,9 +1399,10 @@ typedef enum {
 	VAR_ID__FB_PSM,
 	VAR_ID__DITHER_GLOBAL,
 	VAR_ID__LIGHT_MODE,
-	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
 	VAR_ID__LAVA_ATTENUATION,
 	VAR_ID__SPECULAR,
+	VAR_ID__BLOOM_THRESHOLD,
+	VAR_ID__BLOOM_OPACITY,
 	VAR_ID__COUNT // Keep last
 } AppVariableID;
 
@@ -1416,9 +1439,10 @@ void* app_gfx_vram_linear_alloc(AppGfx* m, size_t size, size_t alignment) {
 }
 
 void app_gfx_allocate_vram_resources(AppGfx* m, u32 framebuffer_psm) {
-	for (size_t i = 0; i < 4; ++i) {
+	for (size_t i = 0; i < 5; ++i) {
 		Texture* it = NULL;
 		u32 psm = framebuffer_psm;
+		u32 right_shift = 0;
 
 		if (i < 2) {
 			it = &m->framebuffers[i];
@@ -1427,6 +1451,9 @@ void app_gfx_allocate_vram_resources(AppGfx* m, u32 framebuffer_psm) {
 		} else if (i == 3) {
 		 	it = &m->z_buffer;
 			psm = GU_PSM_4444; // Doesn't really matter as long as we pick a 16-bit format for the size calculation
+		} else if (i == 4) {
+			it = &m->halfres_fb;
+			right_shift = 1;
 		}
 
 		app_assert(it);
@@ -1434,8 +1461,9 @@ void app_gfx_allocate_vram_resources(AppGfx* m, u32 framebuffer_psm) {
 		*it = (Texture) {
 			.nb_mipmap_levels = 1,
 			.psm = psm,
-			.stride_px = PSP_SCREEN_STRIDE,
-			.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
+			.stride_px = PSP_SCREEN_STRIDE >> right_shift,
+			.size_px = { PSP_SCREEN_WIDTH >> right_shift, PSP_SCREEN_HEIGHT >> right_shift },
+			.is_non_power_of_two_on_purpose = true,
 		};
 		const size_t size = it->stride_px * it->size_px[1] * gu_psm_get_bytes_per_pixel(it->psm);
 		it->data = psp_ptr_from_vram(app_gfx_vram_linear_alloc(m, size, 16));
@@ -1588,7 +1616,7 @@ void app_assets_init(AppAssets* m) {
 	for (size_t i = 0; i < 2; ++i) {
 		mesh_generate_torus(&m->torus_mesh, 48, 48, 0.5f, 0.3f);
 		mesh_generate_grid(&m->grid_mesh, 16, 16);
-		mesh_generate_fullscreen_quad_i16(&m->fullscreen_quad_2d_mesh, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, FULLSCREENQUAD_BEST_TILE_SIZE_X, FULLSCREENQUAD_BEST_TILE_SIZE_Y, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
+		mesh_generate_fullscreen_quad_i16(&m->fullscreen_quad_2d_mesh, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, -1, -1);
 		if (i == 0) {
 			mesh_allocate_buffers(&m->torus_mesh);
 			mesh_allocate_buffers(&m->grid_mesh);
@@ -1736,48 +1764,142 @@ void mesh_instance_draw_sampling_texture_via_positions_xz(const MeshInstance* mi
 	mesh_instance_draw(mi);
 }
 
-void app_draw_postprocessing(App* app) {
+void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
+	Texture scene3d_fb_paletted = *scene3d_fb;
+	scene3d_fb_paletted.psm = scene3d_fb->psm == GU_PSM_8888 ? GU_PSM_T32 : GU_PSM_T16;
+
+	const Texture* fb0 = &app->gfx.framebuffers[0];
+
 	sceGuDepthMask(1);
 	sceGuDisable(GU_DEPTH_TEST);
 
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
 
-	const PsmInfo psm_info = gu_psm_get_info(app->assets.color_luts_mem.psm);
-	u32 nb_bits_processed = 0;
-	const LUTMode lut_mode = lut_get_mode(app->scene.camera.post_processing.lut);
-	switch (lut_mode) {
-	case LUT_MODE_1_TO_1:
-		for (int i = 0; i < 3; ++i) {
-			const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
-			sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
-			sceGuClutLoad((channel_max + 1) / 8, app->assets.color_luts_mem.clut_per_channel[i]);
-
-			sceGuPixelMask(~(0xffu << (i*8))); // Format is RGBA8888
+	// Bloom filter pass
+	if (true) {
+		if (false) {
+			gu_set_texture(scene3d_fb);
+			gu_set_rendertarget(fb0);
+			const u32 threshold_color = GU_ABGR(255, 200, 200, 200);
+			sceGuClearColor(threshold_color);
+			sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+			sceGuEnable(GU_BLEND);
+			sceGuBlendFunc(GU_MAX, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff); // The 4 arguments seem to be ignored for GU_MAX, GU_MIN and GU_ABS
 			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+			sceGuDisable(GU_BLEND);
+			sceGuEnable(GU_COLOR_TEST);
+			sceGuColorFunc(GU_NOTEQUAL, threshold_color, threshold_color);
+			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+			sceGuDisable(GU_COLOR_TEST);
+		} else {
+			sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 
-			nb_bits_processed += psm_info.channels[i].nb_bits;
-		}
-		sceGuPixelMask(0);
-		break;
-	case LUT_MODE_3_TO_3:
-		for (int i = 0; i < 3; ++i) {
-			const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
-			sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
-			sceGuClutLoad((channel_max + 1) / 8, app->assets.color_luts_mem.clut_per_channel[i]);
+			const u32 bloom_opacity = roundf(app->vars[VAR_ID__BLOOM_OPACITY].value * 255);
 
-			if (i >= 1) {
-				sceGuEnable(GU_BLEND);
-				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
+			const u32 threshold = roundf(app->vars[VAR_ID__BLOOM_THRESHOLD].value * 255);
+			const u32 threshold_color = GU_ABGR(0xff, threshold, threshold, threshold);
+
+			bool can_use_color_test = true;
+			for (u32 i = 0; i < 3 && can_use_color_test; ++i) {
+				switch ((threshold_color >> (i * 8)) & 0xffu) {
+				// For each of these values ("v"), then given some value x, we know that when (x & v) == v, we have x >= v.
+				// If ALL of the threshold's channels are equal to ANY of these, then we can use the GE's color test directly as our "max" filter.
+				case 0x80: case 0xc0: case 0xe0: case 0xf0: case 0xf8: case 0xfc: case 0xfe: case 0xff: break; // NOTE: doesn't break out of the loop
+				default: can_use_color_test = false; break; // NOTE: doesn't break out of the loop
+				}
 			}
 
-			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+			if (can_use_color_test) {
+				gu_set_rendertarget(&app->gfx.halfres_fb);
+				sceGuClearColor(0);
+				sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
 
-			nb_bits_processed += psm_info.channels[i].nb_bits;
+				sceGuEnable(GU_COLOR_TEST);
+				sceGuColorFunc(GU_EQUAL, threshold_color, threshold_color);
+				gu_set_texture(scene3d_fb);
+				gu_draw_fullscreen_textured_quad_i16(app->gfx.halfres_fb.size_px[0], app->gfx.halfres_fb.size_px[1], scene3d_fb->size_px[0], scene3d_fb->size_px[1], -1, -1);
+				sceGuDisable(GU_COLOR_TEST);
+			} else {
+				Texture tmp_z_buffer_abuse = app->gfx.halfres_fb;
+				tmp_z_buffer_abuse.data = app->gfx.z_buffer.data;
+				gu_set_rendertarget(&tmp_z_buffer_abuse);
+
+				sceGuClearColor(threshold_color);
+				sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+
+				sceGuEnable(GU_BLEND);
+				sceGuBlendFunc(GU_MAX, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff); // The 4 arguments seem to be ignored for GU_MAX, GU_MIN and GU_ABS
+				gu_set_texture(scene3d_fb);
+				gu_draw_fullscreen_textured_quad_i16(app->gfx.halfres_fb.size_px[0], app->gfx.halfres_fb.size_px[1], scene3d_fb->size_px[0], scene3d_fb->size_px[1], -1, -1);
+				sceGuDisable(GU_BLEND);
+
+				gu_set_rendertarget(&app->gfx.halfres_fb);
+				sceGuClearColor(0);
+				sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+
+				sceGuEnable(GU_COLOR_TEST);
+				sceGuColorFunc(GU_NOTEQUAL, threshold_color, 0xffffffffu);
+				gu_set_texture(&tmp_z_buffer_abuse);
+				gu_draw_fullscreen_textured_quad_i16(app->gfx.halfres_fb.size_px[0], app->gfx.halfres_fb.size_px[1], tmp_z_buffer_abuse.size_px[0], tmp_z_buffer_abuse.size_px[1], -1, -1);
+				sceGuDisable(GU_COLOR_TEST);
+			}
+
+			gu_set_rendertarget(fb0);
+			gu_set_texture(scene3d_fb);
+			mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+			sceGuEnable(GU_BLEND);
+			sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, GU_ABGR(0xff, bloom_opacity, bloom_opacity, bloom_opacity), 0xffffffff);
+			gu_set_texture(&app->gfx.halfres_fb);
+			gu_draw_fullscreen_textured_quad_i16(fb0->size_px[0], fb0->size_px[1], app->gfx.halfres_fb.size_px[0], app->gfx.halfres_fb.size_px[1], -1, -1);
+			sceGuDisable(GU_BLEND);
+
+			sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 		}
-		sceGuDisable(GU_BLEND);
-		break;
-	default:
-		break;
+	}
+
+	// LUTs
+	if (false) {
+		gu_set_texture(&scene3d_fb_paletted);
+
+		const PsmInfo psm_info = gu_psm_get_info(app->assets.color_luts_mem.psm);
+		u32 nb_bits_processed = 0;
+		const LUTMode lut_mode = lut_get_mode(app->scene.camera.post_processing.lut);
+		switch (lut_mode) {
+		case LUT_MODE_1_TO_1:
+			for (int i = 0; i < 3; ++i) {
+				const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
+				sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
+				sceGuClutLoad((channel_max + 1) / 8, app->assets.color_luts_mem.clut_per_channel[i]);
+
+				sceGuPixelMask(~(0xffu << (i*8))); // Format is RGBA8888
+				mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+
+				nb_bits_processed += psm_info.channels[i].nb_bits;
+			}
+			sceGuPixelMask(0);
+			break;
+		case LUT_MODE_3_TO_3:
+			for (int i = 0; i < 3; ++i) {
+				const u32 channel_max = (1u << psm_info.channels[i].nb_bits) - 1u;
+				sceGuClutMode(app->assets.color_luts_mem.psm, nb_bits_processed, channel_max, 0);
+				sceGuClutLoad((channel_max + 1) / 8, app->assets.color_luts_mem.clut_per_channel[i]);
+
+				if (i >= 1) {
+					sceGuEnable(GU_BLEND);
+					sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff);
+				}
+
+				mesh_draw_2d(&app->assets.fullscreen_quad_2d_mesh);
+
+				nb_bits_processed += psm_info.channels[i].nb_bits;
+			}
+			sceGuDisable(GU_BLEND);
+			break;
+		default:
+			break;
+		}
 	}
 }
 
@@ -1821,7 +1943,7 @@ void app_draw_scene(App* app) {
 		const Texture* t = &app->assets.mountain_bg_texture;
 		sceGuEnable(GU_TEXTURE_2D);
 		gu_set_texture(t);
-		gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1]);
+		gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, t->size_px[0], t->size_px[1], -1, -1);
 	}
 
 	sceGuEnable(GU_LIGHTING);
@@ -1890,32 +2012,12 @@ void app_draw(App* app) {
 	sceGuSetMatrix(GU_VIEW, &app->scene.camera.view_matrix);
 	sceGuSetMatrix(GU_PROJECTION, &app->scene.camera.proj_matrix);
 
-	if (app->vars[VAR_ID__DITHER_GLOBAL].value)
-		sceGuEnable(GU_DITHER);
-	else
-		sceGuDisable(GU_DITHER);
+	sceGuSetStatus(GU_DITHER, app->vars[VAR_ID__DITHER_GLOBAL].value);
 
 	app_draw_scene(app);
 
 	if (app->scene.camera.post_processing.enabled) {
-		// Perf notes for various right shifts (drawing the scene alone is 5.160 ms):
-		// 0 (512 x 512): 8.625 ms
-		// 1 (256 x 256): 7.333 ms
-		// 2 (128 x 128): 6.725 ms
-		// 3 ( 64 x  64): 6.020 ms
-		// 4 ( 32 x  32): 5.875 ms
-		const u32 sz_px = 512 >> (u32) app->vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP].value;
-
-		Texture scene3d_fb_t32 = *scene3d_fb;
-		scene3d_fb_t32.psm = scene3d_fb->psm == GU_PSM_8888 ? GU_PSM_T32 : GU_PSM_T16;
-		scene3d_fb_t32.stride_px = sz_px;
-		scene3d_fb_t32.size_px[0] = sz_px;
-		scene3d_fb_t32.size_px[1] = sz_px;
-		gu_set_texture(&scene3d_fb_t32);
-
-		gu_set_rendertarget(&app->gfx.framebuffers[0]);
-
-		app_draw_postprocessing(app);
+		app_draw_postprocessing(app, scene3d_fb);
 	}
 }
 
@@ -1978,11 +2080,7 @@ void app_input_update(App* app) {
 					}
 				}
 
-				if (v->value > v->max)
-					v->value = v->max;
-
-				if (v->value < v->min)
-					v->value = v->min;
+				v->value = fminf(fmaxf(v->value, v->min), v->max);
 			}
 		}
 	}
@@ -2085,9 +2183,10 @@ int main(int argc, char* argv[]) {
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__DITHER_GLOBAL] = (AppVariable) { "Dither Global", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__LIGHT_MODE] = (AppVariable) { "Light Mode", 0, 0, 1, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__LAVA_ATTENUATION] = (AppVariable) { "Lava Attenuation", 1, 0, 100, 2.f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__SPECULAR] = (AppVariable) { "Specular", 7, 0.001f, 100.f, 1.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__BLOOM_THRESHOLD] = (AppVariable) { "Bloom Threshold", 0.85f, 0.f, 1.f, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__BLOOM_OPACITY] = (AppVariable) { "Bloom Opacity", 0.22f, 0.f, 1.f, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 
 	app_init_fpu();
 	psp_setup_callbacks();
