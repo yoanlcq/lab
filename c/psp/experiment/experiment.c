@@ -1322,6 +1322,7 @@ typedef struct {
 	ColorLutsMemory color_luts_mem;
 	Texture uv_test_texture;
 	Texture huge_texture;
+	Texture lava_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
 	Texture test_5551_texture;
@@ -1375,7 +1376,10 @@ typedef enum {
 	VAR_ID__TIME_DILATION,
 	VAR_ID__FB_PSM,
 	VAR_ID__DITHER_GLOBAL,
+	VAR_ID__LIGHT_MODE,
 	VAR_ID__POSTPROCESS_FB_READ_DIV_EXP,
+	VAR_ID__LAVA_ATTENUATION,
+	VAR_ID__SPECULAR,
 	VAR_ID__COUNT // Keep last
 } AppVariableID;
 
@@ -1448,7 +1452,7 @@ void app_gfx_use_vram_resources(AppGfx* m) {
 	gu_set_offset_and_viewport_and_scissor(fb0->size_px[0], fb1->size_px[1]);
 }
 
-void gu_reset_state_to_app_defaults() {
+void gu_reset_state_to_app_defaults(const App* app) {
 	sceGuSetAllStatus(0);
 
 	sceGuDepthFunc(GU_GEQUAL);
@@ -1468,7 +1472,7 @@ void gu_reset_state_to_app_defaults() {
 	sceGuModelColor(0, 0, 0, 0);
 	sceGuAmbientColor(0); // Just to set the model's ambient alpha
 	sceGuColor(0xffffffffu);
-	sceGuSpecular(12.f);
+	sceGuSpecular(app->vars[VAR_ID__SPECULAR].value);
 	sceGuShadeModel(GU_SMOOTH);
 
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
@@ -1482,6 +1486,8 @@ void gu_reset_state_to_app_defaults() {
 	// sceGuEnable(GU_TEXTURE_2D);
 
 	sceGuFrontFace(GU_CW);
+
+	sceGuLightMode(app->vars[VAR_ID__LIGHT_MODE].value);
 }
 
 void app_gfx_init(AppGfx* m) {
@@ -1492,9 +1498,7 @@ void app_gfx_init(AppGfx* m) {
 
 	app_gfx_use_vram_resources(m);
 
-	gu_reset_state_to_app_defaults();
-
-	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+	sceGuClear(GU_COLOR_BUFFER_BIT);
 	sceGuFinish();
 	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
 }
@@ -1529,7 +1533,7 @@ void app_assets_init(AppAssets* m) {
 		u32* pixels = t->data;
 		for (int y = 0; y < t->size_px[1]; ++y)
 			for (int x = 0; x < t->size_px[0]; ++x)
-				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0xff, y, x);
+				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0x00, y, x);
 		
 		sceKernelDcacheWritebackRange(pixels, t->size_px[0] * t->size_px[1] * sizeof pixels[0]);
 	}
@@ -1576,6 +1580,7 @@ void app_assets_init(AppAssets* m) {
 		sceKernelDcacheWritebackRange(pixels, t->size_px[0] * t->size_px[1] * sizeof pixels[0]);
 	}
 
+	m->lava_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/lava.tga", true);
 	m->horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/horizon_gradient.tga", true);
 	m->mountain_bg_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/mountain_bg.tga", true);
 
@@ -1688,7 +1693,7 @@ void mesh_instance_draw(const MeshInstance* mi) {
 	mesh_draw_3d(mi->mesh);
 }
 
-void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, const Camera* camera) {
+void mesh_instance_draw_sampling_sky_texture_via_normals(const MeshInstance* mi, const Camera* camera) {
 	sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
 	sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
 
@@ -1700,6 +1705,31 @@ void mesh_instance_draw_sampling_texture_via_normals(const MeshInstance* mi, con
 	gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
 	gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
 	gumMultMatrix(&texture_matrix, &texture_matrix, &camera->view_matrix_r);
+	gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
+	sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
+
+	mesh_instance_draw(mi);
+}
+
+void mesh_instance_draw_sampling_texture_via_positions_xz(const MeshInstance* mi, f32 sx, f32 sy, f32 tx, f32 ty) {
+	sceGuTexProjMapMode(GU_POSITION);
+	sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
+
+	ScePspFMatrix4 model_matrix_r = mi->model_matrix_tr;
+	model_matrix_r.w = (ScePspFVector4) { 0, 0, 0, 1 };
+
+	ScePspFMatrix4 xyz_to_xz0 = {
+		{ 1, 0, 0, 0 },
+		{ 0, 0, 0, 0 },
+		{ 0, 1, 0, 0 },
+		{ 0, 0, 0, 1 },
+	};
+
+	ScePspFMatrix4 texture_matrix;
+	gumLoadIdentity(&texture_matrix);
+	gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ tx, ty, 1 }});
+	gumScale(&texture_matrix, (const ScePspFVector3[]) {{ sx, sy, 0 }});
+	gumMultMatrix(&texture_matrix, &texture_matrix, &xyz_to_xz0);
 	gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
 	sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
 
@@ -1767,6 +1797,7 @@ void app_draw_scene(App* app) {
 	}
 
 	{
+		const u32 light_color = GU_ABGR(0xff, 110, 170, 255);
 		const size_t light_index = 1;
 		ScePspFVector3 lp = {
 			app->scene.lights[light_index].model_matrix.z.x,
@@ -1774,9 +1805,9 @@ void app_draw_scene(App* app) {
 			app->scene.lights[light_index].model_matrix.z.z,
 		};
 		sceGuLight(light_index, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lp);
-		sceGuLightColor(light_index, GU_DIFFUSE, GU_ABGR(0xff, 0x00, 0xcf, 0xff));
-		sceGuLightColor(light_index, GU_SPECULAR, GU_ABGR(0xff, 0x00, 0xcf, 0xff));
-		sceGuLightAtt(light_index, 0.0f, 0.1f, 0.0f);
+		sceGuLightColor(light_index, GU_DIFFUSE, light_color);
+		sceGuLightColor(light_index, GU_SPECULAR, light_color);
+		sceGuLightAtt(light_index, 0.0f, app->vars[VAR_ID__LAVA_ATTENUATION].value, 0.0f);
 	}
 
 	sceGuAmbient(GU_ABGR(0xff, 100, 100, 100));
@@ -1787,28 +1818,45 @@ void app_draw_scene(App* app) {
 
 	// Skybox
 	{
-		const Texture* t = &app->assets.horizon_gradient_texture;
+		const Texture* t = &app->assets.mountain_bg_texture;
 		sceGuEnable(GU_TEXTURE_2D);
 		gu_set_texture(t);
 		gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1]);
 	}
 
 	sceGuEnable(GU_LIGHTING);
-	sceGuEnable(GU_LIGHT0);
+	// sceGuEnable(GU_LIGHT0);
 	sceGuEnable(GU_LIGHT1);
 
-	// Grid (floor)
+	// Lava
 	{
 		sceGuEnable(GU_TEXTURE_2D);
-		gu_set_texture(&app->assets.horizon_gradient_texture);
-		mesh_instance_draw_sampling_texture_via_normals(&app->scene.grid, &app->scene.camera);
+		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+
+		gu_set_texture(&app->assets.lava_texture);
+		mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid, 2.f, 2.f, 0.7f * app->loop.game_time.time_since_start, 0.1f * app->loop.game_time.time_since_start);
+
+		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+		sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+
+		sceGuAmbient(GU_ABGR(0xff, 1, 4, 20));
 	}
 
 	// Torus
 	{
 		sceGuEnable(GU_TEXTURE_2D);
+		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+		sceGuTexFunc(GU_TFX_ADD, GU_TCC_RGBA);
+		sceGuModelColor(0, 0, 0xffffffu, 0xffffffu);
+		sceGuAmbientColor(0xffffffffu);
+		sceGuSpecular(app->vars[VAR_ID__SPECULAR].value); // 7 was a good value
 		gu_set_texture(&app->assets.mountain_bg_texture);
-		mesh_instance_draw_sampling_texture_via_normals(&app->scene.torus, &app->scene.camera);
+		mesh_instance_draw_sampling_sky_texture_via_normals(&app->scene.torus, &app->scene.camera);
+		sceGuModelColor(0, 0xffffffu, 0xffffffu, 0xffffffu);
 	}
 
 	sceGuDisable(GU_LIGHTING);
@@ -1947,6 +1995,8 @@ void app_draw_debug_overlay(App* app) {
 	int debug_screen_pos[2] = { 1, 1 };
 	pspDebugScreenSetOffset((intptr_t) psp_ptr_to_vram(app->gfx.framebuffers[0].data));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
+	pspDebugScreenPrintf("Game Time: %.3f s", (f64) app->loop.game_time.time_since_start);
+	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("Frame: %.3f ms", 1000.0 * (f64) app->loop.real_time.last_frame_duration);
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
 	pspDebugScreenPrintf("CPU with GPU sync: %.3f ms", 1000.0 * (f64) tick_range_get_duration(g_frame_stats.cpu_with_gpu_sync));
@@ -1982,7 +2032,7 @@ void app_frame_inner(App* app) {
 
 	sceGuStart(GU_DIRECT, g_gu_main_list);
 	gu_insert_clock_start_marker();
-	gu_reset_state_to_app_defaults();
+	gu_reset_state_to_app_defaults(app);
 	app_draw(app);
 	gu_insert_clock_end_marker();
 	sceGuFinish();
@@ -2034,7 +2084,10 @@ int main(int argc, char* argv[]) {
 	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 1, 0, 1, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__DITHER_GLOBAL] = (AppVariable) { "Dither Global", 0, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__LIGHT_MODE] = (AppVariable) { "Light Mode", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__POSTPROCESS_FB_READ_DIV_EXP] = (AppVariable) { "Fs Read Div Exp", 0, 0, 7, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__LAVA_ATTENUATION] = (AppVariable) { "Lava Attenuation", 1, 0, 100, 2.f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__SPECULAR] = (AppVariable) { "Specular", 7, 0.001f, 100.f, 1.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 
 	app_init_fpu();
 	psp_setup_callbacks();
