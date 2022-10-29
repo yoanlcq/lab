@@ -1349,7 +1349,7 @@ typedef struct {
 
 typedef struct {
 	Camera camera;
-	Light light;
+	Light lights[4];
 	MeshInstance torus;
 	MeshInstance grid;
 } AppScene;
@@ -1611,6 +1611,7 @@ void app_assets_deinit(AppAssets* m) {
 }
 
 void app_scene_update(App* app) {
+	ScePspFVector3 zero = { 0, 0, 0 };
 	ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
 	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
 
@@ -1637,9 +1638,17 @@ void app_scene_update(App* app) {
 
 	// Light
 	{
-		Light* l = &app->scene.light;
-		ScePspFVector3 zero = { 0, 0, 0 };
+		Light* l = &app->scene.lights[0];
 		ScePspFVector3 pos = { 0, 20.f, 20.f };
+
+		gumLoadIdentity(&l->model_matrix);
+		gumLookAt(&l->model_matrix, &pos, &zero, &up_vector);
+		gumFullInverse(&l->model_matrix, &l->model_matrix);
+	}
+
+	{
+		Light* l = &app->scene.lights[1];
+		ScePspFVector3 pos = { 0.f, -1.f, 0.01f };
 
 		gumLoadIdentity(&l->model_matrix);
 		gumLookAt(&l->model_matrix, &pos, &zero, &up_vector);
@@ -1744,18 +1753,37 @@ void app_draw_postprocessing(App* app) {
 
 void app_draw_scene(App* app) {
 	// Light
-	ScePspFVector3 lp = {
-		app->scene.light.model_matrix.z.x,
-		app->scene.light.model_matrix.z.y,
-		app->scene.light.model_matrix.z.z,
-	};
-	sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lp);
-	sceGuLightColor(0, GU_DIFFUSE, GU_ABGR(0xff, 0xff, 0xff, 0xff));
-	sceGuLightColor(0, GU_SPECULAR, GU_ABGR(0xff, 0xff, 0xff, 0xff));
-	sceGuLightAtt(0, 0.0f, 1.0f, 0.0f);
+	{
+		const size_t light_index = 0;
+		ScePspFVector3 lp = {
+			app->scene.lights[light_index].model_matrix.z.x,
+			app->scene.lights[light_index].model_matrix.z.y,
+			app->scene.lights[light_index].model_matrix.z.z,
+		};
+		sceGuLight(light_index, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lp);
+		sceGuLightColor(light_index, GU_DIFFUSE, GU_ABGR(0xff, 0xff, 0xff, 0xff));
+		sceGuLightColor(light_index, GU_SPECULAR, GU_ABGR(0xff, 0xff, 0xff, 0xff));
+		sceGuLightAtt(light_index, 0.0f, 1.0f, 0.0f);
+	}
+
+	{
+		const size_t light_index = 1;
+		ScePspFVector3 lp = {
+			app->scene.lights[light_index].model_matrix.z.x,
+			app->scene.lights[light_index].model_matrix.z.y,
+			app->scene.lights[light_index].model_matrix.z.z,
+		};
+		sceGuLight(light_index, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lp);
+		sceGuLightColor(light_index, GU_DIFFUSE, GU_ABGR(0xff, 0x00, 0xcf, 0xff));
+		sceGuLightColor(light_index, GU_SPECULAR, GU_ABGR(0xff, 0x00, 0xcf, 0xff));
+		sceGuLightAtt(light_index, 0.0f, 0.1f, 0.0f);
+	}
+
+	sceGuAmbient(GU_ABGR(0xff, 100, 100, 100));
 
 	sceGuDisable(GU_LIGHTING);
 	sceGuDisable(GU_LIGHT0);
+	sceGuDisable(GU_LIGHT1);
 
 	// Skybox
 	{
@@ -1765,30 +1793,28 @@ void app_draw_scene(App* app) {
 		gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1]);
 	}
 
+	sceGuEnable(GU_LIGHTING);
+	sceGuEnable(GU_LIGHT0);
+	sceGuEnable(GU_LIGHT1);
+
 	// Grid (floor)
 	{
-		sceGuEnable(GU_LIGHTING);
-		sceGuEnable(GU_LIGHT0);
 		sceGuEnable(GU_TEXTURE_2D);
-
 		gu_set_texture(&app->assets.horizon_gradient_texture);
-
 		mesh_instance_draw_sampling_texture_via_normals(&app->scene.grid, &app->scene.camera);
 	}
 
 	// Torus
 	{
-		sceGuEnable(GU_LIGHTING);
-		sceGuEnable(GU_LIGHT0);
 		sceGuEnable(GU_TEXTURE_2D);
-
 		gu_set_texture(&app->assets.mountain_bg_texture);
-
 		mesh_instance_draw_sampling_texture_via_normals(&app->scene.torus, &app->scene.camera);
 	}
 
 	sceGuDisable(GU_LIGHTING);
 	sceGuDisable(GU_LIGHT0);
+	sceGuDisable(GU_LIGHT1);
+
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexProjMapMode(GU_UV);
 	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
