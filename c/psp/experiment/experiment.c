@@ -1464,14 +1464,14 @@ void gu_reset_state_to_app_defaults() {
 	sceGuAmbient(0);
 	sceGuFog(0.f, 0.f, 0);
 
-	const u32 c = 0xffffffffu;
 	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE | GU_SPECULAR);
-	sceGuModelColor(c, c, c, c); // emissive, ambient, diffuse, specular // commands 84, 85, 86, 87 respectively // RGB, no alpha
-	sceGuAmbientColor(0xffffffff); // Just to set the model's ambient alpha
+	sceGuModelColor(0, 0, 0, 0);
+	sceGuAmbientColor(0); // Just to set the model's ambient alpha
+	sceGuColor(0xffffffffu);
 	sceGuSpecular(12.f);
 	sceGuShadeModel(GU_SMOOTH);
 
-	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
@@ -1611,11 +1611,11 @@ void app_assets_deinit(AppAssets* m) {
 }
 
 void app_scene_update(App* app) {
+	ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
 	ScePspFVector3 eye_target_position = { 0.f, 10.f, 0.f };
 
 	// Camera
 	{
-		ScePspFVector3 up_vector = { 0.f, 1.f, 0.f };
 		ScePspFVector3 eye_position = { 0.f, 10.f, 25.f };
 
 		ScePspFMatrix4 eye_transform_matrix;
@@ -1638,15 +1638,12 @@ void app_scene_update(App* app) {
 	// Light
 	{
 		Light* l = &app->scene.light;
-		ScePspFVector3 rot1 = { 0, 0.79f * (GU_PI / 180.0f), 0 };
-		ScePspFVector3 rot2 = { -(GU_PI / 180.0f) * 60.0f, 0, 0 };
-		ScePspFVector3 pos = {0, 0, 6.f };
+		ScePspFVector3 zero = { 0, 0, 0 };
+		ScePspFVector3 pos = { 0, 20.f, 20.f };
 
 		gumLoadIdentity(&l->model_matrix);
-		gumTranslate(&l->model_matrix, &eye_target_position);
-		gumRotateXYZ(&l->model_matrix, &rot1);
-		gumRotateXYZ(&l->model_matrix, &rot2);
-		gumTranslate(&l->model_matrix, &pos);
+		gumLookAt(&l->model_matrix, &pos, &zero, &up_vector);
+		gumFullInverse(&l->model_matrix, &l->model_matrix);
 	}
 
 	// Torus
@@ -1747,10 +1744,15 @@ void app_draw_postprocessing(App* app) {
 
 void app_draw_scene(App* app) {
 	// Light
-	sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, (ScePspFVector3*) &app->scene.light.model_matrix.z);
-	sceGuLightColor(0, GU_DIFFUSE, 0xffffffff);
-	sceGuLightColor(0, GU_SPECULAR, 0xffffffff);
-	sceGuLightAtt(0, 1.0f, 0.0f, 0.0f);
+	ScePspFVector3 lp = {
+		app->scene.light.model_matrix.z.x,
+		app->scene.light.model_matrix.z.y,
+		app->scene.light.model_matrix.z.z,
+	};
+	sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE_AND_SPECULAR, &lp);
+	sceGuLightColor(0, GU_DIFFUSE, GU_ABGR(0xff, 0xff, 0xff, 0xff));
+	sceGuLightColor(0, GU_SPECULAR, GU_ABGR(0xff, 0xff, 0xff, 0xff));
+	sceGuLightAtt(0, 0.0f, 1.0f, 0.0f);
 
 	sceGuDisable(GU_LIGHTING);
 	sceGuDisable(GU_LIGHT0);
