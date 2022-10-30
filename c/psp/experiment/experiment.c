@@ -1,7 +1,5 @@
 //
 // TODO:
-// - Bloom: make it work with 16-bit formats
-// - Le wrap de la lave perd en précision trop vite
 // - Mipmaps
 // - Ability to render 3D at half res
 // - LUTs: get it to work with bloom as well
@@ -1522,6 +1520,7 @@ typedef struct {
 	Light lights[4];
 	MeshInstance torus;
 	MeshInstance grid;
+	f32 lava_flow[2];
 } AppScene;
 
 typedef struct {
@@ -1856,6 +1855,10 @@ void app_scene_update(App* app) {
 		mi->model_matrix_tr = mi->model_matrix;
 		gumScale(&mi->model_matrix, &grid_scale);
 	}
+
+	const f32 lava_speed[2] = { 0.7f, 0.1f };
+	for (size_t i = 0; i < 2; ++i)
+		app->scene.lava_flow[i] = fmodf(app->scene.lava_flow[i] + lava_speed[i] * app->loop.game_time.last_frame_duration, 1.f);
 }
 
 void mesh_instance_draw(const MeshInstance* mi) {
@@ -2118,7 +2121,7 @@ void app_draw_scene(App* app) {
 		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 
 		gu_set_texture(&app->assets.lava_texture);
-		mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid, 2.f, 2.f, 0.7f * app->loop.game_time.time_since_start, 0.1f * app->loop.game_time.time_since_start);
+		mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid, 2.f, 2.f, app->scene.lava_flow[0], app->scene.lava_flow[1]);
 
 		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
@@ -2339,7 +2342,7 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 1, 0, 1, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 30, 0, 10, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__DITHER_GLOBAL] = (AppVariable) { "Dither Global", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__LIGHT_MODE] = (AppVariable) { "Light Mode", 0, 0, 1, 1, VAR_FLAG_ROUND };
