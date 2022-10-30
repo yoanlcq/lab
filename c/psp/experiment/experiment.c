@@ -1667,7 +1667,7 @@ void gu_reset_state_to_app_defaults(const App* app) {
 	sceGuShadeModel(GU_SMOOTH);
 
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuTexFilter(GU_LINEAR_MIPMAP_LINEAR, GU_LINEAR_MIPMAP_LINEAR);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
 	sceGuEnable(GU_SCISSOR_TEST);
@@ -1919,7 +1919,7 @@ void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
 			hrb->data = (u8*) app->gfx.z_buffer.data + i * texture_get_level_size_in_bytes(hrb, 0);
 		}
 
-		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+		sceGuTexFilter(GU_LINEAR_MIPMAP_LINEAR, GU_LINEAR_MIPMAP_LINEAR);
 
 		const u32 bloom_opacity = app->vars[VAR_ID__BLOOM_OPACITY].value;
 
@@ -2096,14 +2096,14 @@ void app_draw_scene(App* app) {
 	{
 		sceGuEnable(GU_TEXTURE_2D);
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+		sceGuTexFilter(GU_LINEAR_MIPMAP_LINEAR, GU_LINEAR_MIPMAP_LINEAR);
 		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 
 		gu_set_texture(&app->assets.lava_texture);
 		mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid, 2.f, 2.f, app->scene.lava_flow[0], app->scene.lava_flow[1]);
 
 		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+		sceGuTexFilter(GU_LINEAR_MIPMAP_LINEAR, GU_LINEAR_MIPMAP_LINEAR);
 		sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
 		sceGuAmbient(GU_ABGR(0xff, 1, 4, 20));
