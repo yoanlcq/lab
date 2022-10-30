@@ -1,11 +1,14 @@
 //
 // TODO:
+// - Bloom: make it work with 16-bit formats
+// - Le wrap de la lave perd en précision trop vite
 // - Mipmaps
 // - Ability to render 3D at half res
-// - Bloom: make it work with 16-bit formats
+// - LUTs: get it to work with bloom as well
 // - Lava: animate as spline
 // - Render to vertex buffer
 //   - First, proof-of-concept for rendering points with T16_XYZ8
+// - Dither may be ugly in some postprocessing steps (e.g render to half-res buffer)
 //
 // TODO: Notes:
 // - Coordinate space is +X right, +Y up, -Z forward (can be changed but the GU's T&L pipeline assumes that Z points towards the viewer, so matrices need to be adjusted)
@@ -1224,12 +1227,98 @@ static u32 safe_round_to_u32(f32 f, u32 max) {
 	return roundf(fminf(fmaxf(f, 0), 1) * max);
 }
 
+// Color conversion functions.
+// The 8888_to_* functions were stolen from here:
 // https://github.com/pspdev/pspsdk/blob/d019dbc7ecc198102229d0cdfe02976b6bef4e4d/src/debug/scr_printf.c#L42
+//
+// For the 8888_from_* functions, I looked at how the GE converts from N bits to 8 bits.
+// The function seems to be: min(255, (x * 256) / (max_val)).
+// When x == max_val, this may evaluate to 256, hence the min(255, ...).
+//
+// Earlier I tested this by rendering a full-screen gradient texture, taking a screenshot via PSPLINK, and inspecting the color values in GIMP.
+// PSPLINK seems to do a left-shift, but it doesn't appear to be how the GE operates.
+//
+// From my experiment (clear the screen then use the color test)
+// "good" 8-bit values obtained from 4-bits: (guessing the calculation: output = 4bitvalue * 255 / 15, OR, output = 4bitvalue * 256 / 15)
+// 255
+// 238
+// 221
+// 204
+// 187
+// 170
+// 153
+// 136
+// 119
+// 102
+// 85
+// 68
+// 51
+// 34
+// 17
+// 0
+//
+// "good" 8-bit values obtained from 5-bits: (guessing the calculation: output = 5bitvalue * 256 / 31)
+// 255 ?? (should be 256 according to the calculation)
+// 247
+// 239
+// 231
+// 222
+// 214
+// 206
+// 198
+// 189
+// 181
+// 173
+// 165
+// 156
+// 148
+// 140
+// 132
+// 123
+// 115
+// 107
+// 99
+// 90
+// 82
+// 74
+// 66
+// 57
+// 49
+// 41
+// 33
+// 24
+// 16
+// 8
+// 0
+
+u32 u32_min(u32 a, u32 b) { return a < b ? a : b; }
+u32 u32_max(u32 a, u32 b) { return a > b ? a : b; }
+
+u32 cvt_5bit_to_8bit(u32 x) {
+	x = (x * 256u) / 31u;
+	return x <= 255 ? x : 255;
+}
+
+u32 cvt_6bit_to_8bit(u32 x) {
+	x = (x * 256u) / 63u;
+	return x <= 255 ? x : 255;
+}
+
 u16 gu_color_8888_to_5650(u32 c) {
 	const u32 b = (c >> 19) & 0x1F;
 	const u32 g = (c >> 10) & 0x3F;
 	const u32 r = (c >> 3) & 0x1F;
 	return r | (g << 5) | (b << 11);
+}
+
+u32 gu_color_8888_from_5650(u16 c) {
+	u32 b = (c >> 11) & 0x1F;
+	u32 g = (c >> 5) & 0x3F;
+	u32 r = c & 0x1F;
+	b = cvt_5bit_to_8bit(b);
+	g = cvt_6bit_to_8bit(g);
+	r = cvt_5bit_to_8bit(r);
+	return GU_ABGR(0, b, g, r);
 }
 
 u16 gu_color_8888_to_5551(u32 c) {
@@ -1240,6 +1329,18 @@ u16 gu_color_8888_to_5551(u32 c) {
 	return a | r | (g << 5) | (b << 10);
 }
 
+u32 gu_color_8888_from_5551(u16 c) {
+	u32 a = (c >> 15) & 0x1; 
+	u32 b = (c >> 10) & 0x1F;
+	u32 g = (c >> 5) & 0x1F;
+	u32 r = c & 0x1F;
+	a *= 0xff;
+	b = cvt_5bit_to_8bit(b);
+	g = cvt_5bit_to_8bit(g);
+	r = cvt_5bit_to_8bit(r);
+	return GU_ABGR(a, b, g, r);
+}
+
 u16 gu_color_8888_to_4444(u32 c) {
 	const u32 a = (c >> 28) & 0xF; 
 	const u32 b = (c >> 20) & 0xF;
@@ -1248,7 +1349,46 @@ u16 gu_color_8888_to_4444(u32 c) {
 	return (a << 12) | r | (g << 4) | (b << 8);
 }
 
-void gu_color_store_from_rgbaf(void* out, u32 psm, const f32* rgbaf) {
+u32 gu_color_8888_from_4444(u16 c) {
+	u32 a = (c >> 12) & 0xF; 
+	u32 b = (c >> 8) & 0xF;
+	u32 g = (c >> 4) & 0xF;
+	u32 r = c & 0xF;
+	a = (a * 255u) / 15u;
+	b = (b * 255u) / 15u;
+	g = (g * 255u) / 15u;
+	r = (r * 255u) / 15u;
+	return GU_ABGR(a, b, g, r);
+}
+
+u32 gu_color_8888_to_psm(u32 c, u32 psm) {
+	switch (psm) {
+	case GU_PSM_5650: return gu_color_8888_to_5650(c);
+	case GU_PSM_5551: return gu_color_8888_to_5551(c);
+	case GU_PSM_4444: return gu_color_8888_to_4444(c);
+	case GU_PSM_8888: return c;
+	default: app_assert(0); break;
+	}
+	return 0;
+}
+
+u32 gu_color_8888_from_psm(u32 c, u32 psm) {
+	switch (psm) {
+	case GU_PSM_5650: return gu_color_8888_from_5650(c);
+	case GU_PSM_5551: return gu_color_8888_from_5551(c);
+	case GU_PSM_4444: return gu_color_8888_from_4444(c);
+	case GU_PSM_8888: return c;
+	default: app_assert(0); break;
+	}
+	return 0;
+}
+
+u32 gu_color_8888_reduce_to_psm_quality(u32 c, u32 psm) {
+	return gu_color_8888_from_psm(gu_color_8888_to_psm(c, psm), psm);
+}
+
+// Returns size stored
+size_t gu_color_store_from_rgbaf(void* out, u32 psm, const f32* rgbaf) {
 	const u32 rgba8888 = GU_ABGR(
 		safe_round_to_u32(rgbaf[3], 0xff),
 		safe_round_to_u32(rgbaf[2], 0xff),
@@ -1257,12 +1397,13 @@ void gu_color_store_from_rgbaf(void* out, u32 psm, const f32* rgbaf) {
 	);
 		
 	switch (psm) {
-	case GU_PSM_5650: *(u16*) out = gu_color_8888_to_5650(rgba8888); break;
-	case GU_PSM_5551: *(u16*) out = gu_color_8888_to_5551(rgba8888); break;
-	case GU_PSM_4444: *(u16*) out = gu_color_8888_to_4444(rgba8888); break;
-	case GU_PSM_8888: *(u32*) out = rgba8888; break;
+	case GU_PSM_5650: *(u16*) out = gu_color_8888_to_5650(rgba8888); return 2;
+	case GU_PSM_5551: *(u16*) out = gu_color_8888_to_5551(rgba8888); return 2;
+	case GU_PSM_4444: *(u16*) out = gu_color_8888_to_4444(rgba8888); return 2;
+	case GU_PSM_8888: *(u32*) out = rgba8888; return 4;
 	default: app_assert(0); break;
 	}
+	return 0;
 }
 
 typedef void (*RgbafFromScalarFn)(f32*, f32);
@@ -1771,6 +1912,9 @@ void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
 
 	const Texture* fb0 = &app->gfx.framebuffers[0];
 
+	// Disabling depth stuff is not just an optimization here, it's important for correctness.
+	// We disable depth writes because we're reusing the Z-buffer as storage for temporary pingpong buffers.
+	// We disable depth test because depth values are no longer meaningful and may cause incorrect rendering.
 	sceGuDepthMask(1);
 	sceGuDisable(GU_DEPTH_TEST);
 
@@ -1795,39 +1939,59 @@ void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
 
 		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 
-		const u32 bloom_opacity = roundf(app->vars[VAR_ID__BLOOM_OPACITY].value * 255);
+		const u32 bloom_opacity = app->vars[VAR_ID__BLOOM_OPACITY].value;
 
-		const u32 threshold = roundf(app->vars[VAR_ID__BLOOM_THRESHOLD].value * 255);
-		const u32 threshold_color = GU_ABGR(0xff, threshold, threshold, threshold);
+		const u32 threshold = app->vars[VAR_ID__BLOOM_THRESHOLD].value;
+		const u32 threshold_color = gu_color_8888_reduce_to_psm_quality(GU_ABGR(0xff, threshold, threshold, threshold), hrbs[0].psm);
 
-		bool can_use_color_test = true;
-		for (u32 i = 0; i < 3 && can_use_color_test; ++i) {
-			switch ((threshold_color >> (i * 8)) & 0xffu) {
-			// For each of these values ("v"), then given some value x, we know that ((x & v) == v) implies (x >= v).
-			// If ALL of the threshold's channels are equal to ANY of these, then we can use the GE's color test directly as our "max" filter.
-			case 0x80: case 0xc0: case 0xe0: case 0xf0: case 0xf8: case 0xfc: case 0xfe: case 0xff: break; // NOTE: doesn't break out of the loop
-			default: can_use_color_test = false; break; // NOTE: doesn't break out of the loop
+		// The max() filter can be performed via GU_COLOR_TEST only if the following holds:
+		// - Each channel of the threshold has the property "from MSB to LSB, start with all 1, then end with all 0".
+		//   The list of these values is `colortest_threshold_values`.
+		// 
+		// This approach is "fast" as it only requires a single pass, however, it's not the same as the GU_MAX approach.
+		// - GU_COLOR_TEST:
+		//   Only the colors for which ALL channels are above the threshold will pass.
+		//   The threshold is inclusive.
+		// - GU_MAX:
+		//   Only the channels above the threshold will pass.
+		//   The threshold is exclusive.
+		const bool bloom_filter_via_color_test_only = false;
+
+		if (bloom_filter_via_color_test_only) {
+			const u8 colortest_threshold_values[] = { 0x00, 0x80, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc, 0xfe, 0xff };
+
+			u32 tc = threshold_color;
+			for (u32 i = 0; i < 3; ++i) {
+				u8 c = (tc >> (i * 8)) & 0xff;
+				if (c != 0) {
+					for (u32 j = 1; j < countof(colortest_threshold_values); ++j) {
+						if (c <= colortest_threshold_values[j]) {
+							c = colortest_threshold_values[j];
+							break;
+						}
+					}
+					tc &= ~(0xffu << (i * 8));
+					tc |= c << (i * 8);
+				}
 			}
-		}
 
-		if (can_use_color_test) {
 			gu_set_rendertarget(&hrbs[0]);
 			sceGuClearColor(0);
 			sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
 
 			sceGuEnable(GU_COLOR_TEST);
-			sceGuColorFunc(GU_EQUAL, threshold_color, threshold_color);
+			sceGuColorFunc(GU_EQUAL, tc, tc);
 			gu_set_texture(scene3d_fb);
 			gu_draw_fullscreen_textured_quad_i16(hrbs[0].size_px[0], hrbs[0].size_px[1], scene3d_fb->size_px[0], scene3d_fb->size_px[1], -1, -1);
 			sceGuDisable(GU_COLOR_TEST);
 		} else {
 			gu_set_rendertarget(&hrbs[1]);
 
-			sceGuClearColor(threshold_color);
+			sceGuClearColor(threshold_color); // color is expressed as RGBA8888 regardless of color buffer format
 			sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
 
 			sceGuEnable(GU_BLEND);
-			sceGuBlendFunc(GU_MAX, GU_FIX, GU_FIX, 0xffffffff, 0xffffffff); // The 4 arguments seem to be ignored for GU_MAX, GU_MIN and GU_ABS
+			sceGuBlendFunc(GU_MAX, 0, 0, 0, 0); // The 4 arguments seem to be ignored for GU_MAX, GU_MIN and GU_ABS
 			gu_set_texture(scene3d_fb);
 			gu_draw_fullscreen_textured_quad_i16(hrbs[1].size_px[0], hrbs[1].size_px[1], scene3d_fb->size_px[0], scene3d_fb->size_px[1], -1, -1);
 			sceGuDisable(GU_BLEND);
@@ -1837,7 +2001,7 @@ void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
 			sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
 
 			sceGuEnable(GU_COLOR_TEST);
-			sceGuColorFunc(GU_NOTEQUAL, threshold_color, 0xffffffffu);
+			sceGuColorFunc(GU_NOTEQUAL, threshold_color, 0xffffffu); // color is expressed as RGBA8888 regardless of color buffer format
 			gu_set_texture(&hrbs[1]);
 			gu_draw_fullscreen_textured_quad_i16(hrbs[0].size_px[0], hrbs[0].size_px[1], hrbs[1].size_px[0], hrbs[1].size_px[1], -1, -1);
 			sceGuDisable(GU_COLOR_TEST);
@@ -2181,8 +2345,8 @@ int main(int argc, char* argv[]) {
 	app.vars[VAR_ID__LIGHT_MODE] = (AppVariable) { "Light Mode", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__LAVA_ATTENUATION] = (AppVariable) { "Lava Attenuation", 1, 0, 100, 2.f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__SPECULAR] = (AppVariable) { "Specular", 7, 0.001f, 100.f, 1.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
-	app.vars[VAR_ID__BLOOM_THRESHOLD] = (AppVariable) { "Bloom Threshold", 0.85f, 0.f, 1.f, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
-	app.vars[VAR_ID__BLOOM_OPACITY] = (AppVariable) { "Bloom Opacity", 0.22f, 0.f, 1.f, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__BLOOM_THRESHOLD] = (AppVariable) { "Bloom Threshold", 210, 0.f, 255.f, 1.f, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__BLOOM_OPACITY] = (AppVariable) { "Bloom Opacity", 60, 0.f, 255.f, 1.f, VAR_FLAG_ROUND };
 
 	app_init_fpu();
 	psp_setup_callbacks();
