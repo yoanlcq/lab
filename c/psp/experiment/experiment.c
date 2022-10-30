@@ -454,8 +454,20 @@ typedef struct {
 	u8 is_non_power_of_two_on_purpose : 1;
 } Texture;
 
-size_t texture_get_size_in_bytes(const Texture* m) {
-	return m->stride_px * m->size_px[1] * gu_psm_get_bytes_per_pixel(m->psm);
+size_t texture_get_level_size_in_bytes(const Texture* m, u32 level) {
+	return (m->stride_px >> level) * (m->size_px[1] >> level) * gu_psm_get_bytes_per_pixel(m->psm);
+}
+
+void* texture_get_data_for_level(const Texture* m, u32 level) {
+	u8* cursor = m->data;
+	for (size_t i = 0; i < level; ++i)
+		cursor = ptr_align(cursor + texture_get_level_size_in_bytes(m, i), 16);
+	
+	return cursor;
+}
+
+size_t texture_get_alloc_size(const Texture* m, u32 nb_levels) {
+	return (u8*) texture_get_data_for_level(m, nb_levels) - (u8*) m->data;
 }
 
 void texture_check_common(const Texture* m) {
@@ -479,7 +491,7 @@ void texture_check_as_rendertarget(const Texture* m) {
 }
 
 void texture_allocate_buffers(Texture* m) {
-	const size_t size = texture_get_size_in_bytes(m);
+	const size_t size = texture_get_alloc_size(m, m->nb_mipmap_levels);
 	m->data = malloc(size);
 }
 
@@ -514,8 +526,8 @@ void texture_destroy(Texture* m) {
 //
 //
 // Notice how the rectangular 16*8 blocks have ended up as sequential data, ready for direct reading by the GE.
-
-// NOTE: Courtesy of samples/gu/blit/blit.c
+//
+// NOTE: Stolen from samples/gu/blit/blit.c
 void swizzle_fast(void* out, const void* in, uint32_t width_in_bytes, uint32_t height) {
 	const u32 width_blocks = (width_in_bytes / 16);
 	const u32 height_blocks = (height / 8);
@@ -568,16 +580,25 @@ void gu_set_rendertarget(const Texture* m) {
 	gu_set_offset_and_viewport_and_scissor(m->size_px[0], m->size_px[1]);
 }
 
-void gu_set_texture(const Texture* m) {
+void gu_set_texture_ex(const Texture* m, u32 first_level) {
 	texture_check_as_input(m);
-	app_assert(m->nb_mipmap_levels == 1); // TODO: m->data should support multiple levels; needs to handle offset calculation
+
+	app_assert(first_level < m->nb_mipmap_levels);
 
 	const u32 w = u32_next_power_of_two(m->size_px[0]);
 	const u32 h = u32_next_power_of_two(m->size_px[1]);
 
-	sceGuTexMode(m->psm, m->nb_mipmap_levels - 1, 0, m->is_swizzled);
-	for (size_t level = 0; level < m->nb_mipmap_levels; ++level)
-		sceGuTexImage(level, w >> level, h >> level, m->stride_px >> level, m->data);
+	sceGuTexMode(m->psm, (m->nb_mipmap_levels - first_level) - 1, 0, m->is_swizzled);
+
+	u8* cursor = texture_get_data_for_level(m, first_level);
+	for (size_t level = first_level; level < m->nb_mipmap_levels; ++level) {
+		sceGuTexImage(level, w >> level, h >> level, m->stride_px >> level, cursor);
+		cursor = ptr_align(cursor + texture_get_level_size_in_bytes(m, level), 16);
+	}
+}
+
+void gu_set_texture(const Texture* m) {
+	gu_set_texture_ex(m, 0);
 }
 
 typedef enum {
@@ -1111,14 +1132,17 @@ Texture texture_load_from_tga_fd(const TextureLoadParams* p, Fd fd) {
 
 	texture_allocate_buffers(&out);
 
+	void* data = texture_get_data_for_level(&out, 0);
+	const size_t size = texture_get_level_size_in_bytes(&out, 0);
+
 	if (p->should_swizzle) {
-		swizzle_fast(out.data, tga.pixel_data, tga.tga_header.image_width * 4, tga.tga_header.image_height);
+		swizzle_fast(data, tga.pixel_data, out.size_px[0] * gu_psm_get_bytes_per_pixel(out.psm), out.size_px[1]);
 		out.is_swizzled = true;
 	} else {
-		memcpy(out.data, tga.pixel_data, tga.tga_header.image_width * tga.tga_header.image_height * 4);
+		memcpy(data, tga.pixel_data, size);
 	}
 
-	sceKernelDcacheWritebackRange(out.data, tga.tga_header.image_width * tga.tga_header.image_height * 4);
+	sceKernelDcacheWritebackRange(data, size);
 
 	tga_destroy(&tga);
 
@@ -1488,11 +1512,9 @@ typedef struct {
 typedef struct {
 	ColorLutsMemory color_luts_mem;
 	Texture uv_test_texture;
-	Texture huge_texture;
 	Texture lava_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
-	Texture test_5551_texture;
 	Mesh torus_mesh;
 	Mesh grid_mesh;
 	Mesh fullscreen_quad_2d_mesh;
@@ -1607,7 +1629,7 @@ void app_gfx_allocate_vram_resources(AppGfx* m, u32 framebuffer_psm) {
 			.size_px = { PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT },
 			.is_non_power_of_two_on_purpose = true,
 		};
-		it->data = psp_ptr_from_vram(app_gfx_vram_linear_alloc(m, texture_get_size_in_bytes(it), 16));
+		it->data = psp_ptr_from_vram(app_gfx_vram_linear_alloc(m, texture_get_level_size_in_bytes(it, 0), 16));
 	}
 }
 
@@ -1691,27 +1713,6 @@ void app_assets_init(AppAssets* m) {
 		Texture* t = &m->uv_test_texture;
 		*t = (Texture) {
 			.psm = GU_PSM_8888,
-			.size_px = { 256, 256 },
-			.stride_px = 256,
-			.nb_mipmap_levels = 1,
-			.is_swizzled = false,
-		};
-
-		texture_allocate_buffers(t);
-
-		u32* pixels = t->data;
-		for (int y = 0; y < t->size_px[1]; ++y)
-			for (int x = 0; x < t->size_px[0]; ++x)
-				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0x00, y, x);
-		
-		sceKernelDcacheWritebackRange(pixels, texture_get_size_in_bytes(t));
-	}
-
-	// Huge texture
-	{
-		Texture* t = &m->huge_texture;
-		*t = (Texture) {
-			.psm = GU_PSM_8888,
 			.size_px = { 512, 512 },
 			.stride_px = 512,
 			.nb_mipmap_levels = 1,
@@ -1720,33 +1721,12 @@ void app_assets_init(AppAssets* m) {
 
 		texture_allocate_buffers(t);
 
-		u32* pixels = t->data;
+		u32* pixels = texture_get_data_for_level(t, 0);
 		for (int y = 0; y < t->size_px[1]; ++y)
 			for (int x = 0; x < t->size_px[0]; ++x)
-				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0xff, y, x);
+				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0x00, y, x);
 		
-		sceKernelDcacheWritebackRange(pixels, texture_get_size_in_bytes(t));
-	}
-
-	// Test 5551 texture
-	{
-		Texture* t = &m->test_5551_texture;
-		*t = (Texture) {
-			.psm = GU_PSM_5551,
-			.size_px = { 4, 4 },
-			.stride_px = 4,
-			.nb_mipmap_levels = 1,
-			.is_swizzled = false,
-		};
-
-		texture_allocate_buffers(t);
-
-		u16* pixels = t->data;
-		for (int y = 0; y < t->size_px[1]; ++y)
-			for (int x = 0; x < t->size_px[0]; ++x)
-				pixels[y * t->stride_px + x] = gu_color_8888_to_5551(GU_ABGR(0xff, 0xff, 0x00, 0x00));
-		
-		sceKernelDcacheWritebackRange(pixels, texture_get_size_in_bytes(t));
+		sceKernelDcacheWritebackRange(pixels, texture_get_level_size_in_bytes(t, 0));
 	}
 
 	m->lava_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = true }}, "assets/lava.tga", true);
@@ -1771,7 +1751,6 @@ void app_assets_deinit(AppAssets* m) {
 	mesh_destroy(&m->grid_mesh);
 	mesh_destroy(&m->fullscreen_quad_2d_mesh);
 
-	texture_destroy(&m->test_5551_texture);
 	texture_destroy(&m->uv_test_texture);
 	texture_destroy(&m->horizon_gradient_texture);
 	texture_destroy(&m->mountain_bg_texture);
@@ -1937,7 +1916,7 @@ void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
 			hrb->size_px[0] >>= 1;
 			hrb->size_px[1] >>= 1;
 			hrb->stride_px >>= 1;
-			hrb->data = (u8*) app->gfx.z_buffer.data + i * texture_get_size_in_bytes(hrb);
+			hrb->data = (u8*) app->gfx.z_buffer.data + i * texture_get_level_size_in_bytes(hrb, 0);
 		}
 
 		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
@@ -2342,7 +2321,7 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 30, 0, 10, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 1, 0, 1, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__DITHER_GLOBAL] = (AppVariable) { "Dither Global", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__LIGHT_MODE] = (AppVariable) { "Light Mode", 0, 0, 1, 1, VAR_FLAG_ROUND };
