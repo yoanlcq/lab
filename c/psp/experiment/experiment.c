@@ -1680,6 +1680,8 @@ typedef struct {
 	Texture lava_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
+	Texture normal_to_color_texture;
+	Texture reflection_texture;
 	SkyboxTexture skybox_test_texture;
 	Mesh torus_mesh;
 	GridMesh grid_mesh;
@@ -1976,6 +1978,101 @@ void app_assets_init(AppAssets* m) {
 		sceKernelDcacheWritebackRange(st->texture.data, texture_get_level_size_in_bytes(&st->texture, 0));
 	}
 
+	// Normal-to-color texture
+	{
+		Texture* t = &m->normal_to_color_texture;
+		*t = (Texture) {
+			.psm = GU_PSM_8888,
+			.size_px = { 32, 32 },
+			.stride_px = 32,
+			.nb_mipmap_levels = 1,
+		};
+
+		const size_t size = texture_get_level_size_in_bytes(t, 0);
+
+		texture_allocate_buffers(t);
+
+		u32* tmp_pixels = malloc(size);
+		for (int y = 0; y < t->size_px[1]; ++y) {
+			for (int x = 0; x < t->size_px[0]; ++x) {
+				const f32 fx = 0.f + x / (t->size_px[0] - 1.f);
+				const f32 fy = 1.f - y / (t->size_px[1] - 1.f);
+				f32 nx = (fx - 0.5f) * 2.f;
+				f32 ny = (fy - 0.5f) * 2.f;
+				f32 nz = 0.f;
+				const f32 nxy_magnitude_squared = nx*nx + ny*ny;
+				if (nxy_magnitude_squared > 1.f) {
+					const f32 nxy_magnitude = sqrtf(nxy_magnitude_squared);
+					nx /= nxy_magnitude;
+					ny /= nxy_magnitude;
+					nz = 0.f;
+				} else {
+					nz = sqrtf(1.f - nxy_magnitude_squared);
+				}
+				tmp_pixels[y * t->stride_px + x] = GU_ABGR(0xff, (u32) (0xff * nz), (u32) (0xff * fmaxf(0, ny)), (u32) (0xff * fmaxf(0, nx)));
+			}
+		}
+		
+		u32* pixels = texture_get_data_for_level(t, 0);
+		swizzle_fast(pixels, tmp_pixels, t->size_px[0] * gu_psm_get_bytes_per_pixel(t->psm), t->size_px[1]);
+		t->is_swizzled = true;
+
+		free(tmp_pixels);
+		
+		sceKernelDcacheWritebackRange(pixels, size);
+	}
+
+	// Reflection texture
+	{
+		Texture* t = &m->reflection_texture;
+		*t = (Texture) {
+			.psm = GU_PSM_8888,
+			.size_px = { 128, 128 },
+			.stride_px = 128,
+			.nb_mipmap_levels = 1,
+		};
+
+		const size_t size = texture_get_level_size_in_bytes(t, 0);
+
+		texture_allocate_buffers(t);
+
+		u32* tmp_pixels = malloc(size);
+		for (int y = 0; y < t->size_px[1]; ++y) {
+			for (int x = 0; x < t->size_px[0]; ++x) {
+				const f32 fx = 0.f + x / (t->size_px[0] - 1.f);
+				const f32 fy = 1.f - y / (t->size_px[1] - 1.f);
+				f32 nx = (fx - 0.5f) * 2.f;
+				f32 ny = (fy - 0.5f) * 2.f;
+				f32 nz = 0.f;
+				const f32 nxy_magnitude_squared = nx*nx + ny*ny;
+				if (nxy_magnitude_squared > 1.f) {
+					const f32 nxy_magnitude = sqrtf(nxy_magnitude_squared);
+					nx /= nxy_magnitude;
+					ny /= nxy_magnitude;
+					nz = 0.f;
+				} else {
+					nz = sqrtf(1.f - nxy_magnitude_squared);
+				}
+				// reflect(I, N) = I - 2.0 * dot(N, I) * N
+				// When I = (0, 0, -1):
+				//     R = (0, 0, -1) - 2 * -N.z * N
+				//     R = (0, 0, -1) + 2 * N.z * N
+				const f32 rx = 2.f * nz * nx;
+				const f32 ry = 2.f * nz * ny;
+				const f32 rz = 2.f * nz * nz - 1.f;
+				tmp_pixels[y * t->stride_px + x] = GU_ABGR(0xff, (u32) (0xff * (rz * 0.5f + 0.5f)), (u32) (0xff * (ry * 0.5f + 0.5f)), (u32) (0xff * (rx * 0.5f + 0.5f)));
+			}
+		}
+		
+		u32* pixels = texture_get_data_for_level(t, 0);
+		swizzle_fast(pixels, tmp_pixels, t->size_px[0] * gu_psm_get_bytes_per_pixel(t->psm), t->size_px[1]);
+		t->is_swizzled = true;
+
+		free(tmp_pixels);
+		
+		sceKernelDcacheWritebackRange(pixels, size);
+	}
+
 	const bool should_swizzle = true;
 	m->lava_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/lava.tga", true);
 	m->horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/horizon_gradient.tga", true);
@@ -2020,6 +2117,8 @@ void app_assets_deinit(AppAssets* m) {
 	texture_destroy(&m->mountain_bg_texture);
 	texture_destroy(&m->lava_texture);
 	texture_destroy(&m->skybox_test_texture.texture);
+	texture_destroy(&m->normal_to_color_texture);
+	texture_destroy(&m->reflection_texture);
 
 	{
 		ColorLutsMemory* c = &m->color_luts_mem;
@@ -2445,7 +2544,7 @@ void app_draw_scene(App* app) {
 		const MeshInstance* mi = &app->scene.torus;
 		const Camera* camera = &app->scene.camera;
 
-		gu_set_texture(&app->assets.lava_texture);
+		gu_set_texture(&app->assets.reflection_texture);
 
 		sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
 		sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
@@ -2469,10 +2568,11 @@ void app_draw_scene(App* app) {
 		sceGuDisable(GU_DEPTH_TEST);
 		sceGuDepthMask(1);
 
-		{
-			const Texture* t = &app->assets.skybox_test_texture.texture;
+		if (false) {
+			// const Texture* t = &app->assets.skybox_test_texture.texture;
+			const Texture* t = &app->assets.normal_to_color_texture;
 			gu_set_texture(t);
-			gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, t->size_px[0], t->size_px[1], -1, -1);
+			gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1], t->size_px[0], t->size_px[1], -1, -1);
 		}
 
 		sceGuEnable(GU_DEPTH_TEST);
