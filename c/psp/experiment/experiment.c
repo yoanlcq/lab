@@ -1766,6 +1766,7 @@ typedef struct {
 	AppInput input;
 	AppVariable vars[VAR_ID__COUNT];
 	size_t selected_var_index;
+	bool debug_ui_enabled;
 } App;
 
 // Returned pointer is relative to VRAM base
@@ -2694,21 +2695,26 @@ void app_input_update(App* app) {
 			if (app->input.current.Buttons & PSP_CTRL_CROSS)
 				app->scene.camera.post_processing.enabled ^= 1;
 
-			if (app->input.current.Buttons & PSP_CTRL_UP) {
-				if (app->selected_var_index > 1)
-					app->selected_var_index -= 1;
-				else if (VAR_ID__COUNT >= 1)
-					app->selected_var_index = VAR_ID__COUNT - 1;
-			}
+			if (app->input.current.Buttons & PSP_CTRL_START)
+				app->debug_ui_enabled ^= 1;
 
-			if (app->input.current.Buttons & PSP_CTRL_DOWN) {
-				app->selected_var_index = (app->selected_var_index + 1) % VAR_ID__COUNT;
-				if (app->selected_var_index == 0 && VAR_ID__COUNT > 1)
-					app->selected_var_index = 1;
+			if (app->debug_ui_enabled) {
+				if (app->input.current.Buttons & PSP_CTRL_UP) {
+					if (app->selected_var_index > 1)
+						app->selected_var_index -= 1;
+					else if (VAR_ID__COUNT >= 1)
+						app->selected_var_index = VAR_ID__COUNT - 1;
+				}
+
+				if (app->input.current.Buttons & PSP_CTRL_DOWN) {
+					app->selected_var_index = (app->selected_var_index + 1) % VAR_ID__COUNT;
+					if (app->selected_var_index == 0 && VAR_ID__COUNT > 1)
+						app->selected_var_index = 1;
+				}
 			}
 		}
 
-		{
+		if (app->debug_ui_enabled) {
 			AppVariable* v = &app->vars[app->selected_var_index];
 			i32 variable_edit_direction = 0;
 
@@ -2748,6 +2754,9 @@ void app_input_update(App* app) {
 }
 
 void app_draw_debug_overlay(App* app) {
+	if (!app->debug_ui_enabled)
+		return;
+
 	int debug_screen_pos[2] = { 1, 1 };
 	pspDebugScreenSetOffset((intptr_t) psp_ptr_to_vram(app->gfx.framebuffers[0].data));
 	pspDebugScreenSetXY(debug_screen_pos[0], debug_screen_pos[1]++);
@@ -2846,6 +2855,7 @@ int main(int argc, char* argv[]) {
 	app.vars[VAR_ID__SPECULAR] = (AppVariable) { "Specular", 7, 0.001f, 100.f, 1.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__BLOOM_THRESHOLD] = (AppVariable) { "Bloom Threshold", 210, 0.f, 255.f, 1.f, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__BLOOM_OPACITY] = (AppVariable) { "Bloom Opacity", 60, 0.f, 255.f, 1.f, VAR_FLAG_ROUND };
+	app.debug_ui_enabled = true;
 
 	app_init_fpu();
 	psp_setup_callbacks();
