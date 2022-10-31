@@ -632,6 +632,27 @@ Texture skybox_texture_get_face_texture(const SkyboxTexture* m, SkyboxFaceID fac
 	return out;
 }
 
+// Face index is returned in the third component
+ScePspFVector3 skybox_face_uvs_from_normal(ScePspFVector3 v) {
+	ScePspFVector3 vabs = v;
+	vabs.x = fabsf(v.x);
+	vabs.y = fabsf(v.z);
+	vabs.z = fabsf(v.z);
+
+	ScePspFVector3 n = v;
+	n.x = n.x * 0.5f + 0.5f;
+	n.y = n.y * 0.5f + 0.5f;
+	n.z = n.z * 0.5f + 0.5f;
+
+	if (vabs.z >= vabs.x && vabs.z >= vabs.y) {
+		return (ScePspFVector3) { v.z < 0 ? 1.f - n.x : n.x, 1.f - n.y, v.z < 0 ? SKYBOX_FACE__NZ : SKYBOX_FACE__PZ };
+	} else if (vabs.y >= vabs.x) {
+		return (ScePspFVector3) { n.x, v.y < 0 ? 1.f - n.z : n.z, v.y < 0 ? SKYBOX_FACE__NY : SKYBOX_FACE__PY };
+	} else {
+		return (ScePspFVector3) { v.x < 0 ? n.z : 1.f - n.z, 1.f - n.y, v.x < 0 ? SKYBOX_FACE__NX : SKYBOX_FACE__PX };
+	}
+}
+
 //
 //
 //
@@ -769,6 +790,8 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 		vtype |= GU_INDEX_16BIT;
 		count = m->nb_indices;
 	}
+
+	app_assert(count <= UINT16_MAX); // The GE keeps only the lowest 16 bits. Consider splitting the draw call (or we could do it ourselves here?).
 
 	if (m->patch_mode == MESH_PATCH_MODE__NONE) {
 		sceGuDrawArray(m->gu_topology, vtype, count, m->indices, m->vertices);
@@ -1682,6 +1705,7 @@ typedef struct {
 	Texture mountain_bg_texture;
 	Texture normal_to_color_texture;
 	Texture reflection_texture;
+	Texture rtvb_xyz_texture; // rtvb = Render-To-Vertex-Buffer, might rename later
 	SkyboxTexture skybox_test_texture;
 	Mesh torus_mesh;
 	GridMesh grid_mesh;
@@ -1733,6 +1757,7 @@ typedef struct {
 
 typedef enum {
 	VAR_ID__INVALID = 0,
+	VAR_ID__HACK,
 	VAR_ID__TIME_DILATION,
 	VAR_ID__MIP_LEVEL,
 	VAR_ID__FB_PSM,
@@ -1941,8 +1966,8 @@ void app_assets_init(AppAssets* m) {
 		texture_allocate_buffers(t);
 
 		u32* pixels = texture_get_data_for_level(t, 0);
-		for (int y = 0; y < t->size_px[1]; ++y)
-			for (int x = 0; x < t->size_px[0]; ++x)
+		for (u32 y = 0; y < t->size_px[1]; ++y)
+			for (u32 x = 0; x < t->size_px[0]; ++x)
 				pixels[y * t->stride_px + x] = GU_ABGR(0xff, 0x00, y, x);
 		
 		sceKernelDcacheWritebackRange(pixels, texture_get_level_size_in_bytes(t, 0));
@@ -1971,8 +1996,8 @@ void app_assets_init(AppAssets* m) {
 			const u32 color = skybox_face_id_get_color(i);
 			const Texture face_texture = skybox_texture_get_face_texture(st, i);
 			u32* pixels = face_texture.data;
-			for (int y = 0; y < face_texture.size_px[1]; ++y)
-				for (int x = 0; x < face_texture.size_px[0]; ++x)
+			for (u32 y = 0; y < face_texture.size_px[1]; ++y)
+				for (u32 x = 0; x < face_texture.size_px[0]; ++x)
 					pixels[y * face_texture.stride_px + x] = color;
 		}
 		
@@ -1994,8 +2019,8 @@ void app_assets_init(AppAssets* m) {
 		texture_allocate_buffers(t);
 
 		u32* tmp_pixels = malloc(size);
-		for (int y = 0; y < t->size_px[1]; ++y) {
-			for (int x = 0; x < t->size_px[0]; ++x) {
+		for (u32 y = 0; y < t->size_px[1]; ++y) {
+			for (u32 x = 0; x < t->size_px[0]; ++x) {
 				const f32 fx = 0.f + x / (t->size_px[0] - 1.f);
 				const f32 fy = 1.f - y / (t->size_px[1] - 1.f);
 				f32 nx = (fx - 0.5f) * 2.f;
@@ -2038,8 +2063,8 @@ void app_assets_init(AppAssets* m) {
 		texture_allocate_buffers(t);
 
 		u32* tmp_pixels = malloc(size);
-		for (int y = 0; y < t->size_px[1]; ++y) {
-			for (int x = 0; x < t->size_px[0]; ++x) {
+		for (u32 y = 0; y < t->size_px[1]; ++y) {
+			for (u32 x = 0; x < t->size_px[0]; ++x) {
 				const f32 fx = 0.f + x / (t->size_px[0] - 1.f);
 				const f32 fy = 1.f - y / (t->size_px[1] - 1.f);
 				f32 nx = (fx - 0.5f) * 2.f;
@@ -2062,6 +2087,15 @@ void app_assets_init(AppAssets* m) {
 				const f32 ry = 2.f * nz * ny;
 				const f32 rz = 2.f * nz * nz - 1.f;
 				tmp_pixels[y * t->stride_px + x] = GU_ABGR(0xff, (u32) (0xff * (rz * 0.5f + 0.5f)), (u32) (0xff * (ry * 0.5f + 0.5f)), (u32) (0xff * (rx * 0.5f + 0.5f)));
+
+				if (true) {
+					const ScePspFVector3 uvs = skybox_face_uvs_from_normal((ScePspFVector3) { rx, ry, rz });
+					const i16 uvs_i16[] = {
+						uvs.x * INT16_MAX,
+						uvs.y * INT16_MAX,
+					};
+					memcpy(&tmp_pixels[y * t->stride_px + x], uvs_i16, sizeof uvs_i16);
+				}
 			}
 		}
 		
@@ -2072,6 +2106,34 @@ void app_assets_init(AppAssets* m) {
 		free(tmp_pixels);
 		
 		sceKernelDcacheWritebackRange(pixels, size);
+	}
+
+	// Render-to-vertex-buffer texture
+	{
+		Texture* t = &m->rtvb_xyz_texture;
+		*t = (Texture) {
+			.psm = GU_PSM_8888,
+			.size_px = { 256, 256 },
+			.stride_px = 256,
+			.nb_mipmap_levels = 1,
+		};
+
+		const size_t size = texture_get_level_size_in_bytes(t, 0);
+
+		texture_allocate_buffers(t);
+
+		u32* tmp_pixels = malloc(size);
+		for (u32 y = 0; y < t->size_px[1]; ++y)
+			for (u32 x = 0; x < t->size_px[0]; ++x)
+				tmp_pixels[y * t->stride_px + x] = GU_ABGR(x & 1, 0, INT8_MIN + y, INT8_MIN + x);
+
+		u32* pixels = texture_get_data_for_level(t, 0);
+		swizzle_fast(pixels, tmp_pixels, t->size_px[0] * gu_psm_get_bytes_per_pixel(t->psm), t->size_px[1]);
+		t->is_swizzled = true;
+
+		free(tmp_pixels);
+		
+		sceKernelDcacheWritebackRange(pixels, texture_get_level_size_in_bytes(t, 0));
 	}
 
 	const bool should_swizzle = true;
@@ -2120,6 +2182,7 @@ void app_assets_deinit(AppAssets* m) {
 	texture_destroy(&m->skybox_test_texture.texture);
 	texture_destroy(&m->normal_to_color_texture);
 	texture_destroy(&m->reflection_texture);
+	texture_destroy(&m->rtvb_xyz_texture);
 
 	{
 		ColorLutsMemory* c = &m->color_luts_mem;
@@ -2170,7 +2233,7 @@ void app_scene_update(App* app) {
 		c->view_matrix_r.w = (ScePspFVector4) { 0, 0, 0, 1 }; // Remove translation
 
 		gumLoadIdentity(&c->proj_matrix);
-		gumPerspective(&c->proj_matrix, 60.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
+		gumPerspective(&c->proj_matrix, 40.f, PSP_SCREEN_WIDTH / (f32) PSP_SCREEN_HEIGHT, 0.5f, 1000.f);
 	}
 
 	// Light
@@ -2534,9 +2597,19 @@ void app_draw_scene(App* app) {
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
-	if (true) {
-		Texture rt = app->gfx.framebuffers[0];
-		gu_set_rendertarget(&rt);
+	if (false) {
+		sceGuDisable(GU_DEPTH_TEST);
+		sceGuDepthMask(1);
+
+		Texture obj_rt = app->gfx.pingpong0_fb;
+		obj_rt.stride_px  = 256;
+		obj_rt.size_px[0] = 256;
+		obj_rt.size_px[1] = 144; // 256 * 9 / 16
+
+		Texture vb_rt = obj_rt;
+		vb_rt.data = ptr_align((u8*) obj_rt.data + texture_get_level_size_in_bytes(&obj_rt, 0), 16);
+
+		gu_set_rendertarget(&obj_rt);
 
 		sceGuClearColor(0);
 		sceGuClearDepth(0);
@@ -2566,9 +2639,6 @@ void app_draw_scene(App* app) {
 		sceGuTexProjMapMode(GU_UV);
 		sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 
-		sceGuDisable(GU_DEPTH_TEST);
-		sceGuDepthMask(1);
-
 		if (false) {
 			// const Texture* t = &app->assets.skybox_test_texture.texture;
 			const Texture* t = &app->assets.normal_to_color_texture;
@@ -2576,11 +2646,13 @@ void app_draw_scene(App* app) {
 			gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1], t->size_px[0], t->size_px[1], -1, -1);
 		}
 
-		sceGuEnable(GU_DEPTH_TEST);
-	}
+		/*
+		gu_set_rendertarget(&app->gfx.framebuffers[0]);
+		gu_set_texture(&obj_rt);
+		gu_draw_fullscreen_textured_quad_i16(rt.size_px[0], rt.size_px[1], rt.size_px[0], rt.size_px[1], -1, -1);
+		*/
 
-	// Test vertex buffer
-	if (false) {
+		// We can't render 256x256 vertices in one go; the max number of vertices per draw call is UINT16_MAX, and 256*256 is just above that
 		const u32 w = 255;
 		const u32 h = 255;
 
@@ -2600,24 +2672,110 @@ void app_draw_scene(App* app) {
 			1
 		}});
 
+		sceGuSetMatrix(GU_VIEW, &identity_matrix);
+		sceGuSetMatrix(GU_PROJECTION, &identity_matrix);
+
+		for (u32 pass = 0; pass < 2; ++pass) {
+			gu_set_rendertarget(&vb_rt);
+			gu_set_texture(&obj_rt);
+			gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
+
+			sceGuEnable(GU_ALPHA_TEST);
+			sceGuAlphaFunc(GU_EQUAL, (pass + 1) & 1, 1);
+			gu_set_texture(&app->assets.rtvb_xyz_texture);
+			gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
+			sceGuDisable(GU_ALPHA_TEST);
+
+			Mesh mesh = {
+				.gu_topology = GU_POINTS,
+				.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
+				.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
+				.vertices = vb_rt.data,
+				.nb_vertices = w * h,
+			};
+
+			gu_set_rendertarget(&app->gfx.framebuffers[0]);
+			gu_set_texture(&vb_rt);
+			sceGuSetMatrix(GU_MODEL, &model_matrix);
+			mesh_draw_3d(&mesh);
+		}
+
+		sceGuEnable(GU_DEPTH_TEST);
+		sceGuDepthMask(0);
+	}
+
+	// Test vertex buffer
+	if (true) {
+		// We can't render 256x256 vertices in one go; the max number of vertices per draw call is UINT16_MAX, and 256*256 is just above that
+		const i32 w = 255;
+		const i32 h = 255;
+
+		const f32 sw = PSP_SCREEN_WIDTH;
+		const f32 sh = PSP_SCREEN_HEIGHT;
+		const f32 hsw = sw / 2.f;
+		const f32 hsh = sh / 2.f;
+
+		ScePspFMatrix4 identity_matrix;
+		ScePspFMatrix4 model_matrix;
+
+		gumLoadIdentity(&identity_matrix);
+		gumLoadIdentity(&model_matrix);
+
+		if (true) {
+			// These matrices are for mapping [ INT8_MIN, INT8_MIN + 254 ] to the bottom-left corner of the screen, in a pixel perfect way.
+			/*
+			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
+				(-hsw + (w + 2.f) * 0.5f) / hsw,
+				(+hsh - (h + 2.f) * 0.5f) / hsh,
+				0
+			}});
+			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
+				+(w + 0.5f) / sw,
+				-(h + 0.5f) / sh,
+				1
+			}});
+			*/
+			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
+				0.5f / hsw,
+				0.5f / hsh,
+				0
+			}});
+			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
+				+(w + 1.0f) / sw,
+				-(h + 1.0f) / sh,
+				1
+			}});
+		} else {
+			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
+				(-hsw + (w * 2 + 3) * 0.5f) / hsw,
+				(+hsh - (h + 2.f) * 0.5f) / hsh,
+				0
+			}});
+			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
+				2 * (w + 1) / sw,
+				-(h + 0.5f) / sh,
+				1
+			}});
+		}
+
 		// NOTE: 8-bit vertex positions don't seem to be supported at all with GU_TRANSFORM_2D... But the same format does work with GU_TRANSFORM_3D.
 
-		Vertex_Ti16_Pi8* vertices = sceGuGetMemory(w * h * sizeof vertices[0]);
+		Vertex_Ti16_C8888_Pi8* vertices = sceGuGetMemory(w * h * sizeof vertices[0]);
 		Mesh mesh = {
 			.gu_topology = GU_POINTS,
-			.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
+			.gu_vertex_format = Vertex_Ti16_C8888_Pi8_FORMAT,
 			.sizeof_vertex = sizeof vertices[0],
 			.vertices = vertices,
 			.nb_vertices = w * h,
 		};
 		for (u32 y = 0; y < h; ++y)
 		for (u32 x = 0; x < w; ++x) {
-			const Vertex_Ti16_Pi8 v = {
+			const Vertex_Ti16_C8888_Pi8 v = {
 				.uv = { 
 					x * INT16_MAX / (w - 1.f),
 					y * INT16_MAX / (h - 1.f)
 				},
-				// .color = GU_ABGR(0xff, 0x00, 0xff * (y & 1), 0xff * (x & 1)),
+				.color = GU_ABGR(0xff, 0x00, 0xff * (y & 1), 0xff * (x & 1)),
 				// .color = GU_ABGR(0xff, 0x00, y, x),
 				.position = {
 					x + INT8_MIN,
@@ -2628,8 +2786,8 @@ void app_draw_scene(App* app) {
 		}
 		sceKernelDcacheWritebackRange(vertices, mesh.nb_vertices * sizeof vertices[0]);
 
-		// sceGuDisable(GU_TEXTURE_2D);
-		// sceGuColor(0xffffffff);
+		sceGuDisable(GU_TEXTURE_2D);
+		sceGuColor(0xffffffff);
 		gu_set_texture(&app->assets.lava_texture);
 		sceGuDisable(GU_DEPTH_TEST);
 		sceGuDepthMask(1);
@@ -2846,6 +3004,7 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__HACK] = (AppVariable) { "Hack", 0, -4, 4, 0.001f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 1, 0, 1, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__MIP_LEVEL] = (AppVariable) { "Mip Level", 0, 0, 8, 1, 0 };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
