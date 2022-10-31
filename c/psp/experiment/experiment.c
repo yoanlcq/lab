@@ -629,8 +629,8 @@ typedef enum {
 } MeshPatchMode;
 
 typedef struct {
-	u8 divide[2];
 	u8 count[2]; // Number of elements (vertices or indices) along the U and V direction
+	u8 divide[2];
 	u8 edge_mode[2]; // e.g GU_FILL_FILL
 } MeshPatch;
 
@@ -647,6 +647,12 @@ typedef struct {
 	u32 reserved : 2;
 	MeshPatch patch;
 } Mesh;
+
+typedef struct {
+	Mesh mesh;
+	size_t nb_rows;
+	size_t nb_columns;	
+} GridMesh;
 
 void mesh_check_pointers(const Mesh* m) {
 	app_assert(m->nb_vertices * m->sizeof_vertex == 0 || m->vertices);
@@ -671,6 +677,27 @@ void mesh_destroy(Mesh* m) {
 	free(m->vertices);
 	free(m->indices);
 	*m = (Mesh) {0};
+}
+
+u32 gu_topology_to_patch_topology(u32 x) {
+	switch (x) {
+	case GU_POINTS:
+		return GU_POINTS;
+	case GU_LINES:
+	case GU_LINE_STRIP:
+		return GU_LINE_STRIP;
+	case GU_TRIANGLES:
+	case GU_TRIANGLE_STRIP:
+	case GU_TRIANGLE_FAN:
+		return GU_TRIANGLE_STRIP;
+	case GU_SPRITES:
+		app_assert(0 && "Sprites are not supported for patches");
+		break;
+	default:
+		app_assert(0 && "Unknown topology");
+		break;
+	}
+	return 0;
 }
 
 void mesh_draw_impl(const Mesh* m, bool b2d) {
@@ -701,7 +728,9 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 		}
 	} else {
 		sceGuPatchDivide(m->patch.divide[0], m->patch.divide[1]);
-		sceGuPatchPrim(m->gu_topology);
+		sceGuPatchPrim(gu_topology_to_patch_topology(m->gu_topology));
+
+		sceGuDisable(GU_CULL_FACE); // TODO: Need to figure out why it's necessary (what mesh layout is expected for this to work?)
 
 		if (m->patch_mode == MESH_PATCH_MODE__BEZIER)
 			sceGuDrawBezier(vtype, m->patch.count[0], m->patch.count[1], m->indices, m->vertices);
@@ -710,6 +739,8 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 
 		if (m->draw_debug)
 			sceGuDrawArray(GU_POINTS, vtype, m->patch.count[0] * (size_t) m->patch.count[1], m->indices, m->vertices);
+
+		sceGuEnable(GU_CULL_FACE); // TODO: see the disable above
 	}
 }
 
@@ -721,8 +752,12 @@ void mesh_draw_2d(const Mesh* m) {
 	mesh_draw_impl(m, true);
 }
 
-// Stolen from shadowprojection sample
+// Adapted from shadowprojection sample
 void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
+	app_assert(rows >= 2);
+	app_assert(columns >= 2);
+	app_assert(rows * columns - 1 <= UINT16_MAX); // For indices
+
 	const f32 columns_minus_one_inv = 1.f / (columns - 1.f);
 	const f32 rows_minus_one_inv = 1.f / (rows - 1.f);
 
@@ -733,14 +768,14 @@ void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
 
 	m->nb_vertices = rows * columns;
 	if (vertices) {
-		for (size_t j = 0; j < rows; ++j) {
-			for (size_t i = 0; i < columns; ++i) {
-				vertices[j * columns + i] = (Vertex_Ni8_Pi16) {
+		for (size_t y = 0; y < rows; ++y) {
+			for (size_t x = 0; x < columns; ++x) {
+				vertices[y * columns + x] = (Vertex_Ni8_Pi16) {
 					.normal = { 0, INT8_MAX, 0 },
 					.position = {
-						(i * rows_minus_one_inv * 2.f - 1.f) * INT16_MAX,
+						(x * columns_minus_one_inv * 2.f - 1.f) * INT16_MAX,
 						0,
-						(j * columns_minus_one_inv * 2.f - 1.f) * INT16_MAX,
+						(y * rows_minus_one_inv * 2.f - 1.f) * INT16_MAX,
 					},
 				};
 			}
@@ -750,21 +785,48 @@ void mesh_generate_grid(Mesh* m, size_t rows, size_t columns) {
 
 	m->nb_indices = (rows - 1) * (columns - 1) * 6;
 	if (m->indices) {
-		for (size_t j = 0; j < rows - 1; ++j) {
-			for (size_t i = 0; i < columns - 1; ++i) {
-				u16* curr = &m->indices[(i + (j * (columns - 1))) * 6];
+		u16* curr = m->indices;
+		for (size_t y = 0; y < rows - 1; ++y) {
+			for (size_t x = 0; x < columns - 1; ++x) {
+				const u16 tl = (y + 0) * columns + (x + 0);
+				const u16 tr = (y + 0) * columns + (x + 1);
+				const u16 bl = (y + 1) * columns + (x + 0);
+				const u16 br = (y + 1) * columns + (x + 1);
 
-				*curr++ = i + j * columns;
-				*curr++ = (i+1) + j * columns;
-				*curr++ = i + (j+1) * columns;
+				*curr++ = tl;
+				*curr++ = tr;
+				*curr++ = br;
 
-				*curr++ = (i+1) + j * columns;
-				*curr++ = (i+1) + (j+1) * columns;
-				*curr++ = i + (j + 1) * columns;
+				*curr++ = br;
+				*curr++ = bl;
+				*curr++ = tl;
 			}
 		}
 		sceKernelDcacheWritebackRange(m->indices, m->nb_indices * sizeof m->indices[0]);
 	}
+}
+
+void mesh_generate_grid_bezier(Mesh* m, size_t rows, size_t columns) {
+	app_assert((rows - 1) % 3 == 0);
+	app_assert((columns - 1) % 3 == 0);
+	m->indices = NULL;
+	mesh_generate_grid(m, rows, columns);
+	m->nb_indices = 0;
+	m->gu_topology = GU_TRIANGLE_STRIP;
+	m->patch_mode = MESH_PATCH_MODE__BEZIER;
+	m->patch = (MeshPatch) {
+		.count = { rows, columns },
+		.divide = { 4, 4 },
+		.edge_mode = { GU_FILL_FILL, GU_FILL_FILL },
+	};
+}
+
+void gridmesh_generate(GridMesh* m) {
+	mesh_generate_grid(&m->mesh, m->nb_rows, m->nb_columns);
+}
+
+void gridmesh_generate_bezier(GridMesh* m) {
+	mesh_generate_grid_bezier(&m->mesh, m->nb_rows, m->nb_columns);
 }
 
 // Stolen from shadowprojection sample
@@ -777,7 +839,7 @@ void mesh_generate_torus(Mesh* m, size_t slices, size_t rows, f32 radius, f32 th
 
 	m->gu_topology = GU_TRIANGLES;
 	m->gu_vertex_format = Vertex_Ni8_Pi16_FORMAT;
-	Vertex_Ni8_Pi16* vertices = /*psp_uncached_ptr_or_null*/(m->vertices);
+	Vertex_Ni8_Pi16* vertices = m->vertices;
 	m->sizeof_vertex = sizeof vertices[0];
 
 	m->nb_vertices = slices * rows;
@@ -1552,7 +1614,8 @@ typedef struct {
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
 	Mesh torus_mesh;
-	Mesh grid_mesh;
+	GridMesh grid_mesh;
+	GridMesh bezier_grid_mesh;
 	Mesh fullscreen_quad_2d_mesh;
 } AppAssets;
 
@@ -1578,6 +1641,7 @@ typedef struct {
 	Light lights[4];
 	MeshInstance torus;
 	MeshInstance grid;
+	MeshInstance grid_bezier;
 	f32 lava_flow[2];
 } AppScene;
 
@@ -1710,6 +1774,8 @@ void gu_reset_state_to_app_defaults(const App* app) {
 	sceGuEnable(GU_SCISSOR_TEST);
 	sceGuEnable(GU_DEPTH_TEST);
 	sceGuEnable(GU_CULL_FACE);
+	sceGuEnable(GU_PATCH_CULL_FACE);
+	sceGuEnable(GU_PATCH_FACE);
 	sceGuEnable(GU_CLIP_PLANES);
 	// sceGuEnable(GU_TEXTURE_2D);
 
@@ -1823,14 +1889,21 @@ void app_assets_init(AppAssets* m) {
 		gu_texture_generate_mipmaps(&m->mountain_bg_texture, 0, 9, vram_buffer);
 	}
 
+	m->bezier_grid_mesh.nb_rows = 16;
+	m->bezier_grid_mesh.nb_columns = 16;
+	m->grid_mesh.nb_rows = 16;
+	m->grid_mesh.nb_columns = 16;
+
 	// Meshes. First pass is for determining size requirements then allocate buffers, second pass is for filling buffers
 	for (size_t i = 0; i < 2; ++i) {
 		mesh_generate_torus(&m->torus_mesh, 48, 48, 0.5f, 0.3f);
-		mesh_generate_grid(&m->grid_mesh, 16, 16);
+		gridmesh_generate(&m->grid_mesh);
+		gridmesh_generate_bezier(&m->bezier_grid_mesh);
 		mesh_generate_fullscreen_quad_i16(&m->fullscreen_quad_2d_mesh, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, -1, -1);
 		if (i == 0) {
 			mesh_allocate_buffers(&m->torus_mesh);
-			mesh_allocate_buffers(&m->grid_mesh);
+			mesh_allocate_buffers(&m->grid_mesh.mesh);
+			mesh_allocate_buffers(&m->bezier_grid_mesh.mesh);
 			mesh_allocate_buffers(&m->fullscreen_quad_2d_mesh);
 		}
 	}
@@ -1838,12 +1911,14 @@ void app_assets_init(AppAssets* m) {
 
 void app_assets_deinit(AppAssets* m) {
 	mesh_destroy(&m->torus_mesh);
-	mesh_destroy(&m->grid_mesh);
+	mesh_destroy(&m->grid_mesh.mesh);
+	mesh_destroy(&m->bezier_grid_mesh.mesh);
 	mesh_destroy(&m->fullscreen_quad_2d_mesh);
 
 	texture_destroy(&m->uv_test_texture);
 	texture_destroy(&m->horizon_gradient_texture);
 	texture_destroy(&m->mountain_bg_texture);
+	texture_destroy(&m->lava_texture);
 
 	{
 		ColorLutsMemory* c = &m->color_luts_mem;
@@ -1851,6 +1926,24 @@ void app_assets_deinit(AppAssets* m) {
 			free(c->clut_per_channel[i]);
 		}
 	}
+}
+
+void app_scene_update_lava_mesh_deformation(GridMesh* gm, f32 t) {
+	const Mesh* m = &gm->mesh;
+	app_assert(m->nb_vertices == gm->nb_rows * gm->nb_columns);
+	app_assert(m->gu_vertex_format == Vertex_Ni8_Pi16_FORMAT);
+	Vertex_Ni8_Pi16* vertices = m->vertices;
+
+	const f32 rows_minus_one_inv = 1.f / (gm->nb_rows - 1.f);
+
+	for (size_t j = 0; j < gm->nb_rows; ++j) {
+		for (size_t i = 0; i < gm->nb_columns; ++i) {
+			Vertex_Ni8_Pi16* it = &vertices[j * gm->nb_columns + i];
+			const f32 dist = i * rows_minus_one_inv * 14.f;
+			it->position[1] = (0.1f * cosf(t * 8.f + dist)) * INT16_MAX;
+		}
+	}
+	sceKernelDcacheWritebackRange(vertices, m->nb_vertices * sizeof vertices[0]);
 }
 
 void app_scene_update(App* app) {
@@ -1864,7 +1957,7 @@ void app_scene_update(App* app) {
 
 		ScePspFMatrix4 eye_transform_matrix;
 		gumLoadIdentity(&eye_transform_matrix);
-		gumRotateY(&eye_transform_matrix, -1.f * app->loop.game_time.time_since_start);
+		// gumRotateY(&eye_transform_matrix, -1.f * app->loop.game_time.time_since_start);
 		gumTranslate(&eye_transform_matrix, &eye_position);
 		memcpy(&eye_position, &eye_transform_matrix.w.x, sizeof eye_position);
 
@@ -1918,12 +2011,26 @@ void app_scene_update(App* app) {
 		ScePspFVector3 grid_scale = { 100.f, 100.f, 100.f };
 
 		MeshInstance* mi = &app->scene.grid;
-		mi->mesh = &app->assets.grid_mesh;
+		mi->mesh = &app->assets.grid_mesh.mesh;
 
 		gumLoadIdentity(&mi->model_matrix);
 		mi->model_matrix_tr = mi->model_matrix;
 		gumScale(&mi->model_matrix, &grid_scale);
 	}
+
+	// Grid (Bezier)
+	{
+		ScePspFVector3 grid_scale = { 100.f, 10.f, 100.f };
+
+		MeshInstance* mi = &app->scene.grid_bezier;
+		mi->mesh = &app->assets.bezier_grid_mesh.mesh;
+
+		gumLoadIdentity(&mi->model_matrix);
+		mi->model_matrix_tr = mi->model_matrix;
+		gumScale(&mi->model_matrix, &grid_scale);
+	}
+
+	app_scene_update_lava_mesh_deformation(&app->assets.bezier_grid_mesh, app->loop.game_time.time_since_start);
 
 	const f32 lava_speed[2] = { 0.7f, 0.1f };
 	for (size_t i = 0; i < 2; ++i)
@@ -2190,7 +2297,8 @@ void app_draw_scene(App* app) {
 		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 
 		gu_set_texture(&app->assets.lava_texture);
-		mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid, 2.f, 2.f, app->scene.lava_flow[0], app->scene.lava_flow[1]);
+		// mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid, 2.f, 2.f, app->scene.lava_flow[0], app->scene.lava_flow[1]);
+		mesh_instance_draw_sampling_texture_via_positions_xz(&app->scene.grid_bezier, 2.f, 2.f, app->scene.lava_flow[0], app->scene.lava_flow[1]);
 
 		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 		sceGuTexFilter(GU_LINEAR_MIPMAP_LINEAR, GU_LINEAR_MIPMAP_LINEAR);
