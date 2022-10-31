@@ -2,7 +2,6 @@
 // TODO:
 // - Ability to render 3D at half res
 // - LUTs: get it to work with bloom as well
-// - Lava: animate as spline
 // - Render to vertex buffer
 //   - First, proof-of-concept for rendering points with T16_XYZ8
 // - Dither may be ugly in some postprocessing steps (e.g render to half-res buffer)
@@ -449,12 +448,18 @@ void gu_insert_clock_end_marker() {
 
 typedef struct { f32 uv[2]; f32 position[3]; } Vertex_Tf32_Pf32;
 typedef struct { i16 uv[2]; i16 position[3]; } Vertex_Ti16_Pi16;
+typedef struct { i16 uv[2]; u32 color; i8 position[3]; } Vertex_Ti16_C8888_Pi8;
+typedef struct { i16 uv[2]; i8 position[3]; } Vertex_Ti16_Pi8;
+typedef struct { i8 uv[2]; i8 normal[3]; i8 position[3]; } Vertex_Ti8_Ni8_Pi8;
 typedef struct { i8 normal[3]; i8 position[3]; } Vertex_Ni8_Pi8;
 typedef struct { i8 normal[3]; i16 position[3]; } Vertex_Ni8_Pi16;
 typedef struct { f32 normal[3]; f32 position[3]; } Vertex_Nf32_Pf32;
 
 #define Vertex_Tf32_Pf32_FORMAT (GU_TEXTURE_32BITF | GU_VERTEX_32BITF)
 #define Vertex_Ti16_Pi16_FORMAT (GU_TEXTURE_16BIT | GU_VERTEX_16BIT)
+#define Vertex_Ti16_C8888_Pi8_FORMAT (GU_TEXTURE_16BIT | GU_COLOR_8888 | GU_VERTEX_8BIT)
+#define Vertex_Ti16_Pi8_FORMAT (GU_TEXTURE_16BIT | GU_VERTEX_8BIT)
+#define Vertex_Ti8_Ni8_Pi8_FORMAT (GU_TEXTURE_8BIT | GU_NORMAL_8BIT | GU_VERTEX_8BIT)
 #define Vertex_Ni8_Pi8_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_8BIT)
 #define Vertex_Ni8_Pi16_FORMAT (GU_NORMAL_8BIT | GU_VERTEX_16BIT)
 #define Vertex_Nf32_Pf32_FORMAT (GU_NORMAL_32BITF | GU_VERTEX_32BITF)
@@ -492,18 +497,19 @@ size_t texture_get_alloc_size(const Texture* m, u32 nb_levels) {
 
 void texture_check_common(const Texture* m) {
 	app_assert(m->nb_mipmap_levels >= 1);
-	if (m->size_px[0] && m->size_px[1]) {
-		app_assert(size_is_power_of_two_nonzero(m->stride_px));
+	// Question: is the stride allowed to be zero?
+	// app_assert((m->stride_px * gu_psm_get_bits_per_pixel(m->psm)) % (16 * 8) == 0); // According to the comment on sceGuTexImage, stride must be "block-aligned"; I guess this refers to the { 16-byte wide, 8 px tall } blocks fetched by the GE.
+	app_assert(m->stride_px <= UINT16_MAX); // Stride (buffer width) is sent directly as 16-bit to the GE
+	if (m->size_px[0] && m->size_px[1])
 		app_assert(m->data);
-	} else {
-		app_assert(size_is_power_of_two_or_zero(m->stride_px));
-	}
 }
 
 void texture_check_as_input(const Texture* m) {
 	texture_check_common(m);
-	app_assert(m->is_non_power_of_two_on_purpose || size_is_power_of_two_or_zero(m->size_px[0]));
-	app_assert(m->is_non_power_of_two_on_purpose || size_is_power_of_two_or_zero(m->size_px[1]));
+	for (size_t i = 0; i < 2; ++i) {
+		app_assert(m->is_non_power_of_two_on_purpose || size_is_power_of_two_or_zero(m->size_px[i]));
+		app_assert(m->size_px[i] <= 512); // Can't be represented in commands otherwise; size is sent as 8-bit exponent
+	}
 }
 
 void texture_check_as_rendertarget(const Texture* m) {
@@ -575,6 +581,61 @@ void swizzle_fast(void* out, const void* in, uint32_t width_in_bytes, uint32_t h
 		ysrc += src_row;
 	}
 }
+
+typedef enum {
+	SKYBOX_FACE__NX = 0,
+	SKYBOX_FACE__PX,
+	SKYBOX_FACE__NY,
+	SKYBOX_FACE__PY,
+	SKYBOX_FACE__NZ,
+	SKYBOX_FACE__PZ,
+	SKYBOX_FACE__COUNT // Keep last, will always equal 6
+} SkyboxFaceID;
+
+typedef struct {
+	Texture texture;
+	u32 face_size_px[2];
+} SkyboxTexture;
+
+u32 skybox_face_id_get_color(SkyboxFaceID face_id) {
+	switch (face_id) {
+	case SKYBOX_FACE__NX: return GU_ABGR(0xff, 0xff, 0xff, 0x00);
+	case SKYBOX_FACE__PX: return GU_ABGR(0xff, 0x00, 0x00, 0xff);
+	case SKYBOX_FACE__NY: return GU_ABGR(0xff, 0xff, 0x00, 0xff);
+	case SKYBOX_FACE__PY: return GU_ABGR(0xff, 0x00, 0xff, 0x00);
+	case SKYBOX_FACE__NZ: return GU_ABGR(0xff, 0x00, 0xff, 0xff);
+	case SKYBOX_FACE__PZ: return GU_ABGR(0xff, 0xff, 0x00, 0x00);
+	default: app_assert(0 && "Unknown face ID"); break;
+	}
+	return 0;
+}
+
+Texture skybox_texture_get_face_texture(const SkyboxTexture* m, SkyboxFaceID face_id) {
+	// Face order is:
+	// +X +Z -X
+	// +Y -Y -Z
+	u32 x = 0, y = 0;
+	switch (face_id) {
+	case SKYBOX_FACE__PX: x = 0; y = 0; break;
+	case SKYBOX_FACE__PZ: x = 1; y = 0; break;
+	case SKYBOX_FACE__NX: x = 2; y = 0; break;
+	case SKYBOX_FACE__PY: x = 0; y = 1; break;
+	case SKYBOX_FACE__NY: x = 1; y = 1; break;
+	case SKYBOX_FACE__NZ: x = 2; y = 1; break;
+	default: app_assert(0 && "Unknown face ID"); break;
+	}
+
+	Texture out = m->texture;
+	out.size_px[0] = m->face_size_px[0];
+	out.size_px[1] = m->face_size_px[1];
+	out.data = (u8*) out.data + (y * out.stride_px * out.size_px[1] + x * out.size_px[0]) * gu_psm_get_bytes_per_pixel(out.psm);
+	return out;
+}
+
+//
+//
+//
+//
 
 void gu_set_offset(u32 w, u32 h) {
 	sceGuOffset(2048 - (w / 2), 2048 - (h / 2));
@@ -722,6 +783,12 @@ void mesh_draw_impl(const Mesh* m, bool b2d) {
 		case GU_SPRITES:
 			g_frame_stats.meshes.nb_faces += count / 2;
 			break;
+		case GU_POINTS:
+		case GU_LINES:
+		case GU_LINE_STRIP:
+			break;
+		case GU_TRIANGLE_STRIP:
+		case GU_TRIANGLE_FAN:
 		default:
 			app_assert(0 && "Calculating face number from this topology is not implemented yet");
 			break;
@@ -1613,6 +1680,7 @@ typedef struct {
 	Texture lava_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
+	SkyboxTexture skybox_test_texture;
 	Mesh torus_mesh;
 	GridMesh grid_mesh;
 	GridMesh bezier_grid_mesh;
@@ -1803,7 +1871,8 @@ void app_gfx_swap_buffers(AppGfx* m) {
 }
 
 void gu_texture_generate_mipmaps(const Texture* m, u32 src_level, u32 nb_levels, void* vram_ptr) {
-	for (u32 dst_level = src_level + 1; dst_level < u32_min(m->nb_mipmap_levels, nb_levels); ++dst_level) {
+	const u32 end_level = u32_min(m->nb_mipmap_levels, nb_levels);
+	for (u32 dst_level = src_level + 1; dst_level < end_level; ++dst_level) {
 		Texture rt = *m;
 		rt.data = vram_ptr;
 		rt.stride_px  >>= dst_level;
@@ -1876,6 +1945,37 @@ void app_assets_init(AppAssets* m) {
 		sceKernelDcacheWritebackRange(pixels, texture_get_level_size_in_bytes(t, 0));
 	}
 
+	// Skybox test texture
+	{
+		const u32 face_w = 32;
+		const u32 face_h = 32;
+		SkyboxTexture* st = &m->skybox_test_texture;
+		*st = (SkyboxTexture) {
+			.texture = {
+				.psm = GU_PSM_8888,
+				.size_px = { 3 * face_w, 2 * face_h },
+				.stride_px = 3 * face_w,
+				.nb_mipmap_levels = 1,
+				.is_swizzled = false,
+				.is_non_power_of_two_on_purpose = true,
+			},
+			.face_size_px = { face_w, face_h },
+		};
+
+		texture_allocate_buffers(&st->texture);
+
+		for (u32 i = 0; i < 6; ++i) {
+			const u32 color = skybox_face_id_get_color(i);
+			const Texture face_texture = skybox_texture_get_face_texture(st, i);
+			u32* pixels = face_texture.data;
+			for (int y = 0; y < face_texture.size_px[1]; ++y)
+				for (int x = 0; x < face_texture.size_px[0]; ++x)
+					pixels[y * face_texture.stride_px + x] = color;
+		}
+		
+		sceKernelDcacheWritebackRange(st->texture.data, texture_get_level_size_in_bytes(&st->texture, 0));
+	}
+
 	const bool should_swizzle = true;
 	m->lava_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/lava.tga", true);
 	m->horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/horizon_gradient.tga", true);
@@ -1919,6 +2019,7 @@ void app_assets_deinit(AppAssets* m) {
 	texture_destroy(&m->horizon_gradient_texture);
 	texture_destroy(&m->mountain_bg_texture);
 	texture_destroy(&m->lava_texture);
+	texture_destroy(&m->skybox_test_texture.texture);
 
 	{
 		ColorLutsMemory* c = &m->color_luts_mem;
@@ -2319,6 +2420,123 @@ void app_draw_scene(App* app) {
 		gu_set_texture_ex(&app->assets.mountain_bg_texture, app->vars[VAR_ID__MIP_LEVEL].value, 1);
 		mesh_instance_draw_sampling_sky_texture_via_normals(&app->scene.torus, &app->scene.camera);
 		sceGuModelColor(0, 0xffffffu, 0xffffffu, 0xffffffu);
+	}
+
+	sceGuDisable(GU_LIGHTING);
+	sceGuDisable(GU_LIGHT0);
+	sceGuDisable(GU_LIGHT1);
+
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexProjMapMode(GU_UV);
+	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+
+	if (true) {
+		Texture rt = app->gfx.framebuffers[0];
+		gu_set_rendertarget(&rt);
+
+		sceGuClearColor(0);
+		sceGuClearDepth(0);
+		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+
+		const MeshInstance* mi = &app->scene.torus;
+		const Camera* camera = &app->scene.camera;
+
+		gu_set_texture(&app->assets.lava_texture);
+
+		sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
+		sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
+
+		ScePspFMatrix4 model_matrix_r = mi->model_matrix_tr;
+		model_matrix_r.w = (ScePspFVector4) { 0, 0, 0, 1 };
+
+		ScePspFMatrix4 texture_matrix;
+		gumLoadIdentity(&texture_matrix);
+		gumTranslate(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, 0.5f, 1.f }});
+		gumScale(&texture_matrix, (const ScePspFVector3[]) {{ 0.5f, -0.5f, 0.f }});
+		gumMultMatrix(&texture_matrix, &texture_matrix, &camera->view_matrix_r);
+		gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
+		sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
+
+		mesh_instance_draw(mi);
+
+		sceGuTexProjMapMode(GU_UV);
+		sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+
+		sceGuDisable(GU_DEPTH_TEST);
+		sceGuDepthMask(1);
+
+		{
+			const Texture* t = &app->assets.skybox_test_texture.texture;
+			gu_set_texture(t);
+			gu_draw_fullscreen_textured_quad_i16(PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT, t->size_px[0], t->size_px[1], -1, -1);
+		}
+
+		sceGuEnable(GU_DEPTH_TEST);
+	}
+
+	// Test vertex buffer
+	if (false) {
+		const u32 w = 255;
+		const u32 h = 255;
+
+		ScePspFMatrix4 identity_matrix;
+		gumLoadIdentity(&identity_matrix);
+
+		ScePspFMatrix4 model_matrix;
+		gumLoadIdentity(&model_matrix);
+		gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
+			(PSP_SCREEN_WIDTH * -0.5f + (w + 2.f) * 0.5f) / (PSP_SCREEN_WIDTH * 0.5f),
+			(PSP_SCREEN_HEIGHT * 0.5f - (h + 2.f) * 0.5f) / (PSP_SCREEN_HEIGHT * 0.5f),
+			0
+		}});
+		gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
+			+(w + 0.5f) / (f32) PSP_SCREEN_WIDTH,
+			-(h + 0.5f) / (f32) PSP_SCREEN_HEIGHT,
+			1
+		}});
+
+		// NOTE: 8-bit vertex positions don't seem to be supported at all with GU_TRANSFORM_2D... But the same format does work with GU_TRANSFORM_3D.
+
+		Vertex_Ti16_Pi8* vertices = sceGuGetMemory(w * h * sizeof vertices[0]);
+		Mesh mesh = {
+			.gu_topology = GU_POINTS,
+			.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
+			.sizeof_vertex = sizeof vertices[0],
+			.vertices = vertices,
+			.nb_vertices = w * h,
+		};
+		for (u32 y = 0; y < h; ++y)
+		for (u32 x = 0; x < w; ++x) {
+			const Vertex_Ti16_Pi8 v = {
+				.uv = { 
+					x * INT16_MAX / (w - 1.f),
+					y * INT16_MAX / (h - 1.f)
+				},
+				// .color = GU_ABGR(0xff, 0x00, 0xff * (y & 1), 0xff * (x & 1)),
+				// .color = GU_ABGR(0xff, 0x00, y, x),
+				.position = {
+					x + INT8_MIN,
+					y + INT8_MIN
+				},
+			};
+			vertices[y * w + x] = v;
+		}
+		sceKernelDcacheWritebackRange(vertices, mesh.nb_vertices * sizeof vertices[0]);
+
+		// sceGuDisable(GU_TEXTURE_2D);
+		// sceGuColor(0xffffffff);
+		gu_set_texture(&app->assets.lava_texture);
+		sceGuDisable(GU_DEPTH_TEST);
+		sceGuDepthMask(1);
+		sceGuSetMatrix(GU_MODEL, &model_matrix);
+		sceGuSetMatrix(GU_VIEW, &identity_matrix);
+		sceGuSetMatrix(GU_PROJECTION, &identity_matrix);
+		mesh_draw_3d(&mesh);
+		sceGuEnable(GU_DEPTH_TEST);
 	}
 
 	sceGuDisable(GU_LIGHTING);
