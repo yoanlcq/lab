@@ -622,7 +622,7 @@ u32 skybox_face_id_get_color(SkyboxFaceID face_id) {
 	return 0;
 }
 
-Texture skybox_texture_get_face_texture(const SkyboxTexture* m, SkyboxFaceID face_id) {
+ScePspIVector2 skybox_face_get_2d_index(SkyboxFaceID face_id) {
 	// Face order is:
 	// +X +Z -X
 	// +Y -Y -Z
@@ -636,11 +636,15 @@ Texture skybox_texture_get_face_texture(const SkyboxTexture* m, SkyboxFaceID fac
 	case SKYBOX_FACE__NZ: x = 2; y = 1; break;
 	default: app_assert(0 && "Unknown face ID"); break;
 	}
+	return (ScePspIVector2) { x, y };
+}
 
+Texture skybox_texture_get_face_texture(const SkyboxTexture* m, SkyboxFaceID face_id) {
+	const ScePspIVector2 i = skybox_face_get_2d_index(face_id);
 	Texture out = m->texture;
 	out.size_px[0] = m->face_size_px[0];
 	out.size_px[1] = m->face_size_px[1];
-	out.data = (u8*) out.data + (y * out.stride_px * out.size_px[1] + x * out.size_px[0]) * gu_psm_get_bytes_per_pixel(out.psm);
+	out.data = (u8*) out.data + (i.y * out.stride_px * out.size_px[1] + i.x * out.size_px[0]) * gu_psm_get_bytes_per_pixel(out.psm);
 	return out;
 }
 
@@ -648,13 +652,13 @@ Texture skybox_texture_get_face_texture(const SkyboxTexture* m, SkyboxFaceID fac
 ScePspFVector3 skybox_face_uvs_from_normal(ScePspFVector3 v) {
 	ScePspFVector3 vabs = v;
 	vabs.x = fabsf(v.x);
-	vabs.y = fabsf(v.z);
+	vabs.y = fabsf(v.y);
 	vabs.z = fabsf(v.z);
 
-	ScePspFVector3 n = v;
-	n.x = n.x * 0.5f + 0.5f;
-	n.y = n.y * 0.5f + 0.5f;
-	n.z = n.z * 0.5f + 0.5f;
+	ScePspFVector3 n;
+	n.x = fminf(fmaxf(v.x * 0.5f + 0.5f, 0.f), 1.f);
+	n.y = fminf(fmaxf(v.y * 0.5f + 0.5f, 0.f), 1.f);
+	n.z = fminf(fmaxf(v.z * 0.5f + 0.5f, 0.f), 1.f);
 
 	if (vabs.z >= vabs.x && vabs.z >= vabs.y) {
 		return (ScePspFVector3) { v.z < 0 ? 1.f - n.x : n.x, 1.f - n.y, v.z < 0 ? SKYBOX_FACE__NZ : SKYBOX_FACE__PZ };
@@ -663,6 +667,14 @@ ScePspFVector3 skybox_face_uvs_from_normal(ScePspFVector3 v) {
 	} else {
 		return (ScePspFVector3) { v.x < 0 ? n.z : 1.f - n.z, 1.f - n.y, v.x < 0 ? SKYBOX_FACE__NX : SKYBOX_FACE__PX };
 	}
+}
+// Face index is returned in the third component
+ScePspFVector3 skybox_uvs_from_normal(ScePspFVector3 v) {
+	ScePspFVector3 u = skybox_face_uvs_from_normal(v);
+	const ScePspIVector2 i = skybox_face_get_2d_index(u.z);
+	u.x = (u.x + i.x) / 3.f;
+	u.y = (u.y + i.y) / 2.f;
+	return u;
 }
 
 //
@@ -1990,17 +2002,17 @@ void app_assets_init(AppAssets* m) {
 
 	// Skybox test texture
 	{
-		const u32 face_w = 32;
+		const u32 face_w = 42;
 		const u32 face_h = 32;
 		SkyboxTexture* st = &m->skybox_test_texture;
 		*st = (SkyboxTexture) {
 			.texture = {
 				.psm = GU_PSM_8888,
-				.size_px = { 3 * face_w, 2 * face_h },
-				.stride_px = 3 * face_w,
+				.size_px = { 128, 64 },
+				.stride_px = 128,
 				.nb_mipmap_levels = 1,
 				.is_swizzled = false,
-				.is_non_power_of_two_on_purpose = true,
+				// .is_non_power_of_two_on_purpose = true,
 			},
 			.face_size_px = { face_w, face_h },
 		};
@@ -2107,11 +2119,8 @@ void app_assets_init(AppAssets* m) {
 				tmp_pixels[y * t->stride_px + x] = GU_ABGR(0xff, (u32) (0xff * (rz * 0.5f + 0.5f)), (u32) (0xff * (ry * 0.5f + 0.5f)), (u32) (0xff * (rx * 0.5f + 0.5f)));
 
 				if (true) {
-					const ScePspFVector3 uvs = skybox_face_uvs_from_normal((ScePspFVector3) { rx, ry, rz });
-					const i16 uvs_i16[] = {
-						uvs.x * INT16_MAX,
-						uvs.y * INT16_MAX,
-					};
+					const ScePspFVector3 uvs = skybox_uvs_from_normal((ScePspFVector3) { rx, ry, rz });
+					const i16 uvs_i16[] = { uvs.x * INT16_MAX, uvs.y * 255 /* * INT16_MAX */ }; // NOSUBMIT
 					memcpy(&tmp_pixels[y * t->stride_px + x], uvs_i16, sizeof uvs_i16);
 				}
 			}
@@ -2638,7 +2647,7 @@ void app_draw_scene(App* app) {
 
 		Texture vb_rt = obj_rt;
 		vb_rt.data = ptr_align((u8*) obj_rt.data + texture_get_level_size_in_bytes(&obj_rt, 0), 16);
-		vb_rt.data = psp_uncached_ptr_non_null(vb_rt.data);
+		vb_rt.data = psp_uncached_ptr_non_null(vb_rt.data); // NOSUBMIT TODO: doesn't seem to change anything?
 
 		gu_set_rendertarget(&obj_rt);
 
@@ -2669,6 +2678,10 @@ void app_draw_scene(App* app) {
 		gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
 		sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
 
+		// NOSUBMIT TODO: alpha is not written, so the V coordinate drops its 8 MSBs...
+		// Options are:
+		// - Figure out a way to write alpha (stencil functions?)
+		// - Just scale the V coordinate accordingly (when generating the texture) and accept that we only get 8 bits of precision
 		mesh_instance_draw(mi);
 
 		sceGuTexProjMapMode(GU_UV);
@@ -2717,12 +2730,6 @@ void app_draw_scene(App* app) {
 			gu_draw_fullscreen_textured_quad_i16(tp->size_px[0], tp->size_px[1], tp->size_px[0], tp->size_px[1], -1, -1);
 			sceGuDisable(GU_ALPHA_TEST);
 
-			if (false) {
-				gu_set_rendertarget(&app->gfx.framebuffers[0]);
-				gu_set_texture(&vb_rt);
-				gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
-			}
-
 			if (true) {
 				ScePspFMatrix4 model_matrix;
 				gumLoadIdentity(&model_matrix);
@@ -2755,6 +2762,8 @@ void app_draw_scene(App* app) {
 				fb0.size_px[0] = vb_rt.size_px[0];
 				fb0.size_px[1] = vb_rt.size_px[1];
 
+				sceGuTexScale(1.f, INT16_MAX / 255);
+
 				gu_set_rendertarget(&fb0);
 				gu_set_texture(&app->assets.skybox_test_texture.texture);
 				sceGuSetMatrix(GU_MODEL, &model_matrix);
@@ -2763,6 +2772,8 @@ void app_draw_scene(App* app) {
 				// Flush some cache??
 				mesh.nb_vertices = vb_rt.stride_px / 2;
 				mesh_draw_3d(&mesh);
+
+				sceGuTexScale(1.f, 1.f);
 			}
 		}
 
