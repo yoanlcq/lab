@@ -2116,8 +2116,8 @@ void app_assets_init(AppAssets* m) {
 		Texture* t = &m->rtvb_xyz_texture;
 		*t = (Texture) {
 			.psm = GU_PSM_8888,
-			.size_px = { 256, 256 },
-			.stride_px = 256,
+			.size_px = { 512, 256 },
+			.stride_px = 512,
 			.nb_mipmap_levels = 1,
 		};
 
@@ -2126,9 +2126,14 @@ void app_assets_init(AppAssets* m) {
 		texture_allocate_buffers(t);
 
 		u32* tmp_pixels = malloc(size);
-		for (u32 y = 0; y < t->size_px[1]; ++y)
-			for (u32 x = 0; x < t->size_px[0]; ++x)
-				tmp_pixels[y * t->stride_px + x] = GU_ABGR(x & 1, 0, INT8_MIN + y, INT8_MIN + x);
+		for (u32 y = 0; y < t->size_px[1]; ++y) {
+			for (u32 x = 0; x < t->size_px[0]; ++x) {
+				const i8 ix = INT8_MIN + 1 + x / 2;
+				const i8 iy = INT8_MIN + 1 + y;
+				i8 rgba[] = { ix, iy, 0, x & 1 };
+				memcpy(&tmp_pixels[y * t->stride_px + x], rgba, 4);
+			}
+		}
 
 		u32* pixels = texture_get_data_for_level(t, 0);
 		swizzle_fast(pixels, tmp_pixels, t->size_px[0] * gu_psm_get_bytes_per_pixel(t->psm), t->size_px[1]);
@@ -2600,10 +2605,7 @@ void app_draw_scene(App* app) {
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
-	if (false) {
-		sceGuDisable(GU_DEPTH_TEST);
-		sceGuDepthMask(1);
-
+	if (true) {
 		Texture obj_rt = app->gfx.pingpong0_fb;
 		obj_rt.stride_px  = 256;
 		obj_rt.size_px[0] = 256;
@@ -2616,12 +2618,16 @@ void app_draw_scene(App* app) {
 
 		sceGuClearColor(0);
 		sceGuClearDepth(0);
-		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+		sceGuClearStencil(0);
+		sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT | GU_FAST_CLEAR_BIT);
 
 		const MeshInstance* mi = &app->scene.torus;
 		const Camera* camera = &app->scene.camera;
 
 		gu_set_texture(&app->assets.reflection_texture);
+		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+		sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+		sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
 		sceGuTexProjMapMode(GU_NORMALIZED_NORMAL);
 		sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
@@ -2642,6 +2648,9 @@ void app_draw_scene(App* app) {
 		sceGuTexProjMapMode(GU_UV);
 		sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 
+		sceGuDisable(GU_DEPTH_TEST);
+		sceGuDepthMask(1);
+
 		if (false) {
 			// const Texture* t = &app->assets.skybox_test_texture.texture;
 			const Texture* t = &app->assets.normal_to_color_texture;
@@ -2659,24 +2668,13 @@ void app_draw_scene(App* app) {
 		const u32 w = 255;
 		const u32 h = 255;
 
+		const f32 sw = obj_rt.size_px[0];
+		const f32 sh = obj_rt.size_px[1];
+		const f32 hsw = sw / 2.f;
+		const f32 hsh = sh / 2.f;
+
 		ScePspFMatrix4 identity_matrix;
 		gumLoadIdentity(&identity_matrix);
-
-		// TODO:
-		// What the draw call sees is a vertex buffer, positions are between -127 and 127.
-		// The model matrix move that quad to the top-left corner and spread it into columns.
-		ScePspFMatrix4 model_matrix;
-		gumLoadIdentity(&model_matrix);
-		gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
-			(PSP_SCREEN_WIDTH * -0.5f + (w + 2.f) * 0.5f) / (PSP_SCREEN_WIDTH * 0.5f),
-			(PSP_SCREEN_HEIGHT * 0.5f - (h + 2.f) * 0.5f) / (PSP_SCREEN_HEIGHT * 0.5f),
-			0
-		}});
-		gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
-			+(w + 0.5f) / (f32) PSP_SCREEN_WIDTH,
-			-(h + 0.5f) / (f32) PSP_SCREEN_HEIGHT,
-			1
-		}});
 
 		sceGuSetMatrix(GU_VIEW, &identity_matrix);
 		sceGuSetMatrix(GU_PROJECTION, &identity_matrix);
@@ -2688,22 +2686,54 @@ void app_draw_scene(App* app) {
 
 			sceGuEnable(GU_ALPHA_TEST);
 			sceGuAlphaFunc(GU_EQUAL, (pass + 1) & 1, 1);
-			gu_set_texture(&app->assets.rtvb_xyz_texture);
-			gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
+			const Texture* tp = &app->assets.rtvb_xyz_texture;
+			gu_set_texture(tp);
+			gu_draw_fullscreen_textured_quad_i16(tp->size_px[0], tp->size_px[1], tp->size_px[0], tp->size_px[1], -1, -1);
 			sceGuDisable(GU_ALPHA_TEST);
 
-			Mesh mesh = {
-				.gu_topology = GU_POINTS,
-				.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
-				.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
-				.vertices = vb_rt.data,
-				.nb_vertices = w * h,
-			};
+			if (false) {
+				gu_set_rendertarget(&app->gfx.framebuffers[0]);
+				gu_set_texture(&vb_rt);
+				gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
+			}
 
-			gu_set_rendertarget(&app->gfx.framebuffers[0]);
-			gu_set_texture(&app->assets.skybox_test_texture.texture);
-			sceGuSetMatrix(GU_MODEL, &model_matrix);
-			mesh_draw_3d(&mesh);
+			if (true) {
+				ScePspFMatrix4 model_matrix;
+				gumLoadIdentity(&model_matrix);
+
+				gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
+					(-hsw + (2 * +(w + app->vars[VAR_ID__HACK].value)) / 2.f) / hsw
+					- (2 - pass) / hsw
+					,
+					(+hsh - (h + app->vars[VAR_ID__HACK].value) / 2.f) / hsh
+					+ 1.f / hsh
+					,
+					0
+				}});
+
+				gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
+					2 * +(w + app->vars[VAR_ID__HACK].value) / sw,
+					-(h + app->vars[VAR_ID__HACK].value) / sh,
+					1
+				}});
+
+				const Mesh mesh = {
+					.gu_topology = GU_POINTS,
+					.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
+					.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
+					.vertices = vb_rt.data,
+					.nb_vertices = (vb_rt.stride_px * vb_rt.size_px[1]) / 2,
+				};
+
+				Texture fb0 = app->gfx.framebuffers[0];
+				fb0.size_px[0] = vb_rt.size_px[0];
+				fb0.size_px[1] = vb_rt.size_px[1];
+
+				gu_set_rendertarget(&fb0);
+				gu_set_texture(&app->assets.skybox_test_texture.texture);
+				sceGuSetMatrix(GU_MODEL, &model_matrix);
+				mesh_draw_3d(&mesh);
+			}
 		}
 
 		sceGuEnable(GU_DEPTH_TEST);
@@ -2711,7 +2741,7 @@ void app_draw_scene(App* app) {
 	}
 
 	// Test vertex buffer
-	if (true) {
+	if (false) {
 		// We can't render 256x256 vertices in one go; the max number of vertices per draw call is UINT16_MAX, and 256*256 is just above that
 		const i32 w = 255;
 		const i32 h = 255;
