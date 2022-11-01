@@ -217,6 +217,18 @@ static inline void* psp_uncached_ptr_or_null(const void* p) {
 	return p ? psp_uncached_ptr_non_null(p) : NULL;
 }
 
+static inline uintptr_t psp_ptr_actual_addr_u(const void* p) {
+	return ((uintptr_t) p) & ~0x40000000ul;
+}
+
+static inline intptr_t psp_ptr_actual_addr_i(const void* p) {
+	return ((intptr_t) p) & ~0x40000000ul;
+}
+
+static inline void* psp_ptr_actual_addr_p(const void* p) {
+	return (void*) psp_ptr_actual_addr_u(p);
+}
+
 static inline bool size_is_power_of_two_nonzero(size_t x) {
 	return x != 0 && !(x & (x - 1));
 }
@@ -353,15 +365,15 @@ void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
 
 // Make an absolute pointer relative to VRAM
 void* psp_ptr_to_vram(const void* p) {
-	app_assert((uintptr_t) p >= (uintptr_t) sceGeEdramGetAddr());
-	app_assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetAddr() + (uintptr_t) sceGeEdramGetSize());
+	app_assert(psp_ptr_actual_addr_i(p) >= (intptr_t) sceGeEdramGetAddr());
+	app_assert(psp_ptr_actual_addr_i(p) <= (intptr_t) sceGeEdramGetAddr() + (intptr_t) sceGeEdramGetSize());
 	return (void*) ((const u8*) p - (intptr_t) sceGeEdramGetAddr());
 }
 
 // Makes an absolute pointer from a pointer relative to VRAM
 void* psp_ptr_from_vram(const void* p) {
-	app_assert((intptr_t) p >= 0);
-	app_assert((uintptr_t) p <= (uintptr_t) sceGeEdramGetSize());
+	app_assert(psp_ptr_actual_addr_i(p) >= 0);
+	app_assert(psp_ptr_actual_addr_i(p) <= (intptr_t) sceGeEdramGetSize());
 	return (void*) ((const u8*) p + (intptr_t) sceGeEdramGetAddr());
 }
 
@@ -2003,6 +2015,9 @@ void app_assets_init(AppAssets* m) {
 				for (u32 x = 0; x < face_texture.size_px[0]; ++x)
 					pixels[y * face_texture.stride_px + x] = color;
 		}
+
+		// Make sure UV (0, 0) redirects to a black background
+		*(u32*) st->texture.data = GU_ABGR(0, 0, 0, 0);
 		
 		sceKernelDcacheWritebackRange(st->texture.data, texture_get_level_size_in_bytes(&st->texture, 0));
 	}
@@ -2128,8 +2143,18 @@ void app_assets_init(AppAssets* m) {
 		u32* tmp_pixels = malloc(size);
 		for (u32 y = 0; y < t->size_px[1]; ++y) {
 			for (u32 x = 0; x < t->size_px[0]; ++x) {
-				const i8 ix = INT8_MIN + 1 + x / 2;
-				const i8 iy = INT8_MIN + 1 + y;
+				// Figure out the "image-space" position of the pixel that comes before us in the linear buffer layout
+				u32 px = (x + 1) / 2;
+				u32 py = y;
+				if (px >= 1) {
+					px -= 1;
+				} else if (py >= 1) {
+					px = t->stride_px / 2 - 1;
+					py -= 1;
+				}
+
+				const i8 ix = INT8_MIN + 1 + px;
+				const i8 iy = INT8_MIN + 1 + py;
 				i8 rgba[] = { ix, iy, 0, x & 1 };
 				memcpy(&tmp_pixels[y * t->stride_px + x], rgba, 4);
 			}
@@ -2613,6 +2638,7 @@ void app_draw_scene(App* app) {
 
 		Texture vb_rt = obj_rt;
 		vb_rt.data = ptr_align((u8*) obj_rt.data + texture_get_level_size_in_bytes(&obj_rt, 0), 16);
+		vb_rt.data = psp_uncached_ptr_non_null(vb_rt.data);
 
 		gu_set_rendertarget(&obj_rt);
 
@@ -2703,7 +2729,7 @@ void app_draw_scene(App* app) {
 
 				gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
 					(-hsw + (2 * +(w + app->vars[VAR_ID__HACK].value)) / 2.f) / hsw
-					- (2 - pass) / hsw
+					- (2 - (i32) pass) / hsw
 					,
 					(+hsh - (h + app->vars[VAR_ID__HACK].value) / 2.f) / hsh
 					+ 1.f / hsh
@@ -2717,12 +2743,12 @@ void app_draw_scene(App* app) {
 					1
 				}});
 
-				const Mesh mesh = {
+				Mesh mesh = {
 					.gu_topology = GU_POINTS,
 					.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
 					.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
-					.vertices = vb_rt.data,
-					.nb_vertices = (vb_rt.stride_px * vb_rt.size_px[1]) / 2,
+					.vertices = (u8*) vb_rt.data + pass * 4,
+					.nb_vertices = vb_rt.size_px[1] * (vb_rt.stride_px / 2),
 				};
 
 				Texture fb0 = app->gfx.framebuffers[0];
@@ -2732,6 +2758,10 @@ void app_draw_scene(App* app) {
 				gu_set_rendertarget(&fb0);
 				gu_set_texture(&app->assets.skybox_test_texture.texture);
 				sceGuSetMatrix(GU_MODEL, &model_matrix);
+				mesh_draw_3d(&mesh);
+
+				// Flush some cache??
+				mesh.nb_vertices = vb_rt.stride_px / 2;
 				mesh_draw_3d(&mesh);
 			}
 		}
