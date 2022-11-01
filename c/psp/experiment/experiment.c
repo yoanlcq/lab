@@ -1727,6 +1727,7 @@ typedef struct {
 	Texture lava_texture;
 	Texture horizon_gradient_texture;
 	Texture mountain_bg_texture;
+	Texture lava_skybox_texture;
 	Texture normal_to_color_texture;
 	Texture reflection_texture;
 	Texture rtvb_xyz_texture; // rtvb = Render-To-Vertex-Buffer, might rename later
@@ -2182,6 +2183,7 @@ void app_assets_init(AppAssets* m) {
 	m->lava_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/lava.tga", true);
 	m->horizon_gradient_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/horizon_gradient.tga", true);
 	m->mountain_bg_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 9 }}, "assets/mountain_bg.tga", true);
+	m->lava_skybox_texture = texture_load_from_tga_path((const TextureLoadParams[]) {{ .should_swizzle = should_swizzle, .max_mipmap_levels = 1 }}, "assets/lava_skybox.tga", true);
 
 	{
 		void* vram_buffer = psp_ptr_from_vram(NULL);
@@ -2220,6 +2222,7 @@ void app_assets_deinit(AppAssets* m) {
 	texture_destroy(&m->uv_test_texture);
 	texture_destroy(&m->horizon_gradient_texture);
 	texture_destroy(&m->mountain_bg_texture);
+	texture_destroy(&m->lava_skybox_texture);
 	texture_destroy(&m->lava_texture);
 	texture_destroy(&m->skybox_test_texture.texture);
 	texture_destroy(&m->normal_to_color_texture);
@@ -2720,6 +2723,11 @@ void app_draw_scene(App* app) {
 
 		for (u32 pass = 0; pass < 2; ++pass) {
 			gu_set_rendertarget(&vb_rt);
+
+			// We can't write to the alpha channel, so let's at least make sure it is zero.
+			sceGuClearStencil(0);
+			sceGuClear(GU_STENCIL_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+
 			gu_set_texture(&obj_rt);
 			gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
 
@@ -2765,7 +2773,8 @@ void app_draw_scene(App* app) {
 				sceGuTexScale(1.f, INT16_MAX / 255);
 
 				gu_set_rendertarget(&fb0);
-				gu_set_texture(&app->assets.skybox_test_texture.texture);
+				// gu_set_texture(&app->assets.skybox_test_texture.texture);
+				gu_set_texture(&app->assets.lava_skybox_texture);
 				sceGuSetMatrix(GU_MODEL, &model_matrix);
 				mesh_draw_3d(&mesh);
 
