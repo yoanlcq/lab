@@ -1758,6 +1758,9 @@ typedef struct {
 typedef enum {
 	VAR_ID__INVALID = 0,
 	VAR_ID__HACK,
+	VAR_ID__RTVB_SPACING,
+	VAR_ID__RTVB_RT_CONFIG_ID,
+	VAR_ID__RTVB_RT_COLOR_MODE,
 	VAR_ID__TIME_DILATION,
 	VAR_ID__MIP_LEVEL,
 	VAR_ID__FB_PSM,
@@ -2659,6 +2662,9 @@ void app_draw_scene(App* app) {
 		ScePspFMatrix4 identity_matrix;
 		gumLoadIdentity(&identity_matrix);
 
+		// TODO:
+		// What the draw call sees is a vertex buffer, positions are between -127 and 127.
+		// The model matrix move that quad to the top-left corner and spread it into columns.
 		ScePspFMatrix4 model_matrix;
 		gumLoadIdentity(&model_matrix);
 		gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
@@ -2695,7 +2701,7 @@ void app_draw_scene(App* app) {
 			};
 
 			gu_set_rendertarget(&app->gfx.framebuffers[0]);
-			gu_set_texture(&vb_rt);
+			gu_set_texture(&app->assets.skybox_test_texture.texture);
 			sceGuSetMatrix(GU_MODEL, &model_matrix);
 			mesh_draw_3d(&mesh);
 		}
@@ -2710,8 +2716,48 @@ void app_draw_scene(App* app) {
 		const i32 w = 255;
 		const i32 h = 255;
 
-		const f32 sw = PSP_SCREEN_WIDTH;
-		const f32 sh = PSP_SCREEN_HEIGHT;
+		Texture obj_rt = app->gfx.pingpong0_fb;
+		switch ((u32) app->vars[VAR_ID__RTVB_RT_CONFIG_ID].value) {
+		case 0:
+		default:
+			obj_rt.stride_px  = PSP_SCREEN_STRIDE;
+			obj_rt.size_px[0] = PSP_SCREEN_WIDTH;
+			obj_rt.size_px[1] = PSP_SCREEN_HEIGHT;
+			break;
+		case 1:
+			obj_rt.stride_px  = 256;
+			obj_rt.size_px[0] = 256;
+			obj_rt.size_px[1] = 256;
+			break;
+		case 2:
+			obj_rt.stride_px  = 256;
+			obj_rt.size_px[0] = 256;
+			obj_rt.size_px[1] = 144;
+			break;
+		case 3:
+			obj_rt.stride_px  = 128;
+			obj_rt.size_px[0] = 128;
+			obj_rt.size_px[1] = 128;
+			break;
+		case 4:
+			obj_rt.stride_px  = 64;
+			obj_rt.size_px[0] = 64;
+			obj_rt.size_px[1] = 64;
+			break;
+		case 5:
+			obj_rt.stride_px  = 32;
+			obj_rt.size_px[0] = 32;
+			obj_rt.size_px[1] = 32;
+			break;
+		case 6:
+			obj_rt.stride_px  = 16;
+			obj_rt.size_px[0] = 16;
+			obj_rt.size_px[1] = 16;
+			break;
+		}
+
+		const f32 sw = obj_rt.size_px[0];
+		const f32 sh = obj_rt.size_px[1];
 		const f32 hsw = sw / 2.f;
 		const f32 hsh = sh / 2.f;
 
@@ -2721,43 +2767,32 @@ void app_draw_scene(App* app) {
 		gumLoadIdentity(&identity_matrix);
 		gumLoadIdentity(&model_matrix);
 
-		if (true) {
-			// These matrices are for mapping [ INT8_MIN, INT8_MIN + 254 ] to the bottom-left corner of the screen, in a pixel perfect way.
-			/*
+		{
+			// Reminder: the job of this matrix is, for any given viewport size:
+			// - Transform a grid of vertices which positions are 8-bit, from -127 to 127 (all inclusive; notice that -128 is not used)
+			// - Each vertex must land on a pixel-perfect on the viewport
+			// - Vertex position -127 must map to top-left of the viewport
+			// - An empty space must be inserted between each column
+
 			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
-				(-hsw + (w + 2.f) * 0.5f) / hsw,
-				(+hsh - (h + 2.f) * 0.5f) / hsh,
+				(-hsw + (2 * +(w + app->vars[VAR_ID__HACK].value)) / 2.f) / hsw
+				- app->vars[VAR_ID__RTVB_SPACING].value / hsw
+				,
+				(+hsh - (h + app->vars[VAR_ID__HACK].value) / 2.f) / hsh
+				+ 1.f / hsh
+				,
 				0
 			}});
+
+			// x1: 1.013 - 1.13
+			// x2: 1.013 - 1.0667
 			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
-				+(w + 0.5f) / sw,
-				-(h + 0.5f) / sh,
-				1
-			}});
-			*/
-			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
-				0.5f / hsw,
-				0.5f / hsh,
-				0
-			}});
-			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
-				+(w + 1.0f) / sw,
-				-(h + 1.0f) / sh,
-				1
-			}});
-		} else {
-			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
-				(-hsw + (w * 2 + 3) * 0.5f) / hsw,
-				(+hsh - (h + 2.f) * 0.5f) / hsh,
-				0
-			}});
-			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
-				2 * (w + 1) / sw,
-				-(h + 0.5f) / sh,
+				2 * +(w + app->vars[VAR_ID__HACK].value) / sw,
+				-(h + app->vars[VAR_ID__HACK].value) / sh,
 				1
 			}});
 		}
-
+		
 		// NOTE: 8-bit vertex positions don't seem to be supported at all with GU_TRANSFORM_2D... But the same format does work with GU_TRANSFORM_3D.
 
 		Vertex_Ti16_C8888_Pi8* vertices = sceGuGetMemory(w * h * sizeof vertices[0]);
@@ -2770,31 +2805,50 @@ void app_draw_scene(App* app) {
 		};
 		for (u32 y = 0; y < h; ++y)
 		for (u32 x = 0; x < w; ++x) {
-			const Vertex_Ti16_C8888_Pi8 v = {
+			Vertex_Ti16_C8888_Pi8 v = {
 				.uv = { 
 					x * INT16_MAX / (w - 1.f),
 					y * INT16_MAX / (h - 1.f)
 				},
-				.color = GU_ABGR(0xff, 0x00, 0xff * (y & 1), 0xff * (x & 1)),
-				// .color = GU_ABGR(0xff, 0x00, y, x),
 				.position = {
-					x + INT8_MIN,
-					y + INT8_MIN
+					x + INT8_MIN + 1,
+					y + INT8_MIN + 1
 				},
 			};
+			switch ((u32) app->vars[VAR_ID__RTVB_RT_COLOR_MODE].value) {
+			case 0:
+			default:
+				v.color = GU_ABGR(0xff, 0x00, 0xff * (y & 1), 0xff * (x & 1));
+				break;
+			case 1:
+				v.color = GU_ABGR(0xff, 0x00, y, x);
+				break;
+			}
 			vertices[y * w + x] = v;
 		}
 		sceKernelDcacheWritebackRange(vertices, mesh.nb_vertices * sizeof vertices[0]);
 
-		sceGuDisable(GU_TEXTURE_2D);
-		sceGuColor(0xffffffff);
-		gu_set_texture(&app->assets.lava_texture);
 		sceGuDisable(GU_DEPTH_TEST);
 		sceGuDepthMask(1);
+
+		gu_set_rendertarget(&obj_rt);
+		gu_set_texture(&app->assets.lava_texture);
+
+		sceGuClearColor(0);
+		sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+
+		sceGuDisable(GU_TEXTURE_2D);
+		sceGuColor(0xffffffff);
 		sceGuSetMatrix(GU_MODEL, &model_matrix);
 		sceGuSetMatrix(GU_VIEW, &identity_matrix);
 		sceGuSetMatrix(GU_PROJECTION, &identity_matrix);
 		mesh_draw_3d(&mesh);
+		sceGuEnable(GU_TEXTURE_2D);
+
+		gu_set_rendertarget(&app->gfx.framebuffers[0]);
+		gu_set_texture(&obj_rt);
+		gu_draw_fullscreen_textured_quad_i16(obj_rt.size_px[0], obj_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
+
 		sceGuEnable(GU_DEPTH_TEST);
 	}
 
@@ -3004,7 +3058,10 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
-	app.vars[VAR_ID__HACK] = (AppVariable) { "Hack", 0, -4, 4, 0.001f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__HACK] = (AppVariable) { "Hack", 1.013f, -8, 8, 0.05f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
+	app.vars[VAR_ID__RTVB_SPACING] = (AppVariable) { "RTVB Spacing", 1, 1, 2, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__RTVB_RT_CONFIG_ID] = (AppVariable) { "RTVB RT Config ID", 0, 0, 6, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__RTVB_RT_COLOR_MODE] = (AppVariable) { "RTVB RT Color Mode", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__TIME_DILATION] = (AppVariable) { "Time Dilation", 1, 0, 1, 0.5f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__MIP_LEVEL] = (AppVariable) { "Mip Level", 0, 0, 8, 1, 0 };
 	app.vars[VAR_ID__FB_PSM] = (AppVariable) { "FB Format", GU_PSM_8888, 0, 3, 1, VAR_FLAG_ROUND };
