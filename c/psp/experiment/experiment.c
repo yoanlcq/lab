@@ -184,6 +184,9 @@
 #include <pspgum.h>
 #include <pspkernel.h>
 #include <psprtc.h>
+#include <pspsdk.h>
+
+#include "me.h"
 
 //
 //
@@ -351,6 +354,112 @@ void vfpu_m4_mul(m4* result, const m4* a, const m4* b) {
 		"sv.q C220, 32 + %0\n"
 		"sv.q C230, 48 + %0\n"
 	: "=m"(*result) : "m"(*a), "m"(*b) : "memory");
+}
+
+//
+//
+// Modules
+//
+//
+
+typedef struct {
+	int handle;
+} Module;
+
+Module module_load_and_start(const char* path) {
+	const Module out = { .handle = pspSdkLoadStartModule(path, PSP_MEMORY_PARTITION_KERNEL) };
+	if (out.handle < 0) {
+		fprintf(stderr, "Failed to load `%s`: 0x%08x\n", path, out.handle);
+	} else {
+		printf("Successfully loaded `%s`: 0x%08x\n", path, out.handle);
+	}
+	return out;
+}
+
+bool module_stop_and_unload(Module* m) {
+	app_assert(m->handle >= 0);
+
+	int status;
+	sceKernelStopModule(m->handle, 0, NULL, &status, NULL);
+
+	const int ret = sceKernelUnloadModule(m->handle);
+	if (ret < 0) {
+		fprintf(stderr, "Couldn't unload module: 0x%08x\n", ret);
+	}
+
+	m->handle = -1;
+
+	return ret >= 0;
+}
+
+//
+//
+// Media Engine
+//
+//
+
+typedef struct {
+	Module module;
+	volatile struct me_struct* mei;
+} MeManager;
+
+bool me_manager_init(MeManager* m, const char* prx_path) {
+	m->module = module_load_and_start(prx_path);
+	if (m->module.handle < 0) {
+		fprintf(stderr, "ME manager: Failed to load module\n");
+		return false;
+	}
+	
+	m->mei = psp_uncached_ptr_non_null(malloc(sizeof *m->mei));
+	*m->mei = (struct me_struct) {0}; // Just in case
+	sceKernelDcacheWritebackInvalidateAll();
+
+	const int init_status = InitME(m->mei);
+	if (init_status != 0) {
+		fprintf(stderr, "ME manager: InitME() failed: 0x%08x\n", init_status);
+		return false;
+	}
+
+	printf("ME manager: initialized\n");
+	return true;
+}
+
+bool me_manager_deinit(MeManager* m) {
+	printf("ME manager: wait\n");
+	const int wait_status = WaitME(m->mei);
+	printf("ME manager: WaitME() returned 0x%08x\n", wait_status);
+	printf("ME manager: kill\n");
+	KillME(m->mei);
+	printf("ME manager: unload module\n");
+	const bool unload_ok = module_stop_and_unload(&m->module);
+	printf("ME manager: Module unload: %s\n", unload_ok ? "ok" : "failed");
+	free((void*) m->mei);
+	return unload_ok;
+}
+
+int me_test_job(void* x) {
+	volatile int* val = psp_uncached_ptr_non_null(x);
+	__atomic_store_n(&val[0], 42, __ATOMIC_SEQ_CST);
+	__atomic_store_n(&val[50 * 1024 * 1024 / 4 - 1], 42, __ATOMIC_SEQ_CST);
+	return 32;
+}
+
+void me_manager_test(MeManager* m) {
+	volatile int* val = malloc(50 * 1024 * 1024);
+	volatile int mem = -1;
+	volatile int* sval = &mem;
+	val[0] = -1;
+	val[50 * 1024 * 1024 / 4 - 1] = -1;
+	printf("mval addr: %p\n", val);
+	printf("sval addr: %p\n", sval);
+	sceKernelDcacheWritebackInvalidateAll();
+	const int status = BeginME(m->mei, me_test_job, (void*) val, -1, (void*) val, -1, (void*) val);
+	sceKernelDcacheWritebackInvalidateAll();
+	printf("BeginME() returned 0x%08x\n", status);
+	const int wait_status = WaitME(m->mei);
+	printf("WaitME() returned %i\n", wait_status);
+	printf("Value0 written by ME: %i\n", __atomic_load_n(&val[0], __ATOMIC_SEQ_CST));
+	printf("Value1 written by ME: %i\n", __atomic_load_n(&val[50 * 1024 * 1024 / 4 - 1], __ATOMIC_SEQ_CST));
 }
 
 //
@@ -661,11 +770,11 @@ ScePspFVector3 skybox_face_uvs_from_normal(ScePspFVector3 v) {
 	n.z = fminf(fmaxf(v.z * 0.5f + 0.5f, 0.f), 1.f);
 
 	if (vabs.z >= vabs.x && vabs.z >= vabs.y) {
-		return (ScePspFVector3) { v.z < 0 ? 1.f - n.x : n.x, 1.f - n.y, v.z < 0 ? SKYBOX_FACE__NZ : SKYBOX_FACE__PZ };
+		return (ScePspFVector3) { v.z < 0 ? n.x : 1.f - n.x, 1.f - n.y, v.z < 0 ? SKYBOX_FACE__NZ : SKYBOX_FACE__PZ };
 	} else if (vabs.y >= vabs.x) {
-		return (ScePspFVector3) { n.x, v.y < 0 ? 1.f - n.z : n.z, v.y < 0 ? SKYBOX_FACE__NY : SKYBOX_FACE__PY };
+		return (ScePspFVector3) { n.x, v.y < 0 ? n.z : 1.f - n.z, v.y < 0 ? SKYBOX_FACE__NY : SKYBOX_FACE__PY };
 	} else {
-		return (ScePspFVector3) { v.x < 0 ? n.z : 1.f - n.z, 1.f - n.y, v.x < 0 ? SKYBOX_FACE__NX : SKYBOX_FACE__PX };
+		return (ScePspFVector3) { v.x < 0 ? 1.f - n.z : n.z, 1.f - n.y, v.x < 0 ? SKYBOX_FACE__NX : SKYBOX_FACE__PX };
 	}
 }
 // Face index is returned in the third component
@@ -1818,6 +1927,7 @@ typedef struct {
 	AppScene scene;
 	AppInput input;
 	AppVariable vars[VAR_ID__COUNT];
+	MeManager me_manager;
 	size_t selected_var_index;
 	bool debug_ui_enabled;
 } App;
@@ -2779,6 +2889,7 @@ void app_draw_scene(App* app) {
 				mesh_draw_3d(&mesh);
 
 				// Flush some cache??
+				// TODO: still not enough; there is one black pixel somewhere inside the image, which seems to be fixed by drawing the mesh twice
 				mesh.nb_vertices = vb_rt.stride_px / 2;
 				mesh_draw_3d(&mesh);
 
@@ -3170,11 +3281,15 @@ int main(int argc, char* argv[]) {
 
 	app_assets_init(&app.assets);
 
+	me_manager_init(&app.me_manager, "assets/mediaengine.prx");
+
 	sceCtrlSetSamplingCycle(0); // Sync input sampling to VSync
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
 
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
+
+	me_manager_test(&app.me_manager);
 
 	app.scene.camera.post_processing.lut = LUT_IDENTITY;
 
@@ -3182,6 +3297,8 @@ int main(int argc, char* argv[]) {
 	app.loop.game_time.last_frame_duration = 1.f / 60.f;
 	while (!g_exit_requested)
 		app_frame(&app);
+
+	me_manager_deinit(&app.me_manager);
 
 	app_assets_deinit(&app.assets);
 

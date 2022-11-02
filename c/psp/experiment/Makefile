@@ -1,6 +1,6 @@
 BUILD_PRX := 1
 TARGET := experiment
-OBJS := experiment.o
+OBJS := experiment.o me.o MediaEngine.o
 
 INCDIR :=
 CFLAGS := -Wall -Wdouble-promotion -O3 -g
