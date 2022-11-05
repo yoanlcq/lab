@@ -2661,6 +2661,41 @@ void app_draw_postprocessing(App* app, const Texture* scene3d_fb) {
 	}
 }
 
+// The job of this matrix is, for any given viewport size:
+// - Transform a grid of vertices which positions are 8-bit, from -127 to 127 (all inclusive; notice that -128 is not used)
+// - Each vertex must land on a pixel-perfect on the viewport
+// - Vertex position -127 must map to top-left of the viewport
+// - An empty space must be inserted between each column
+void get_pixel_perfect_matrix(ScePspFMatrix4* m, f32 obj_w_px, f32 obj_h_px, f32 viewport_w, f32 viewport_h, f32 offset_px_x, f32 offset_px_y, f32 scale_x) {
+	const f32 half_viewport_w = viewport_w * 0.5f;
+	const f32 half_viewport_h = viewport_h * 0.5f;
+
+	// Ranges of "good values" are (empirically):
+	// when scale_x == 1: 1.013 - 1.13
+	// when scale_x == 2: 1.013 - 1.0667
+	const f32 hack = 1.013f;
+
+	const ScePspFVector3 t = {
+		(offset_px_x - half_viewport_w + (obj_w_px + hack) * 0.5f * scale_x) / half_viewport_w,
+		(offset_px_y + half_viewport_h - (obj_h_px + hack) * 0.5f) / half_viewport_h,
+		0
+	};
+
+	const ScePspFVector3 s = {
+		scale_x * +(obj_w_px + hack) / viewport_w,
+		-(obj_h_px + hack) / viewport_h,
+		1
+	};
+
+	gumLoadIdentity(m);
+	gumTranslate(m, &t);
+	gumScale(m, &s);
+}
+
+// We can't render 256x256 vertices in one go; the max number of vertices per draw call is UINT16_MAX, and 256*256 is just above that
+#define QUAD128_W 255
+#define QUAD128_H 255
+
 void app_draw_scene(App* app) {
 	// Light
 	{
@@ -2791,10 +2826,6 @@ void app_draw_scene(App* app) {
 		gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
 		sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
 
-		// NOSUBMIT TODO: alpha is not written, so the V coordinate drops its 8 MSBs...
-		// Options are:
-		// - Figure out a way to write alpha (stencil functions?)
-		// - Just scale the V coordinate accordingly (when generating the texture) and accept that we only get 8 bits of precision
 		mesh_instance_draw(mi);
 
 		sceGuTexProjMapMode(GU_UV);
@@ -2803,35 +2834,12 @@ void app_draw_scene(App* app) {
 		sceGuDisable(GU_DEPTH_TEST);
 		sceGuDepthMask(1);
 
-		if (false) {
-			// const Texture* t = &app->assets.skybox_test_texture.texture;
-			const Texture* t = &app->assets.normal_to_color_texture;
-			gu_set_texture(t);
-			gu_draw_fullscreen_textured_quad_i16(t->size_px[0], t->size_px[1], t->size_px[0], t->size_px[1], -1, -1);
-		}
-
-		/*
-		gu_set_rendertarget(&app->gfx.framebuffers[0]);
-		gu_set_texture(&obj_rt);
-		gu_draw_fullscreen_textured_quad_i16(rt.size_px[0], rt.size_px[1], rt.size_px[0], rt.size_px[1], -1, -1);
-		*/
-
-		// We can't render 256x256 vertices in one go; the max number of vertices per draw call is UINT16_MAX, and 256*256 is just above that
-		const u32 w = 255;
-		const u32 h = 255;
-
-		const f32 sw = obj_rt.size_px[0];
-		const f32 sh = obj_rt.size_px[1];
-		const f32 hsw = sw / 2.f;
-		const f32 hsh = sh / 2.f;
-
 		ScePspFMatrix4 identity_matrix;
 		gumLoadIdentity(&identity_matrix);
-
 		sceGuSetMatrix(GU_VIEW, &identity_matrix);
 		sceGuSetMatrix(GU_PROJECTION, &identity_matrix);
 
-		for (u32 pass = 0; pass < 2; ++pass) {
+		for (i32 pass = 0; pass < 2; ++pass) {
 			gu_set_rendertarget(&vb_rt);
 
 			// We can't write to the alpha channel, so let's at least make sure it is zero.
@@ -2848,53 +2856,38 @@ void app_draw_scene(App* app) {
 			gu_draw_fullscreen_textured_quad_i16(tp->size_px[0], tp->size_px[1], tp->size_px[0], tp->size_px[1], -1, -1);
 			sceGuDisable(GU_ALPHA_TEST);
 
-			if (true) {
-				ScePspFMatrix4 model_matrix;
-				gumLoadIdentity(&model_matrix);
+			Mesh mesh = {
+				.gu_topology = GU_POINTS,
+				.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
+				.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
+				.vertices = (u8*) vb_rt.data + pass * 4,
+				.nb_vertices = vb_rt.size_px[1] * (vb_rt.stride_px / 2),
+			};
 
-				gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
-					(-hsw + (2 * +(w + app->vars[VAR_ID__HACK].value)) / 2.f) / hsw
-					- (2 - (i32) pass) / hsw
-					,
-					(+hsh - (h + app->vars[VAR_ID__HACK].value) / 2.f) / hsh
-					+ 1.f / hsh
-					,
-					0
-				}});
+			Texture fb0 = app->gfx.framebuffers[0];
+			fb0.size_px[0] = vb_rt.size_px[0];
+			fb0.size_px[1] = vb_rt.size_px[1];
 
-				gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
-					2 * +(w + app->vars[VAR_ID__HACK].value) / sw,
-					-(h + app->vars[VAR_ID__HACK].value) / sh,
-					1
-				}});
+			gu_set_rendertarget(&fb0);
 
-				Mesh mesh = {
-					.gu_topology = GU_POINTS,
-					.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
-					.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
-					.vertices = (u8*) vb_rt.data + pass * 4,
-					.nb_vertices = vb_rt.size_px[1] * (vb_rt.stride_px / 2),
-				};
+			sceGuTexScale(1.f, INT16_MAX / 255);
 
-				Texture fb0 = app->gfx.framebuffers[0];
-				fb0.size_px[0] = vb_rt.size_px[0];
-				fb0.size_px[1] = vb_rt.size_px[1];
+			ScePspFMatrix4 model_matrix;
+			get_pixel_perfect_matrix(&model_matrix, QUAD128_W, QUAD128_H, obj_rt.size_px[0], obj_rt.size_px[1], -(2 - pass), 1, 2);
+			sceGuSetMatrix(GU_MODEL, &model_matrix);
 
-				sceGuTexScale(1.f, INT16_MAX / 255);
+			gu_set_texture(&app->assets.lava_skybox_texture);
+			mesh_draw_3d(&mesh);
 
-				gu_set_rendertarget(&fb0);
-				// gu_set_texture(&app->assets.skybox_test_texture.texture);
-				gu_set_texture(&app->assets.lava_skybox_texture);
-				sceGuSetMatrix(GU_MODEL, &model_matrix);
-				mesh_draw_3d(&mesh);
+			// Flush some cache??
+			// TODO: still not enough; there is one black pixel somewhere inside the image, which seems to be fixed by drawing the mesh twice
+			// This happens when toggling post-processing. Timing issue?
+			mesh.nb_vertices = vb_rt.stride_px / 2;
+			mesh_draw_3d(&mesh);
 
-				// Flush some cache??
-				// TODO: still not enough; there is one black pixel somewhere inside the image, which seems to be fixed by drawing the mesh twice
-				mesh.nb_vertices = vb_rt.stride_px / 2;
-				mesh_draw_3d(&mesh);
+			sceGuSetMatrix(GU_MODEL, &identity_matrix); // Should not be needed, but just in case
 
-				sceGuTexScale(1.f, 1.f);
-			}
+			sceGuTexScale(1.f, 1.f);
 		}
 
 		sceGuEnable(GU_DEPTH_TEST);
@@ -2903,103 +2896,45 @@ void app_draw_scene(App* app) {
 
 	// Test vertex buffer
 	if (false) {
-		// We can't render 256x256 vertices in one go; the max number of vertices per draw call is UINT16_MAX, and 256*256 is just above that
-		const i32 w = 255;
-		const i32 h = 255;
-
 		Texture obj_rt = app->gfx.pingpong0_fb;
 		switch ((u32) app->vars[VAR_ID__RTVB_RT_CONFIG_ID].value) {
-		case 0:
-		default:
-			obj_rt.stride_px  = PSP_SCREEN_STRIDE;
-			obj_rt.size_px[0] = PSP_SCREEN_WIDTH;
-			obj_rt.size_px[1] = PSP_SCREEN_HEIGHT;
-			break;
-		case 1:
-			obj_rt.stride_px  = 256;
-			obj_rt.size_px[0] = 256;
-			obj_rt.size_px[1] = 256;
-			break;
-		case 2:
-			obj_rt.stride_px  = 256;
-			obj_rt.size_px[0] = 256;
-			obj_rt.size_px[1] = 144;
-			break;
-		case 3:
-			obj_rt.stride_px  = 128;
-			obj_rt.size_px[0] = 128;
-			obj_rt.size_px[1] = 128;
-			break;
-		case 4:
-			obj_rt.stride_px  = 64;
-			obj_rt.size_px[0] = 64;
-			obj_rt.size_px[1] = 64;
-			break;
-		case 5:
-			obj_rt.stride_px  = 32;
-			obj_rt.size_px[0] = 32;
-			obj_rt.size_px[1] = 32;
-			break;
-		case 6:
-			obj_rt.stride_px  = 16;
-			obj_rt.size_px[0] = 16;
-			obj_rt.size_px[1] = 16;
-			break;
+		case 1: obj_rt.stride_px = obj_rt.size_px[0] = obj_rt.size_px[1] = 256; break;
+		case 2: obj_rt.stride_px = 256; obj_rt.size_px[0] = 256; obj_rt.size_px[1] = 144; break;
+		case 3: obj_rt.stride_px = obj_rt.size_px[0] = obj_rt.size_px[1] = 128; break;
+		case 4: obj_rt.stride_px = obj_rt.size_px[0] = obj_rt.size_px[1] = 64; break;
+		case 5: obj_rt.stride_px = obj_rt.size_px[0] = obj_rt.size_px[1] = 32; break;
+		case 6: obj_rt.stride_px = obj_rt.size_px[0] = obj_rt.size_px[1] = 16; break;
+		default: break;
 		}
 
-		const f32 sw = obj_rt.size_px[0];
-		const f32 sh = obj_rt.size_px[1];
-		const f32 hsw = sw / 2.f;
-		const f32 hsh = sh / 2.f;
+		const u32 quad_w_px = QUAD128_W;
+		const u32 quad_h_px = QUAD128_H;
 
 		ScePspFMatrix4 identity_matrix;
-		ScePspFMatrix4 model_matrix;
-
 		gumLoadIdentity(&identity_matrix);
-		gumLoadIdentity(&model_matrix);
 
-		{
-			// Reminder: the job of this matrix is, for any given viewport size:
-			// - Transform a grid of vertices which positions are 8-bit, from -127 to 127 (all inclusive; notice that -128 is not used)
-			// - Each vertex must land on a pixel-perfect on the viewport
-			// - Vertex position -127 must map to top-left of the viewport
-			// - An empty space must be inserted between each column
+		ScePspFMatrix4 model_matrix;
+		get_pixel_perfect_matrix(&model_matrix, quad_w_px, quad_h_px, obj_rt.size_px[0], obj_rt.size_px[1], 0, 1, app->vars[VAR_ID__RTVB_SPACING].value);
 
-			gumTranslate(&model_matrix, (const ScePspFVector3[]) {{ 
-				(-hsw + (2 * +(w + app->vars[VAR_ID__HACK].value)) / 2.f) / hsw
-				- app->vars[VAR_ID__RTVB_SPACING].value / hsw
-				,
-				(+hsh - (h + app->vars[VAR_ID__HACK].value) / 2.f) / hsh
-				+ 1.f / hsh
-				,
-				0
-			}});
-
-			// x1: 1.013 - 1.13
-			// x2: 1.013 - 1.0667
-			gumScale(&model_matrix, (const ScePspFVector3[]) {{ 
-				2 * +(w + app->vars[VAR_ID__HACK].value) / sw,
-				-(h + app->vars[VAR_ID__HACK].value) / sh,
-				1
-			}});
-		}
-		
 		// NOTE: 8-bit vertex positions don't seem to be supported at all with GU_TRANSFORM_2D... But the same format does work with GU_TRANSFORM_3D.
 
-		Vertex_Ti16_C8888_Pi8* vertices = sceGuGetMemory(w * h * sizeof vertices[0]);
+		Vertex_Ti16_C8888_Pi8* vertices = NULL;
 		Mesh mesh = {
 			.gu_topology = GU_POINTS,
 			.gu_vertex_format = Vertex_Ti16_C8888_Pi8_FORMAT,
 			.sizeof_vertex = sizeof vertices[0],
 			.vertices = vertices,
-			.nb_vertices = w * h,
+			.nb_vertices = quad_w_px * quad_h_px,
 		};
-		for (u32 y = 0; y < h; ++y)
-		for (u32 x = 0; x < w; ++x) {
+		mesh_allocate_buffers_in_current_display_list(&mesh);
+		vertices = mesh.vertices;
+
+		for (u32 y = 0; y < quad_h_px; ++y)
+		for (u32 x = 0; x < quad_w_px; ++x) {
 			Vertex_Ti16_C8888_Pi8 v = {
 				.uv = { 
-					x * INT16_MAX / (w - 1.f),
-					y * INT16_MAX / (h - 1.f)
+					x * INT16_MAX / (quad_w_px - 1.f),
+					y * INT16_MAX / (quad_h_px - 1.f)
 				},
 				.position = {
 					x + INT8_MIN + 1,
@@ -3015,7 +2950,7 @@ void app_draw_scene(App* app) {
 				v.color = GU_ABGR(0xff, 0x00, y, x);
 				break;
 			}
-			vertices[y * w + x] = v;
+			vertices[y * quad_w_px + x] = v;
 		}
 		sceKernelDcacheWritebackRange(vertices, mesh.nb_vertices * sizeof vertices[0]);
 
@@ -3023,7 +2958,6 @@ void app_draw_scene(App* app) {
 		sceGuDepthMask(1);
 
 		gu_set_rendertarget(&obj_rt);
-		gu_set_texture(&app->assets.lava_texture);
 
 		sceGuClearColor(0);
 		sceGuClear(GU_COLOR_BUFFER_BIT | GU_FAST_CLEAR_BIT);
