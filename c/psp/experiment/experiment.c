@@ -2695,7 +2695,7 @@ void get_pixel_perfect_matrix(ScePspFMatrix4* m, f32 obj_w_px, f32 obj_h_px, f32
 #define QUAD128_W 255
 #define QUAD128_H 255
 
-void app_draw_scene(App* app) {
+void app_draw_scene(App* app, Texture* scene3d_fb, Texture* pingpong_fb) {
 	// Light
 	{
 		const size_t light_index = 0;
@@ -2786,24 +2786,8 @@ void app_draw_scene(App* app) {
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
-	// render reflective objects into fb0 (set stencil)
-	// For each pass:
-	// - clear vb_rt
-	// - render fb0 into vb_rt with alpha test
-	// - render rtvb_xyz into vb_rt
-	// - draw vertices, discard those that have UV (0,0) (via alpha test)
-
 	if (app->vars[VAR_ID__SHOW_REFLECTION_DEMO].value) {
-		Texture obj_rt = app->gfx.pingpong0_fb;
-		obj_rt.stride_px  = 256;
-		obj_rt.size_px[0] = 256;
-		obj_rt.size_px[1] = 144; // 256 * 9 / 16
-
-		Texture vb_rt = obj_rt;
-		vb_rt.data = ptr_align((u8*) obj_rt.data + texture_get_level_size_in_bytes(&obj_rt, 0), 16);
-
-		gu_set_rendertarget(&obj_rt);
-
+		// TODO: remove need for clearing; we do it because we draw the torus with the same xform as previous
 		sceGuClearColor(0);
 		sceGuClearDepth(0);
 		sceGuClearStencil(0);
@@ -2831,7 +2815,14 @@ void app_draw_scene(App* app) {
 		gumMultMatrix(&texture_matrix, &texture_matrix, &model_matrix_r);
 		sceGuSetMatrix(GU_TEXTURE, &texture_matrix);
 
+		sceGuEnable(GU_STENCIL_TEST); // TODO: is that required for StencilOp() to be effective?
+		sceGuStencilFunc(GU_ALWAYS, 0xe6, 0xff);
+		sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+
 		mesh_instance_draw(mi);
+
+		sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+		sceGuDisable(GU_STENCIL_TEST);
 
 		sceGuTexProjMapMode(GU_UV);
 		sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
@@ -2844,15 +2835,25 @@ void app_draw_scene(App* app) {
 		sceGuSetMatrix(GU_VIEW, &identity_matrix);
 		sceGuSetMatrix(GU_PROJECTION, &identity_matrix);
 
+		Texture vb_rt = *pingpong_fb;
+
 		for (i32 pass = 0; pass < 2; ++pass) {
+			const u32 vb_rt_initial_width = vb_rt.size_px[0];
+			vb_rt.size_px[0] = vb_rt.stride_px;
 			gu_set_rendertarget(&vb_rt);
 
-			// We can't write to the alpha channel, so let's at least make sure it is zero.
 			sceGuClearStencil(0);
-			sceGuClear(GU_STENCIL_BUFFER_BIT | GU_FAST_CLEAR_BIT);
+			sceGuClearColor(0);
+			sceGuClear(GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT | GU_FAST_CLEAR_BIT);
 
-			gu_set_texture(&obj_rt);
-			gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], obj_rt.size_px[0], obj_rt.size_px[1], -1, -1);
+			vb_rt.size_px[0] = vb_rt_initial_width;
+			gu_set_rendertarget(&vb_rt);
+
+			sceGuEnable(GU_ALPHA_TEST);
+			sceGuAlphaFunc(GU_EQUAL, 0xe6, 0xff);
+			gu_set_texture(scene3d_fb);
+			gu_draw_fullscreen_textured_quad_i16(vb_rt.size_px[0], vb_rt.size_px[1], scene3d_fb->size_px[0], scene3d_fb->size_px[1], -1, -1);
+			sceGuDisable(GU_ALPHA_TEST);
 
 			sceGuEnable(GU_ALPHA_TEST);
 			sceGuAlphaFunc(GU_EQUAL, (pass + 1) & 1, 1);
@@ -2861,37 +2862,39 @@ void app_draw_scene(App* app) {
 			gu_draw_fullscreen_textured_quad_i16(tp->size_px[0], tp->size_px[1], tp->size_px[0], tp->size_px[1], -1, -1);
 			sceGuDisable(GU_ALPHA_TEST);
 
-			Mesh mesh = {
-				.gu_topology = GU_POINTS,
-				.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
-				.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
-				.vertices = (u8*) vb_rt.data + pass * 4,
-				.nb_vertices = vb_rt.size_px[1] * (vb_rt.stride_px / 2),
-			};
-
-			Texture fb0 = app->gfx.framebuffers[0];
-			fb0.size_px[0] = vb_rt.size_px[0];
-			fb0.size_px[1] = vb_rt.size_px[1];
-
-			gu_set_rendertarget(&fb0);
+			gu_set_rendertarget(&app->gfx.framebuffers[0]);
 
 			sceGuTexScale(1.f, INT16_MAX / 255);
 
 			ScePspFMatrix4 model_matrix;
-			get_pixel_perfect_matrix(&model_matrix, QUAD128_W, QUAD128_H, obj_rt.size_px[0], obj_rt.size_px[1], -(2 - pass), 1, 2);
+			get_pixel_perfect_matrix(&model_matrix, QUAD128_W, QUAD128_H, scene3d_fb->size_px[0], scene3d_fb->size_px[1], -(2 - pass), 1, 2);
 			sceGuSetMatrix(GU_MODEL, &model_matrix);
 
 			sceGuEnable(GU_ALPHA_TEST);
 			sceGuAlphaFunc(GU_NOTEQUAL, 0, 0xff); // Intent: pixels that don't cover the object were cleared to zero, so their UVs are (0,0). We expect the skybox texel at (0,0) to have a zero alpha, so that it doesn't end up being drawn.
 
 			gu_set_texture(&app->assets.lava_skybox_texture);
-			mesh_draw_3d(&mesh);
 
-			// Flush some cache??
-			// TODO: still not enough; there is one black pixel somewhere inside the image, which seems to be fixed by drawing the mesh twice
-			// This happens when toggling post-processing. Timing issue?
-			mesh.nb_vertices = vb_rt.stride_px / 2;
-			mesh_draw_3d(&mesh);
+			for (int slice = 0; slice < 1; ++slice) {
+				Mesh mesh = {
+					.gu_topology = GU_POINTS,
+					.gu_vertex_format = Vertex_Ti16_Pi8_FORMAT,
+					.sizeof_vertex = sizeof(Vertex_Ti16_Pi8),
+					.vertices = (u8*) vb_rt.data + pass * 4,
+					.nb_vertices = u32_min(vb_rt.size_px[1] * (vb_rt.stride_px / 2), UINT16_MAX),
+				};
+				// TODO: The number of vertices is clamped. What remains to do:
+				// - The XYZ8 texture should cover the screen's height rather than 256 (for this we have to pretend the height is bigger than it actually is)
+				// - We must draw the mesh twice to cover the full height
+				// - Consider using indices, and consider "swizzling" the indices to maximize use of the texture cache
+				mesh_draw_3d(&mesh);
+
+				// Flush some cache??
+				// TODO: still not enough; there is one black pixel somewhere inside the image, which seems to be fixed by drawing the mesh twice
+				// This happens when toggling post-processing. Timing issue?
+				mesh.nb_vertices = vb_rt.stride_px / 2;
+				mesh_draw_3d(&mesh);
+			}
 
 			sceGuDisable(GU_ALPHA_TEST);
 
@@ -3008,6 +3011,7 @@ void app_draw(App* app) {
 	}
 
 	Texture* scene3d_fb = app->scene.camera.post_processing.enabled ? &app->gfx.pingpong0_fb : &app->gfx.framebuffers[0];
+	Texture* pingpong_fb = !app->scene.camera.post_processing.enabled ? &app->gfx.pingpong0_fb : &app->gfx.framebuffers[0];
 	gu_set_rendertarget(scene3d_fb);
 
 	sceGuClearColor(GU_ABGR(0, 0xff, 0, 0));
@@ -3020,7 +3024,7 @@ void app_draw(App* app) {
 
 	sceGuSetStatus(GU_DITHER, app->vars[VAR_ID__DITHER_GLOBAL].value);
 
-	app_draw_scene(app);
+	app_draw_scene(app, scene3d_fb, pingpong_fb);
 
 	if (app->scene.camera.post_processing.enabled) {
 		app_draw_postprocessing(app, scene3d_fb);
