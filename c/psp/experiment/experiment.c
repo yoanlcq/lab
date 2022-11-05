@@ -1892,6 +1892,8 @@ typedef struct {
 typedef enum {
 	VAR_ID__INVALID = 0,
 	VAR_ID__HACK,
+	VAR_ID__SHOW_PIXEL_PERFECT_TEST,
+	VAR_ID__SHOW_REFLECTION_DEMO,
 	VAR_ID__RTVB_SPACING,
 	VAR_ID__RTVB_RT_CONFIG_ID,
 	VAR_ID__RTVB_RT_COLOR_MODE,
@@ -2227,13 +2229,10 @@ void app_assets_init(AppAssets* m) {
 				const f32 rx = 2.f * nz * nx;
 				const f32 ry = 2.f * nz * ny;
 				const f32 rz = 2.f * nz * nz - 1.f;
-				tmp_pixels[y * t->stride_px + x] = GU_ABGR(0xff, (u32) (0xff * (rz * 0.5f + 0.5f)), (u32) (0xff * (ry * 0.5f + 0.5f)), (u32) (0xff * (rx * 0.5f + 0.5f)));
 
-				if (true) {
-					const ScePspFVector3 uvs = skybox_uvs_from_normal((ScePspFVector3) { rx, ry, rz });
-					const i16 uvs_i16[] = { uvs.x * INT16_MAX, uvs.y * 255 }; // Because alpha is not written to the framebuffer, the V coordinate's 8 MSBs are dropped. We fix that with sceGuTexScale().
-					memcpy(&tmp_pixels[y * t->stride_px + x], uvs_i16, sizeof uvs_i16);
-				}
+				const ScePspFVector3 uvs = skybox_uvs_from_normal((ScePspFVector3) { rx, ry, rz });
+				const i16 uvs_i16[] = { uvs.x * INT16_MAX, uvs.y * 255 }; // Because alpha is not written to the framebuffer, the V coordinate's 8 MSBs are dropped. We fix that with sceGuTexScale().
+				memcpy(&tmp_pixels[y * t->stride_px + x], uvs_i16, sizeof uvs_i16);
 			}
 		}
 		
@@ -2787,7 +2786,7 @@ void app_draw_scene(App* app) {
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
-	if (true) {
+	if (app->vars[VAR_ID__SHOW_REFLECTION_DEMO].value) {
 		Texture obj_rt = app->gfx.pingpong0_fb;
 		obj_rt.stride_px  = 256;
 		obj_rt.size_px[0] = 256;
@@ -2894,7 +2893,7 @@ void app_draw_scene(App* app) {
 	}
 
 	// Test vertex buffer
-	if (false) {
+	if (app->vars[VAR_ID__SHOW_PIXEL_PERFECT_TEST].value) {
 		Texture obj_rt = app->gfx.pingpong0_fb;
 		switch ((u32) app->vars[VAR_ID__RTVB_RT_CONFIG_ID].value) {
 		case 1: obj_rt.stride_px = obj_rt.size_px[0] = obj_rt.size_px[1] = 256; break;
@@ -3182,6 +3181,8 @@ int main(int argc, char* argv[]) {
 	App app = {0};
 	app.selected_var_index = 1;
 	app.vars[VAR_ID__INVALID] = (AppVariable) { "Invalid var", 0, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__SHOW_REFLECTION_DEMO] = (AppVariable) { "Show reflection demo", 1, 0, 1, 1, VAR_FLAG_ROUND };
+	app.vars[VAR_ID__SHOW_PIXEL_PERFECT_TEST] = (AppVariable) { "Show pixel perfect test", 0, 0, 1, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__HACK] = (AppVariable) { "Hack", 1.013f, -8, 8, 0.05f, VAR_FLAG_SMOOTH_EDIT | VAR_FLAG_STEP_PER_SECOND };
 	app.vars[VAR_ID__RTVB_SPACING] = (AppVariable) { "RTVB Spacing", 1, 1, 2, 1, VAR_FLAG_ROUND };
 	app.vars[VAR_ID__RTVB_RT_CONFIG_ID] = (AppVariable) { "RTVB RT Config ID", 0, 0, 6, 1, VAR_FLAG_ROUND };
