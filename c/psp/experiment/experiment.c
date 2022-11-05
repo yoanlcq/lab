@@ -2786,6 +2786,13 @@ void app_draw_scene(App* app) {
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 
+	// render reflective objects into fb0 (set stencil)
+	// For each pass:
+	// - clear vb_rt
+	// - render fb0 into vb_rt with alpha test
+	// - render rtvb_xyz into vb_rt
+	// - draw vertices, discard those that have UV (0,0) (via alpha test)
+
 	if (app->vars[VAR_ID__SHOW_REFLECTION_DEMO].value) {
 		Texture obj_rt = app->gfx.pingpong0_fb;
 		obj_rt.stride_px  = 256;
@@ -2874,6 +2881,9 @@ void app_draw_scene(App* app) {
 			get_pixel_perfect_matrix(&model_matrix, QUAD128_W, QUAD128_H, obj_rt.size_px[0], obj_rt.size_px[1], -(2 - pass), 1, 2);
 			sceGuSetMatrix(GU_MODEL, &model_matrix);
 
+			sceGuEnable(GU_ALPHA_TEST);
+			sceGuAlphaFunc(GU_NOTEQUAL, 0, 0xff); // Intent: pixels that don't cover the object were cleared to zero, so their UVs are (0,0). We expect the skybox texel at (0,0) to have a zero alpha, so that it doesn't end up being drawn.
+
 			gu_set_texture(&app->assets.lava_skybox_texture);
 			mesh_draw_3d(&mesh);
 
@@ -2882,6 +2892,8 @@ void app_draw_scene(App* app) {
 			// This happens when toggling post-processing. Timing issue?
 			mesh.nb_vertices = vb_rt.stride_px / 2;
 			mesh_draw_3d(&mesh);
+
+			sceGuDisable(GU_ALPHA_TEST);
 
 			sceGuSetMatrix(GU_MODEL, &identity_matrix); // Should not be needed, but just in case
 
