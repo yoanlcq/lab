@@ -2231,7 +2231,7 @@ void app_assets_init(AppAssets* m) {
 
 				if (true) {
 					const ScePspFVector3 uvs = skybox_uvs_from_normal((ScePspFVector3) { rx, ry, rz });
-					const i16 uvs_i16[] = { uvs.x * INT16_MAX, uvs.y * 255 /* * INT16_MAX */ }; // NOSUBMIT
+					const i16 uvs_i16[] = { uvs.x * INT16_MAX, uvs.y * 255 }; // Because alpha is not written to the framebuffer, the V coordinate's 8 MSBs are dropped. We fix that with sceGuTexScale().
 					memcpy(&tmp_pixels[y * t->stride_px + x], uvs_i16, sizeof uvs_i16);
 				}
 			}
@@ -2795,7 +2795,6 @@ void app_draw_scene(App* app) {
 
 		Texture vb_rt = obj_rt;
 		vb_rt.data = ptr_align((u8*) obj_rt.data + texture_get_level_size_in_bytes(&obj_rt, 0), 16);
-		vb_rt.data = psp_uncached_ptr_non_null(vb_rt.data); // NOSUBMIT TODO: doesn't seem to change anything?
 
 		gu_set_rendertarget(&obj_rt);
 
