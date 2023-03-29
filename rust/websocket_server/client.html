@@ -13,7 +13,7 @@
         #courtyard {
             width: 600px;
             height: 480px;
-            background: rgb(10, 10, 10);
+            background: rgb(1, 1, 1);
             position: relative;
             display: inline-block;
         }
@@ -64,18 +64,22 @@
             }
         }
 
-        function create_crewmate_img(src, x, y) {
+        function create_crewmate_img(src, x, y, visible) {
             var img = document.createElement("img");
             img.src = src;
             img.style.maxWidth = "50px";
             img.style.left = (x * 100) + "%";
             img.style.top = (y * 100) + "%";
             img.style.transform = "translate(-" + (x * 100) + "%, -" + (y * 100) + "%)";
-            // img.style.transformOrigin = (x * 100) + "%" + " " + (y * 100) + "%";
+            img.style.opacity = visible ? "100%" : "0%";
+            if (!visible)
+                img.onclick = function(e) { alert("Found!"); rebuild(); };
+            else
+                img.onclick = function(e) { alert("Wrong!"); };
             return img;
         }
 
-        function shuffleArray(array) {
+        function shuffle_array(array) {
             for (let i = array.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 const temp = array[i];
@@ -84,26 +88,55 @@
             }
         }
 
-        const red = "https://static.wikia.nocookie.net/among-us/images/9/90/Rouge.png/revision/latest?cb=20210918140136&path-prefix=fr";
-        const blue = "https://static.wikia.nocookie.net/among-us/images/4/4f/Bleu.png/revision/latest?cb=20210813124318&path-prefix=fr";
+        function get_character_sprites() {
+            return {
+                "red": "https://static.wikia.nocookie.net/among-us/images/9/90/Rouge.png/revision/latest?cb=20210918140136&path-prefix=fr",
+                "blue": "https://static.wikia.nocookie.net/among-us/images/4/4f/Bleu.png/revision/latest?cb=20210813124318&path-prefix=fr",
+                "green": "https://static.wikia.nocookie.net/among-us/images/6/6d/Vert.png/revision/latest?cb=20210813124317&path-prefix=fr",
+                "pink": "https://static.wikia.nocookie.net/among-us/images/4/4f/Rose.png/revision/latest?cb=20210813124316&path-prefix=fr",
+                "orange": "https://static.wikia.nocookie.net/among-us/images/4/43/Orange.png/revision/latest?cb=20210813124315&path-prefix=fr",
+                "yellow": "https://static.wikia.nocookie.net/among-us/images/1/11/Jaune.png/revision/latest?cb=20210813124315&path-prefix=fr",
+                "black": "https://static.wikia.nocookie.net/among-us/images/0/0e/Noir.png/revision/latest?cb=20210813124314&path-prefix=fr",
+                "white": "https://static.wikia.nocookie.net/among-us/images/f/fb/Blanc.png/revision/latest?cb=20210813124314&path-prefix=fr",
+                "purple": "https://static.wikia.nocookie.net/among-us/images/6/6d/Violet.png/revision/latest?cb=20210813124313&path-prefix=fr",
+                "brown": "https://static.wikia.nocookie.net/among-us/images/4/48/Marron.png/revision/latest?cb=20210813124313&path-prefix=fr",
+                "cyan": "https://static.wikia.nocookie.net/among-us/images/e/e6/Bleu_clair.png/revision/latest?cb=20210813124312&path-prefix=fr",
+                "lime": "https://static.wikia.nocookie.net/among-us/images/d/de/Vert_clair.png/revision/latest?cb=20210813124312&path-prefix=fr",
+                "marroon": "https://static.wikia.nocookie.net/among-us/images/0/0d/Marron_fonc%C3%A9.png/revision/latest?cb=20210813124311&path-prefix=fr",
+                "light_pink": "https://static.wikia.nocookie.net/among-us/images/0/07/Rose_clair.png/revision/latest?cb=20210813124311&path-prefix=fr",
+                "banana": "https://static.wikia.nocookie.net/among-us/images/6/67/Jaune-Banane.png/revision/latest?cb=20210813124310&path-prefix=fr",
+                "grey": "https://static.wikia.nocookie.net/among-us/images/f/fc/Gris.png/revision/latest?cb=20210813124310&path-prefix=fr",
+                "tan": "https://static.wikia.nocookie.net/among-us/images/8/87/Tan.png/revision/latest?cb=20210813131816&path-prefix=fr",
+                "coral": "https://static.wikia.nocookie.net/among-us/images/d/d3/Corail.png/revision/latest?cb=20210813124309&path-prefix=fr"
+            };
+        };
 
-        function onload() {
+        function rebuild() {
             var children = [];
 
-            children.push(create_crewmate_img(red, Math.random(), Math.random()));
-            document.getElementById("poster_img").src = red;
+            var spr = get_character_sprites();
+            var keys = Object.keys(spr);
+            var chosen_index = Math.floor(Math.random() * keys.length);
+            var chosen_key = keys[chosen_index];
+            keys.splice(chosen_index, 1);
 
-            for (var i = 0; i < 350; ++i) {
-                children.push(create_crewmate_img(blue, Math.random(), Math.random()));
+            const solution_pos = [ Math.random(), Math.random() ];
+            children.push(create_crewmate_img(spr[chosen_key], solution_pos[0], solution_pos[1], true));
+            document.getElementById("poster_img").src = spr[chosen_key];
+
+            for (var i = 0; i < 250; ++i) {
+                children.push(create_crewmate_img(spr[keys[Math.floor(Math.random() * keys.length)]], Math.random(), Math.random(), true));
             }
 
-            shuffleArray(children);
+            shuffle_array(children);
+            children.push(create_crewmate_img(spr[chosen_key], solution_pos[0], solution_pos[1], false));
 
-            var courtyard_elt = document.getElementById("courtyard");
-            for (var child of children) {
-                courtyard_elt.appendChild(child);
-            }
-        };
+            document.getElementById("courtyard").replaceChildren(...children);
+        }
+
+        function onload() {
+            rebuild();
+        }
     </script>
 </head>
 
