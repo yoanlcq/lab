@@ -1,0 +1,126 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <style>
+        #foo {
+            background: black;
+            text-align: center;
+            position: relative;
+            padding: 50px;
+        }
+
+        #courtyard {
+            width: 600px;
+            height: 480px;
+            background: rgb(10, 10, 10);
+            position: relative;
+            display: inline-block;
+        }
+
+        #courtyard img {
+            position: absolute;
+        }
+
+        #poster {
+            text-align: center;
+            display: inline-block;
+            background: rgb(230, 219, 172);
+            padding: 10px;
+            margin-bottom: 40px;
+        }
+
+        #poster h1 {
+            margin: 0;
+            color: rgb(88, 20, 3);
+        }
+
+        #poster img {
+            padding: 10px;
+            background: grey;
+        }
+    </style>
+    <script type="text/javascript">
+        function WebSocketTest() {
+            if ("WebSocket" in window) {
+                var log_elt = document.getElementById("log");
+                var ws = new WebSocket("ws://localhost:8000/ws");
+
+                ws.onopen = function () {
+                    var msg = "ping";
+                    ws.send(msg);
+                    log_elt.innerHTML += "<br>Sending message: " + msg;
+                };
+
+                ws.onmessage = function (evt) {
+                    log_elt.innerHTML += "<br>Received message: " + evt.data;
+                };
+
+                ws.onclose = function () {
+                    log_elt.innerHTML += "<br>Disconnected";
+                };
+            } else {
+                alert("WebSocket is not supported by your browser!");
+            }
+        }
+
+        function create_crewmate_img(src, x, y) {
+            var img = document.createElement("img");
+            img.src = src;
+            img.style.maxWidth = "50px";
+            img.style.left = (x * 100) + "%";
+            img.style.top = (y * 100) + "%";
+            img.style.transform = "translate(-" + (x * 100) + "%, -" + (y * 100) + "%)";
+            // img.style.transformOrigin = (x * 100) + "%" + " " + (y * 100) + "%";
+            return img;
+        }
+
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const temp = array[i];
+                array[i] = array[j];
+                array[j] = temp;
+            }
+        }
+
+        const red = "https://static.wikia.nocookie.net/among-us/images/9/90/Rouge.png/revision/latest?cb=20210918140136&path-prefix=fr";
+        const blue = "https://static.wikia.nocookie.net/among-us/images/4/4f/Bleu.png/revision/latest?cb=20210813124318&path-prefix=fr";
+
+        function onload() {
+            var children = [];
+
+            children.push(create_crewmate_img(red, Math.random(), Math.random()));
+            document.getElementById("poster_img").src = red;
+
+            for (var i = 0; i < 350; ++i) {
+                children.push(create_crewmate_img(blue, Math.random(), Math.random()));
+            }
+
+            shuffleArray(children);
+
+            var courtyard_elt = document.getElementById("courtyard");
+            for (var child of children) {
+                courtyard_elt.appendChild(child);
+            }
+        };
+    </script>
+</head>
+
+<body onload="onload()">
+    <div id="foo">
+        <div id="poster">
+            <img id="poster_img" style="max-width: 100px;" />
+            <h1>WANTED</h1>
+        </div>
+        <br>
+        <div id="courtyard">
+        </div>
+    </div>
+
+    <a href="javascript:WebSocketTest()">Run WebSocket</a>
+    <p>Log:</p>
+    <p id="log"></p>
+</body>
+
+</html>
