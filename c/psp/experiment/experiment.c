@@ -167,6 +167,70 @@
 //   - LUTs for gamma correction
 //
 
+/*
+Le frame graph PSP:
+- Ressources (app_gfx_allocate_vram_resources()):
+  - pingpong0: 512 * 272 * 4 = 557056 = 544 KiB
+  - fb0: 512 * 272 * 4 = 557056 = 544 KiB
+  - fb1: 512 * 272 * 4 = 557056 = 544 KiB
+  - zb: 512 * 272 * 2 = 278528 = 272 KiB
+  - Total: 1904 KiB (/ 2048 KiB available)
+- A chaque frame, un des fb n'est pas dispo (car en train d'être display)
+- Les actions:
+  - Clear targets: write fb0, write zb
+  - app_draw_scene
+    - Draw skybox: read skybox_texture; write scene3d_fb; read-write zb
+    - Draw objects: read object_texture; write scene3d_fb; read-write zb
+    - Clear because we're stupid: write scene3d_fb, write zb
+    - Write torus encoded-skybox-UVs and stencil: write scene3d_fb, read reflection_texture, read-write zb
+    - For i in 0..2:
+      - Clear vb_rt: write vb_rt (pingpong_fb)
+      - Write those equal to stencil (i.e reflective objects): write vb_rt, read scene3d_fb
+      - Write XYZ into odd-or-even columns (depending on i): write vb_rt, read rtvb_xyz_texture
+      - Draw vb_rt as GU_POINTS: write fb0, read lava_skybox_texture
+  - app_draw_postprocessing (no depth test/write)
+    - PASS "Bloom: write(max(threshold, scene_color))": read scene3d_fb; write hrb1
+    - PASS "Bloom: write(notequal(threshold))": read hrb1; write hrb0
+    - PASS "Bloom: write(scene):" read scene3d_fb; write fb0
+    - PASS "Bloom: write_additive(bloom):" read hrb0; read-write fb0
+    - PASS "LUT": read scene3d_fb_paletted; write fb0
+
+Les conclusions:
+- Pour un write, il faut spécifier si c'est sparse (default) ou replaces_all_previous_writes (pour un clear)
+  Car du coup quand on remonte le graph, on déduit que les précédents writes ne servaient à rien.
+  => c'est un create !! Car autant considérer que ce n'est plus la même ressource (le lifetime de la précédente se termine)
+  Les deux pourraient co-exister: full_rewrite et create. Les deux sont parfois équivalents.
+
+Le vrai frame graph qu'on veut:
+- "Clear targets": create scenecolor0, create zb
+- "Draw skybox + objects": write scenecolor0, read-write zb, read obj_texture
+- "Draw reflective objects encoded-skybox-UVs and stencil": write scenecolor0, read-write zb, read reflection_texture
+- "Even columns: Clear vb_rt": create tmpcolor0
+- "Even columns: Write reflective to vb_rt": write tmpcolor0, read scenecolor0
+- "Even columns: Write XYZ to vb_rt even columns": write tmpcolor0, read rtvb_xyz_texture
+- "Even columns: Draw vb_rt as GU_POINTS": write scenecolor0, read lava_skybox_texture, read tmpcolor0 (as vertex buffer)
+- "Odd  columns: Clear vb_rt": create tmpcolor1
+- "Odd  columns: Write reflective to vb_rt": write tmpcolor1, read scenecolor0
+- "Odd  columns: Write XYZ to vb_rt odd columns": write tmpcolor1, read rtvb_xyz_texture
+- "Odd  columns: Draw vb_rt as GU_POINTS": write scenecolor0, read lava_skybox_texture, read tmpcolor1 (as vertex buffer)
+- "Bloom: write(max(threshold, scene_color))": read scenecolor0; create tmp_hrb0
+- "Bloom: write(notequal(threshold))": read tmp_hrb0; create tmp_hrb1
+- "Bloom: write(scene):" read scenecolor0; create tmpcolor2
+- "Bloom: write_additive(bloom):" read tmp_hrb1; read-write tmpcolor2
+- "LUT": read tmpcolor2; create tmpcolor3
+- "Present (this pass is then optimized because it's a copy with same size and layout)": read tmpcolor3, write fb0
+
+fb1's memory is reserved
+tmpcolor3 is bound to fb0, the copy pass is culled
+tmpcolor2 is bound to a new alloc named pingpong0
+tmp_hrb1 is bound to a new alloc (can't be bound to tmpcolor2 because lifetime overlaps)
+tmp_hrb0 could be bound to tmp_hrb1 (not done in my code, but could be, I think)
+tmpcolor1 is bound to an alloc that stomps tmp_hrb* and tmpcolor2
+tmpcolor0 is bound to an alloc that stomps tmpcolor1
+scenecolor0 is bound to an allocation that stomps fb0
+*/
+
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
