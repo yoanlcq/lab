@@ -1,3 +1,5 @@
+#![feature(sync_unsafe_cell)]
+
 // Ce que je veux pouvoir faire:
 // - Ajouter pendant l'itération
 //   Ca ajoute un élément sans réallocation de storage existant (pour pas casser les pointeurs live)
@@ -20,7 +22,8 @@
 // - Toute Weak ref peut être upgradée en strong ref tant que l'item est encore présent dans le container
 // - Le container a une strong ref sur chaque item par défaut; cette strong ref peut être "volée" ou "consommée"
 // - Une "ComponentRef" c'est { WeakOrStrongRef<Entity>, WeakOrStrongRef<TheComponentData> }
-//   Toute permutation de weak/strong est possible dans les deux membres, ce qui permet toute gestion alambiquée que l'on peut imaginer
+//   Toute permutation de weak/strong est possible dans les deux membres, ce qui permet toute gestion alambiquée que l'on peut imaginer.
+//   Pour ajouter des méthodes à ce type, possible de créer un newtype qui wrappe ça et a ses propres méthodes.
 // - Un component dérivé référence sa "base" via StrongRef<BaseComponent>.
 //   Lorsque le refcount d'une Entity atteint 0, on clear sa liste de StrongRef<Component>.
 //   Vu que chaque component dérivé a une StrongRef sur sa base, les components dérivés vont être drop en premier, puis ensuite les bases.
@@ -29,6 +32,60 @@
 // - On pourrait imaginer un cas où une Entity a une WeakRef sur un de ses components au lieu d'une StrongRef.
 //   Le component pourrait alors avoir une StrongRef sur son Entity, sans créer de cycle.
 //   Cela fait que l'Entity ne peut pas être supprimée à moins que quelqu'un ne supprime d'abord le component.
+// - Pouvoir choper la liste de tous les référenceurs:
+//   Chaque WeakOrStrongRef<T> force à spécifier l'information d'ownership (i.e impossible de copy/clone sans passer ça), qui contient :
+//   - Possiblement un nom de debug
+//   - Possiblement la callstack / source line info ?
+//   - le "back pointer" de son owner (une WeakRefAny)
+//   L'arrangement en mémoire des choses est donc:
+//   - item: Unpin<{ IfHandleDerefCPUCacheOptimizationEnabled<{ item_guid }>, item: T, *item_redirector }>>
+//   - item_redirector: Pin<{ *item }> (quand l'item bouge en mémoire, on update juste ce pointeur)
+//   - referencer: Pin<{ *item_redirector, debug_info, owner: WeakRefAny, prev: *referencer, next: *referencer }>
+//   - WeakOrStrongRef<T>: Unpin<{ IfHandleDerefCPUCacheOptimizationEnabled<{ *item, item_guid }>, *referencer, MAGIC_GUID }>
+//   - On peut efficacement itérer sur tous les item_redirector et referencer de la heap
+//   - Lorsque tous les threads sont idle (i.e n'ont aucun borrow actif)
+//     - Déplacer les éléments suivants est possible: item, item_redirector.
+//     - Si on veut déplacer les referencer (sachant que c'est pas forcément ultra grave si on le fait pas), il faut traverser la heap:
+//       - Soit via un système de reflection; (et si certaines structs ne l'ont pas, c'est tant pis pour ces réfs là)
+//       - Soit en cherchant toutes les occurrences de MAGIC_GUID dans la heap et en faisant un range-check du pointeur de référenceur juste à côté
+//       - Soit le code s'arrange pour que en général (mais pas forcément tout le temps), l'info de "owner" soit bien renseignée et permette de choper un pointeur vers la réf
+//   C'est un design pour des objets "lourds" (et encore, ça sera probablement plus rapide que UE/Unity), mais pour des particle systems, une approche classique à base de Vec<_> n'est jamais interdite...
+//
+// TODO: détection de cycles de strong refs (mais attention, un cycle peut être bénin s'il y a une Option/enum dans la chaîne)
+// - https://manishearth.github.io/blog/2021/04/05/a-tour-of-safe-tracing-gc-designs-in-rust/
+// TODO: sérialiser des weakrefs dans le log?
+// TODO: multithreading ?
+//
+// Gestion mutable/immutable
+// - Version avec le plus de contrôle: chaque item est basiquement une RefCell. N'importe qui peut itérer facilement sur une hive, et choisit comment il gère les conflits de borrow.
+// - Version la plus efficace : algo style "frame graph" qui connaît en avance tous les borrows et peut prouver que c'est safe; mais pas évident car c'est une tâche similaire à devoir parser du code récursivement.
+// - Version "parfaite": &mut au compile-time seulement sur les hives utilisées (mais ça peut être compliqué si un component a une méthode qui doit borrow une autre hive)
+//   - Ce qui m'embête c'est: gestion du multi-world? besoin que le jeu final aie une grosse struct avec toutes les hives ?
+//   - Autre point : ComponentDefs au runtime ? Par définition, pas de preuve compile-time possible.
+//   - Pour chaque entité, itérer sur tous ses components ? On ne peut pas "&mut" tous les membres (ou alors si mais il faut de la reflection)
+//   - Aussi, comment extend l'engine sans que le jeu doive changer sa struct à lui ?
+// - Possibilité: limiter énormément les durées des mutable borrows
+// - Possibilité: defer les opérations qui ne peuvent pas être faites tout de suite. Ou push des commandes.
+//
+// Design final:
+// - Je veux un système le plus permissif/développé possible pour que la proba de devoir refacto/redesign soit basse.
+//   Donc tout est partagé, reference-counté, accessible à tout moment, partout (mais pas une global, car on veut pouvoir sandbox des systèmes).
+// - En général on reste sur du code single-threaded pour être déterministe et éviter les bugs random.
+//   Le fait que l'ordre des choses ne soit pas défini est une des raisons pour lesquelles je ne veux plus utiliser UE.
+// - Pour le multithreading, on push juste des tâches async sur des worker threads.
+//   Ces tâches async peuvent elles-mêmes utiliser rayon.
+// - Ca serait bien de quand même pouvoir multithreader une "query" sur certaines hives
+//   Par exemple typiquement tout ce qui est un peu physique/maths
+// - Pour la mutabilité, c'est "facile":
+//   - Quand le pattern d'accès le permet et qu'on sait qu'il n'y a pas de réactions en chaîne: itérer sur tous les items et borrow()/borrow_mut() la "RefCell" de l'item
+//     Exemple: modifier les datas des assets qui sont des dépendances d'une asset pendant qu'elle est en borrow mutable
+//     Inconvénient: un if() implicite à chaque itération
+//   - Quand on est dans un "root context" (i.e la root de la call stack), alors on sait qu'il n'y a aucun borrow "live" donc on peut borrow mutable sans souci
+//     - Concrètement ça nous donne un iterator qui fait borrow_mut() sur les "RefCell" d'item sans rien checker => zero overhead
+//   - Quand on n'est pas dans un "root context" (i.e réaction en chaîne), alors on regarde si la hive qu'on veut traverser mutablement est déjà borrow:
+//     - Si elle est borrow: alors on push une commande pour le moment le plus tôt possible où elle ne sera plus borrow
+//     - Si elle n'est pas borrow, alors on peut la traverser immédiatement
+//   - En dernier recours, au sein des datas elles-mêmes, l'API Cell/RefCell existe toujours...
 //
 // Notion de contexte:
 // - process_context (the root of all. there is always only one)
@@ -55,6 +112,9 @@
 //   Donc quand tu fais log!(x, "hello"), ça chope le contexte le plus spécialisé obtenable via x, puis ça cherche le service provider le plus proche.
 //   Si besoin de garder le service provider en cache, possible de faire un truc genre LogServiceProvider::find(x).
 
+extern crate rayon;
+
+/*
 pub mod hive {
     use std::rc::Rc;
     use std::cell::{Cell, RefCell};
@@ -187,12 +247,183 @@ pub mod hive {
         }
     }
 }
+*/
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::hash::Hash;
+    use std::rc::Rc;
+    use std::cell::{RefCell, SyncUnsafeCell};
+    use std::sync::Mutex;
+
+    use rayon::prelude::*;
+
+    #[derive(Debug, Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+    struct EID(String);
+
+    #[derive(Default)]
+    struct Entity {
+        componentdef_names: HashSet<&'static str>,
+    }
+
+    #[derive(Default)]
+    struct Entities {
+        map: HashMap<EID, Entity>,
+    }
+
+    #[derive(Default)]
+    struct Positions {
+        map: HashMap<EID, SyncUnsafeCell<f32>>,
+        pre_remove: HashMap<EID, Vec<Box<dyn FnMut(EID)>>>,
+    }
+
+    impl Positions {
+        pub fn insert_ifn(&mut self, eid: EID, pos: f32, entities: &mut Entities) {
+            entities.map.entry(eid.clone()).or_default().componentdef_names.insert("Positions");
+            self.map.entry(eid).or_insert(SyncUnsafeCell::new(pos));
+        }
+        pub fn remove(&mut self, eid: &EID) {
+            if let Some(pre_remove) = self.pre_remove.remove(eid) {
+                for mut f in pre_remove {
+                    f(eid.clone());
+                }
+            }
+            self.map.remove(eid);
+        }
+        pub fn get_mut(&mut self, eid: &EID) -> Option<&mut f32> {
+            self.map.get_mut(eid).map(SyncUnsafeCell::get_mut)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Velocities {
+        map: Rc<RefCell<HashMap<EID, f32>>>,
+    }
+
+    impl Velocities {
+        pub fn insert(&mut self, eid: EID, vel: f32, positions: &mut Positions, entities: &mut Entities) {
+            positions.insert_ifn(eid.clone(), 0., entities);
+            let map = Rc::clone(&self.map);
+            positions.pre_remove.entry(eid.clone()).or_default().push(Box::new(move |eid| {
+                map.borrow_mut().remove(&eid);
+            }));
+            entities.map.entry(eid.clone()).or_default().componentdef_names.insert("Velocities");
+            self.map.borrow_mut().insert(eid, vel);
+        }
+
+        pub fn update_positions(&mut self, positions: &mut Positions, dt: f32, entities: &mut Entities) {
+            let mut pending_adds = vec![];
+            let mut pending_removals = vec![];
+            self.map.borrow().iter().for_each(|(eid, velocity)| {
+                let position = positions.get_mut(eid).unwrap();
+                *position += *velocity * dt;
+
+                if *position > 5. && *position < 10. {
+                    pending_adds.push(|positions: &mut Positions, velocities: &mut Velocities, entities: &mut Entities| {
+                        velocities.insert(EID::default(), 1., positions, entities);
+                    });
+                }
+                if *position > 20. {
+                    let eid = eid.clone();
+                    pending_removals.push(move |positions: &mut Positions| {
+                        positions.remove(&eid);
+                    });
+                }
+            });
+            for command in pending_adds {
+                command(positions, self, entities);
+            }
+            for command in pending_removals {
+                command(positions);
+            }
+        }
+        pub fn update_positions_par(&mut self, positions: &mut Positions, dt: f32, entities: &mut Entities) {
+            let pending_adds = Mutex::new(vec![]);
+            let pending_removals = Mutex::new(vec![]);
+            {
+                let positions = &positions.map;
+                self.map.borrow().par_iter().for_each(|(eid, velocity)| {
+                    // SAFETY: positions is &mut in this function, so nobody can resize it + each iteration has a unique EID therefore there is no aliasing of mutable refs
+                    let position = unsafe { &mut *positions.get(eid).unwrap().get() };
+                    *position += *velocity * dt;
+
+                    if *position > 5. && *position < 10. {
+                        pending_adds.lock().unwrap().push(|positions: &mut Positions, velocities: &mut Velocities, entities: &mut Entities| {
+                            velocities.insert(EID::default(), 1., positions, entities);
+                        });
+                    }
+                    if *position > 20. {
+                        let eid = eid.clone();
+                        pending_removals.lock().unwrap().push(move |positions: &mut Positions| {
+                            positions.remove(&eid);
+                        });
+                    }
+                });
+            }
+            for command in pending_adds.into_inner().unwrap() {
+                command(positions, self, entities);
+            }
+            for command in pending_removals.into_inner().unwrap() {
+                command(positions);
+            }
+        }
+    }
+
+    trait ComponentDef {
+        fn remove(&mut self, eid: &EID);
+    }
+
+    impl ComponentDef for Positions {
+        fn remove(&mut self, eid: &EID) {
+            Positions::remove(self, eid);
+        }
+    }
+
+    impl ComponentDef for Velocities {
+        fn remove(&mut self, eid: &EID) {
+            self.map.borrow_mut().remove(eid);
+        }
+    }
+
+    #[derive(Default)]
+    struct Cx {
+        entities: Entities,
+        positions: Positions,
+        velocities: Velocities,
+    }
+
+    impl Cx {
+        pub fn remove_entity(&mut self, eid: &EID) {
+            if let Some(entity) = self.entities.map.remove(eid) {
+                for name in entity.componentdef_names {
+                    if let Some(c) = self.componentdef_mut(name) {
+                        c.remove(eid);
+                    }
+                }
+            }
+        }
+        pub fn componentdef_mut(&mut self, name: &str) -> Option<&mut dyn ComponentDef> {
+            let Self {
+                entities: _,
+                positions,
+                velocities, 
+            } = self;
+            match name {
+                "Positions" => Some(positions),
+                "Velocities" => Some(velocities),
+                _ => None,
+            }
+        }
+    }
 
     #[test]
-    fn it_works() {
+    fn test_ecs_draft() {
+        let mut cx = Cx::default();
+        cx.velocities.update_positions(&mut cx.positions, 0., &mut cx.entities);
+        cx.velocities.update_positions_par(&mut cx.positions, 0., &mut cx.entities);
+        cx.remove_entity(&EID::default());
+        // TODO: when a component is removed, its entity should remove it from its list
+        // TODO: multithreading
     }
 }
