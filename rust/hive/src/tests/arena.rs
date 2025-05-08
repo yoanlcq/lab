@@ -159,7 +159,9 @@ mod workarounds {
     }
 }
 
-#[repr(C)] // Just for a better debugging experience
+// TODO: a way to list all strong/weak refs
+
+#[repr(C)] // I've sorted members from most accessed to least accessed, keep that order for cache efficiency.
 #[derive(Debug)]
 struct SuballocationHeaderInner {
     suballocation_within_arena: NonNull<[u8]>,
@@ -253,6 +255,11 @@ impl<T> RelocatableVecWeakRef<T> {
         let arena_strong_ref = self.arena_weak_ref.upgrade()?;
 
         // Assert that the arena's right_area_start_ptr never shrinks, otherwise the generation trick won't work: generation counters have to stay pinned in memory for as long as the arena is in use.
+        // TODO: we COULD actually shrink right_area_start_ptr but that would require the following:
+        // - Knowing when ALL weak refs to a right-side-suballocation have been dropped (i.e knowing that the suballocation is unreferenced)
+        // - If we allow external users to allocate from the right side: provide a mechanism to "mark as free", which could add the pointer to a free list allocated on the left side
+        // - Being able to swap SuballocationHeaders without breaking live refs. Probably needs some kind of indirection.
+        // - This would allow us to "bubble up" the unreferenced headers, moving them to the left
         assert!(self.suballocation_header_ptr.addr().get() >= arena_strong_ref.arena_header().right_area_start_ptr.load(std::sync::atomic::Ordering::SeqCst).addr());
 
         // SAFETY: we have a strong ref to the arena and have proven that the pointer is in valid range
@@ -268,6 +275,8 @@ impl<T> RelocatableVecWeakRef<T> {
         }
     }
 }
+
+// TODO: a way to list all strong/weak refs
 
 #[repr(C)] // Just for a better debugging experience
 #[derive(Debug)]
@@ -287,9 +296,20 @@ impl ArenaHeader {
     pub fn create(size: NonZero<usize>) -> ArenaStrongRef {
         let allocation = os::LowLevelAllocatorImpl::allocate_uninitialized_bytes(size).unwrap();
         assert!(allocation.len() >= size.get());
-        Self::with_allocation(allocation)
+        Self::with_allocation_impl(allocation)
     }
-    pub fn with_allocation(allocation: NonNull<[u8]>) -> ArenaStrongRef {
+    /// # Safety
+    /// 
+    /// * You must ensure that the `allocation` lives at least as long as the ArenaStrongRef.
+    pub unsafe fn with_allocation(allocation: NonNull<[u8]>) -> ArenaStrongRef {
+        // TODO: we should take the deallocator as well, in order to know how to free the memory!
+        // TODO: feature: when trying to allocate from an arena, if there is no more room, it could call into some user-provided strategy, possibly attempting to create a new arena with some capacity, and then redirect to THAT arena. This should be useful during development if we are on a good machine and memory usage momentarily exceeds the expected amount due to a poorly optimized gameplay section; would allow us to issue a warning but not interrupt whatever we're trying to do (profiling, debugging, looking for an issue, etc).
+        Self::with_allocation_impl(allocation)
+    }
+    // This function is "safe" as long as it's not used externally.
+    // The public API is with_allocation() and marked as unsafe.
+    // This function is NOT marked as unsafe, to force us to highlight the unsafe places within the body.
+    fn with_allocation_impl(allocation: NonNull<[u8]>) -> ArenaStrongRef {
         assert!(allocation.len() >= Self::min_required_size().get());
         assert!(allocation.len() <= isize::MAX as usize); // std's Vec panics in that case
         // TODO: memset(0) in order to force physical pages to be allocated (consider multi-threading that?). "committing" in Windows does not do that. https://learn.microsoft.com/en-us/windows/win32/memory/reserving-and-committing-memory?redirectedfrom=MSDN
@@ -331,6 +351,9 @@ impl ArenaHeader {
         // Should be a matter of calling VirtualFree(client_area().round_up_to_page_size(), MEM_DECOMMIT)
         unimplemented!()
     }
+    // TODO: parallel allocations, frees, and compaction
+    // TODO: pouvoir itérer sur toutes les suballocations de l'arena
+    // TODO: thought experiment (juste pour le lol/tester): dans la zone droite d'une arena, faire une suballocation, et créer une arena dedans.
     pub fn create_relocatable_vec<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
         unimplemented!()
     }
