@@ -1,4 +1,4 @@
-use std::{error::Error, marker::PhantomData, mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull, sync::atomic::AtomicUsize};
+use std::{alloc::Layout, error::Error, marker::PhantomData, mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull, sync::atomic::{AtomicPtr, AtomicUsize}};
 
 trait LowLevelAllocator {
     fn allocate_uninitialized_bytes(size: NonZero<usize>) -> Result<NonNull<[u8]>, impl Error>;
@@ -161,10 +161,123 @@ mod workarounds {
 
 #[repr(C)] // Just for a better debugging experience
 #[derive(Debug)]
+struct SuballocationHeaderInner {
+    suballocation_within_arena: NonNull<[u8]>,
+    strong_ref_count: usize,
+    generation: usize,
+    element_layout: Layout, // TODO: compress the layout's alignment?
+    arena_strong_ref: Option<ArenaStrongRef>, // TODO: we could get rid of this and instead call inc_strong/dec_strong manually when a suballocation header is added/freed
+}
+
+#[repr(C)] // Just for a better debugging experience
+#[derive(Debug)]
+struct SuballocationHeader {
+    mutex: parking_lot::Mutex<SuballocationHeaderInner>,
+}
+
+#[repr(C)] // Just for a better debugging experience
+#[derive(Debug)]
+struct RelocatableVecStrongRef<T> {
+    suballocation_header_ptr: NonNull<SuballocationHeader>,
+
+    // I don't fully understand yet why this is needed. Something about covariance. Rc<T> does this internally, so I'm just doing the same.
+    phantom: PhantomData<(T, SuballocationHeader)>,
+}
+
+// TODO: support zero-sized types
+
+impl<T> RelocatableVecStrongRef<T> {
+    fn suballocation_header(&self) -> &SuballocationHeader {
+        // SAFETY: As long as we exist, that memory will be valid
+        unsafe { self.suballocation_header_ptr.as_ref() }
+    }
+    fn take_arena_strong_ref(&self) -> Option<ArenaStrongRef> {
+        self.suballocation_header().mutex.lock().arena_strong_ref.take()
+    }
+    pub fn push(&mut self, _val: T) {
+        unimplemented!()
+    }
+}
+
+impl<T> Drop for RelocatableVecStrongRef<T> {
+    fn drop(&mut self) {
+        let mut suballocation_header_inner = self.suballocation_header().mutex.lock();
+        assert_ne!(suballocation_header_inner.strong_ref_count, 0);
+        if suballocation_header_inner.strong_ref_count == 1 {
+            let arena_strong_ref = suballocation_header_inner.arena_strong_ref.take().unwrap();
+            let generation = suballocation_header_inner.generation.wrapping_add(1);
+            *suballocation_header_inner = SuballocationHeaderInner {
+                suballocation_within_arena: NonNull::slice_from_raw_parts(workarounds::nonnull_without_provenance(NonZeroUsize::MAX), 0),
+                strong_ref_count: 0,
+                element_layout: Layout::new::<u8>(),
+                arena_strong_ref: None,
+                generation,
+            };
+            if let Some(free_list) = arena_strong_ref.arena_header().suballocation_headers_free_list.as_ref() {
+                free_list.lock().push(self.suballocation_header_ptr);
+            }
+        } else {
+            suballocation_header_inner.strong_ref_count -= 1;
+        }
+    }
+}
+
+#[repr(C)] // Just for a better debugging experience
+#[derive(Debug, Clone)]
+struct RelocatableVecWeakRef<T> {
+    arena_weak_ref: ArenaWeakRef,
+    suballocation_header_ptr: NonNull<SuballocationHeader>,
+    generation: usize,
+    phantom: PhantomData<T>,
+}
+
+impl<T> Default for RelocatableVecWeakRef<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> RelocatableVecWeakRef<T> {
+    pub fn new() -> Self {
+        Self {
+            arena_weak_ref: ArenaWeakRef::new(),
+            suballocation_header_ptr: workarounds::nonnull_without_provenance(NonZeroUsize::MAX),
+            generation: usize::MAX,
+            phantom: Default::default(),
+        }
+    }
+    pub fn is_dangling(&self) -> bool {
+        self.arena_weak_ref.is_dangling()
+    }
+    pub fn upgrade(&self) -> Option<RelocatableVecStrongRef<T>> {
+        let arena_strong_ref = self.arena_weak_ref.upgrade()?;
+
+        // Assert that the arena's right_area_start_ptr never shrinks, otherwise the generation trick won't work: generation counters have to stay pinned in memory for as long as the arena is in use.
+        assert!(self.suballocation_header_ptr.addr().get() >= arena_strong_ref.arena_header().right_area_start_ptr.load(std::sync::atomic::Ordering::SeqCst).addr());
+
+        // SAFETY: we have a strong ref to the arena and have proven that the pointer is in valid range
+        let mut suballocation_header_inner = unsafe { self.suballocation_header_ptr.as_ref() }.mutex.lock();
+        if suballocation_header_inner.generation == self.generation {
+            suballocation_header_inner.strong_ref_count += 1;
+            Some(RelocatableVecStrongRef {
+                suballocation_header_ptr: self.suballocation_header_ptr,
+                phantom: Default::default(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[repr(C)] // Just for a better debugging experience
+#[derive(Debug)]
 struct ArenaHeader {
     allocation: NonNull<[u8]>,
     strong_ref_count: AtomicUsize,
     weak_ref_count: AtomicUsize,
+    left_area_end_ptr: AtomicPtr<u8>,
+    right_area_start_ptr: AtomicPtr<u8>,
+    suballocation_headers_free_list: Option<parking_lot::Mutex<RelocatableVecStrongRef<NonNull<SuballocationHeader>>>>,
 }
 
 impl ArenaHeader {
@@ -172,24 +285,38 @@ impl ArenaHeader {
         NonZero::new(std::mem::align_of::<ArenaHeader>() - 1 + std::mem::size_of::<ArenaHeader>()).unwrap()
     }
     pub fn create(size: NonZero<usize>) -> ArenaStrongRef {
-        assert!(size >= Self::min_required_size());
         let allocation = os::LowLevelAllocatorImpl::allocate_uninitialized_bytes(size).unwrap();
         assert!(allocation.len() >= size.get());
+        Self::with_allocation(allocation)
+    }
+    pub fn with_allocation(allocation: NonNull<[u8]>) -> ArenaStrongRef {
+        assert!(allocation.len() >= Self::min_required_size().get());
+        assert!(allocation.len() <= isize::MAX as usize); // std's Vec panics in that case
         // TODO: memset(0) in order to force physical pages to be allocated (consider multi-threading that?). "committing" in Windows does not do that. https://learn.microsoft.com/en-us/windows/win32/memory/reserving-and-committing-memory?redirectedfrom=MSDN
         // TODO: Add Miri and run "MIRIFLAGS='-Zmiri-strict-provenance' cargo miri test"
-        let header_slice = unsafe { 
+        let arena_header_slice = unsafe { 
             workarounds::non_null_slice_uninit(allocation)
             .as_mut()
             .align_to_mut::<MaybeUninit<ArenaHeader>>().1
         };
-        header_slice[0].write(ArenaHeader {
+        // SAFETY: the result pointer is still in bounds
+        let left_area_end_ptr = AtomicPtr::new(unsafe { arena_header_slice.as_mut_ptr().add(1) }.cast());
+        arena_header_slice[0].write(ArenaHeader {
             allocation,
             strong_ref_count: AtomicUsize::new(1),
             weak_ref_count: AtomicUsize::new(1), // The entire set of all strong refs holds 1 weak ref
+            left_area_end_ptr,
+            // SAFETY: the result pointer is still in bounds
+            right_area_start_ptr: AtomicPtr::new(unsafe { workarounds::non_null_slice_ptr(allocation).add(allocation.len()) }.as_ptr()),
+            suballocation_headers_free_list: None,
         });
-        let header_ptr = NonNull::from(&header_slice[0]).cast();
-        assert_ne!(header_ptr.addr(), NonZeroUsize::MAX);
-        ArenaStrongRef { header_ptr, phantom: PhantomData::default() }
+        // SAFETY: we called write() just above
+        let arena_header = unsafe { arena_header_slice[0].assume_init_mut() };
+        arena_header.suballocation_headers_free_list = arena_header.create_relocatable_vec_internal_to_this_arena().map(parking_lot::Mutex::new);
+        assert_eq!(arena_header.strong_ref_count.load(std::sync::atomic::Ordering::SeqCst), 1, "After creating internal structures, the arena's strong ref count must still be 1");
+        let arena_header_ptr = NonNull::from(arena_header);
+        assert_ne!(arena_header_ptr.addr(), NonZeroUsize::MAX);
+        ArenaStrongRef { arena_header_ptr, phantom: PhantomData::default() }
     }
     pub fn client_area(&self) -> NonNull<[u8]> {
         let self_p = NonNull::from(self);
@@ -200,7 +327,18 @@ impl ArenaHeader {
         NonNull::slice_from_raw_parts(start, end.get() - start.addr().get())
     }
     pub unsafe fn drop_suballocations(&self) {
-        // TODO: attempt to free inner allocations. Then shrink our allocation until only the memory for the header remains
+        // TODO: attempt to free inner allocations. Then shrink our allocation until only the memory for the header remains.
+        // Should be a matter of calling VirtualFree(client_area().round_up_to_page_size(), MEM_DECOMMIT)
+        unimplemented!()
+    }
+    pub fn create_relocatable_vec<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
+        unimplemented!()
+    }
+    fn create_relocatable_vec_internal_to_this_arena<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
+        self.create_relocatable_vec().map(|x| {
+            x.take_arena_strong_ref();
+            x
+        })
     }
 }
 
@@ -215,21 +353,21 @@ impl Drop for ArenaHeader {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ArenaStrongRef {
-    header_ptr: NonNull<ArenaHeader>,
+    arena_header_ptr: NonNull<ArenaHeader>,
 
     // I don't fully understand yet why this is needed. Something about covariance. Rc<T> does this internally, so I'm just doing the same.
     phantom: PhantomData<ArenaHeader>,
 }
 
 impl ArenaStrongRef {
-    fn header(&self) -> &ArenaHeader {
+    fn arena_header(&self) -> &ArenaHeader {
         // SAFETY: As long as we exist, header_ptr points to accessible and initialized memory. We also make sure to never access it via &mut unless we are the sole owner.
-        unsafe { self.header_ptr.as_ref() }
+        unsafe { self.arena_header_ptr.as_ref() }
     }
     pub fn downgrade(&self) -> ArenaWeakRef {
-        self.header().weak_ref_count.fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        self.arena_header().weak_ref_count.fetch_add(1, std::sync::atomic::Ordering::Acquire);
         ArenaWeakRef {
-            header_ptr: self.header_ptr,
+            arena_header_ptr: self.arena_header_ptr,
         }
     }
 }
@@ -239,9 +377,9 @@ unsafe impl Sync for ArenaStrongRef {}
 
 impl Clone for ArenaStrongRef {
     fn clone(&self) -> Self {
-        self.header().strong_ref_count.fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        self.arena_header().strong_ref_count.fetch_add(1, std::sync::atomic::Ordering::Acquire);
         Self {
-            header_ptr: self.header_ptr,
+            arena_header_ptr: self.arena_header_ptr,
             phantom: PhantomData::default(),
         }
     }
@@ -249,20 +387,20 @@ impl Clone for ArenaStrongRef {
 
 impl Drop for ArenaStrongRef {
     fn drop(&mut self) {
-        let old_strong_ref_count = self.header().strong_ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        let old_strong_ref_count = self.arena_header().strong_ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
         assert_ne!(old_strong_ref_count, 0);
         if old_strong_ref_count == 1 {
-            self.header().strong_ref_count.load(std::sync::atomic::Ordering::Acquire); // Barrier: same as Rust's "sync.rs"'s acquire!() macro
+            self.arena_header().strong_ref_count.load(std::sync::atomic::Ordering::Acquire); // Barrier: same as Rust's "sync.rs"'s acquire!() macro
             // SAFETY: We were the last strong owner
-            unsafe { self.header().drop_suballocations() };
-            drop(ArenaWeakRef { header_ptr: self.header_ptr });
+            unsafe { self.arena_header().drop_suballocations() };
+            drop(ArenaWeakRef { arena_header_ptr: self.arena_header_ptr });
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ArenaWeakRef {
-    header_ptr: NonNull<ArenaHeader>,
+    arena_header_ptr: NonNull<ArenaHeader>,
 }
 
 impl Default for ArenaWeakRef {
@@ -274,18 +412,18 @@ impl Default for ArenaWeakRef {
 impl ArenaWeakRef {
     pub const fn new() -> Self {
         Self {
-            header_ptr: workarounds::nonnull_without_provenance(NonZeroUsize::MAX),
+            arena_header_ptr: workarounds::nonnull_without_provenance(NonZeroUsize::MAX),
         }
     }
     pub fn is_dangling(&self) -> bool {
-        self.header_ptr.addr() == NonZeroUsize::MAX
+        self.arena_header_ptr.addr() == NonZeroUsize::MAX
     }
-    fn header(&self) -> Option<&ArenaHeader> {
+    fn arena_header(&self) -> Option<&ArenaHeader> {
         if self.is_dangling() {
             None
         } else {
             // SAFETY: As long as we exist, header_ptr points to accessible and initialized memory. We also make sure to never access it via &mut unless we are the sole owner.
-            Some(unsafe { self.header_ptr.as_ref() })
+            Some(unsafe { self.arena_header_ptr.as_ref() })
         }
     }
     pub fn upgrade(&self) -> Option<ArenaStrongRef> {
@@ -302,9 +440,9 @@ impl ArenaWeakRef {
             Some(n + 1)
         }
 
-        if self.header()?.strong_ref_count.fetch_update(std::sync::atomic::Ordering::Acquire, std::sync::atomic::Ordering::Relaxed, checked_increment).is_ok() {
+        if self.arena_header()?.strong_ref_count.fetch_update(std::sync::atomic::Ordering::Acquire, std::sync::atomic::Ordering::Relaxed, checked_increment).is_ok() {
             Some(ArenaStrongRef {
-                header_ptr: self.header_ptr,
+                arena_header_ptr: self.arena_header_ptr,
                 phantom: PhantomData::default(),
             })
         } else {
@@ -318,11 +456,11 @@ unsafe impl Sync for ArenaWeakRef {}
 
 impl Clone for ArenaWeakRef {
     fn clone(&self) -> Self {
-        if let Some(header) = self.header() {
+        if let Some(header) = self.arena_header() {
             header.weak_ref_count.fetch_add(1, std::sync::atomic::Ordering::Acquire);
         }
         Self {
-            header_ptr: self.header_ptr,
+            arena_header_ptr: self.arena_header_ptr,
         }
     }
 }
@@ -331,7 +469,7 @@ impl Drop for ArenaWeakRef {
     fn drop(&mut self) {
         let old_weak_ref_count;
         // Don't hold the reference for long. See further below for why.
-        if let Some(header) = self.header() {
+        if let Some(header) = self.arena_header() {
             old_weak_ref_count = header.weak_ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
         } else {
             return;
@@ -339,9 +477,9 @@ impl Drop for ArenaWeakRef {
         assert_ne!(old_weak_ref_count, 0);
         if old_weak_ref_count == 1 {
             // Re-get and unwrap in order not to hold the reference for long. See below.
-            self.header().unwrap().weak_ref_count.load(std::sync::atomic::Ordering::Acquire); // Barrier: same as Rust's "sync.rs"'s acquire!() macro
+            self.arena_header().unwrap().weak_ref_count.load(std::sync::atomic::Ordering::Acquire); // Barrier: same as Rust's "sync.rs"'s acquire!() macro
             // SAFETY: We are the only referencer and have ensured we're not holding on to the header by reference in this function
-            unsafe { self.header_ptr.drop_in_place() };
+            unsafe { self.arena_header_ptr.drop_in_place() };
         }
     }
 }

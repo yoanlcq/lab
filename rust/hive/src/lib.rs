@@ -113,6 +113,7 @@
 //   Si besoin de garder le service provider en cache, possible de faire un truc genre LogServiceProvider::find(x).
 
 extern crate rayon;
+extern crate parking_lot;
 
 #[cfg(test)]
 mod tests;
