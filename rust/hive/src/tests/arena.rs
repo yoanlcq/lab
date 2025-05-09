@@ -9,7 +9,7 @@ trait LowLevelAllocator {
     unsafe fn deallocate(p: NonNull<[u8]>) -> Result<(), impl Error>;
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(miri)))]
 #[allow(bad_style, dead_code)]
 mod os {
     use std::{num::NonZero, ptr::NonNull};
@@ -101,7 +101,7 @@ mod os {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(miri, not(windows)))]
 mod os {
     use std::{error::Error, num::NonZero, ptr::NonNull};
 
@@ -112,7 +112,7 @@ mod os {
 
     impl LowLevelAllocator for LowLevelAllocatorImpl {
         fn allocate_uninitialized_bytes(size: NonZero<usize>) -> Result<NonNull<[u8]>, impl Error> {
-            let mut v = Vec::<MaybeUninit<u8>>::with_capacity(size.get());
+            let mut v = Vec::<u8>::with_capacity(size.get());
             let p = v.as_mut_ptr();
             std::mem::forget(v);
             // SAFETY: The pointer of a Vec<u8> with non-zero capacity can never be null

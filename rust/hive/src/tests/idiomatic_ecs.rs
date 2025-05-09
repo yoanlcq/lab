@@ -186,6 +186,7 @@ impl Cx {
 fn test_idiomatic_ecs() {
     let mut cx = Cx::default();
     cx.velocities.update_positions(&mut cx.positions, 0., &mut cx.entities);
+    #[cfg(not(miri))]
     cx.velocities.update_positions_par(&mut cx.positions, 0., &mut cx.entities);
     cx.remove_entity(&EID::default());
     // TODO: when a component is removed, its entity should remove it from its list
