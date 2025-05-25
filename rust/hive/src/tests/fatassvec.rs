@@ -60,6 +60,9 @@ impl<T> Fatassvec<T> {
     // - None (no ordering whatsoever. Adds to the end. Removes via remove_swap)
     // - Sequential (Adds to the end. Removes via remove_shift)
     // - Custom (user-specified comparison predicate)
+    // TODO: But modifying items via mutable references may invalide ordering. How do we deal with this? Mark such items as dirty? automatically or manually? How about items modified via shared references with cells?
+    // The user should be given a way to mark items are dirty for ordering. However it's still possible that they forget to do it.
+    // TODO: Maintain a list of "ranges" to quickly access a range of items that satisfy a subset of the ordering predicate (and also remember that there may be pending adds, and those are not sorted, so the caller may have to iterate on them and check the predicate manually)
 
     // TODO: iterator params:
     // - Include pending add items? (index < nb_committed)
@@ -119,6 +122,17 @@ impl<T> Fatassvec<T> {
             unimplemented!() // Enqueue the command
         }
     }
+    pub fn request_for_each_with_pending_adds_op<F: FnMut(ItemRef<T>), F2: FnMut(ItemAccessor<T>)>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> bool {
+        if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
+            for it in self.iter(p) {
+                f(unsafe { it.borrow_unchecked() });
+            }
+            self.internal_visit_pending_adds(p, f2);
+            true
+        } else {
+            unimplemented!() // Enqueue the command
+        }
+    }
     pub fn request_for_each_with_control_flow<R, F: FnMut(ItemRef<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F) -> Option<R> { // TODO: return Result instead to distinguish cases
         if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
             for it in self.iter(p) {
@@ -131,6 +145,19 @@ impl<T> Fatassvec<T> {
             unimplemented!() // Enqueue the command
         }
     }
+    pub fn request_for_each_with_pending_adds_op_and_control_flow<R, F: FnMut(ItemRef<T>) -> ControlFlow<R>, F2: FnMut(ItemAccessor<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> Option<R> { // TODO: return Result instead to distinguish cases
+        if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
+            for it in self.iter(p) {
+                if let ControlFlow::Break(r) = f(unsafe { it.borrow_unchecked() }) {
+                    return Some(r);
+                }
+            }
+            self.internal_visit_pending_adds_with_control_flow(p, f2)
+        } else {
+            unimplemented!() // Enqueue the command
+        }
+    }
+
     // This is more efficient than iterating on each item and calling try_borrow_mut() or request_with_mut(), by avoiding these branches; in exchange, your operation might not execute immediately.
     // Enqueues the command and executes it as soon as the container has no live borrow (i.e when calling borrow_mut() on all items at once would not panic)
     // During execution of the command, all items are borrowed mutably simultaneously as a single unit.
@@ -139,17 +166,20 @@ impl<T> Fatassvec<T> {
     // However, this doesn't prevent new commands from being issued during iteration.
     pub fn request_for_each_mut<F: FnMut(ItemRefMut<T>)>(&self, p: IteratorParams, mut f: F) -> bool {
         if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
-            // TODO: We should store the valid range OR make sure we don't construct ItemBorrowMut() on items that were not there yet when we borrowed the whole container
-            // QUESTION: due to its nature, can it support iterating on pending adds?? Maybe yes actually? That would allow a counterintuitive behavior where you add an item and you can't immediately borrow it mutably. Maybe this should be a param or this is already just include_pending_adds.
-            // There could be a policy "include_pending_adds + try borrow but just for those"
-            // So the possibilities are:
-            // - Don't include_pending_adds (borrow all committed items)
-            // - include_pending_adds, count any pending add as borrowed by the whole container (so the one who calls add() won't be able to borrow what was just added, which may be weird)
-            // - include_pending_adds, but pending adds give an ItemAccessor instead of ItemRefMut. Efficient iteration on committed items, and controlled operation on pending adds.
-            // NOTE that this question also applies to request_for_each_ref actually
             for it in self.iter(p) {
                 f(unsafe { it.borrow_mut_unchecked() });
             }
+            true
+        } else {
+            unimplemented!() // Enqueue the command
+        }
+    }
+    pub fn request_for_each_mut_with_pending_adds_op<F: FnMut(ItemRefMut<T>), F2: FnMut(ItemAccessor<T>)>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> bool {
+        if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
+            for it in self.iter(p) {
+                f(unsafe { it.borrow_mut_unchecked() });
+            }
+            self.internal_visit_pending_adds(p, f2);
             true
         } else {
             unimplemented!() // Enqueue the command
@@ -166,6 +196,45 @@ impl<T> Fatassvec<T> {
         } else {
             unimplemented!() // Enqueue the command
         }
+    }
+    pub fn request_for_each_mut_with_pending_adds_op_and_control_flow<R, F: FnMut(ItemRefMut<T>) -> ControlFlow<R>, F2: FnMut(ItemAccessor<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> Option<R> { // TODO: return Result instead to distinguish cases
+        if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
+            for it in self.iter(p) {
+                if let ControlFlow::Break(r) = f(unsafe { it.borrow_mut_unchecked() }) {
+                    return Some(r);
+                }
+            }
+            self.internal_visit_pending_adds_with_control_flow(p, f2)
+        } else {
+            unimplemented!() // Enqueue the command
+        }
+    }
+    fn internal_visit_pending_adds_params(p: IteratorParams) -> Option<IteratorParams> {
+        if !p.filter.include_pending_adds {
+            let mut new_p = p;
+            new_p.filter.include_pending_adds = true;
+            new_p.filter.include_committed_items = false;
+            Some(new_p)
+        } else {
+            None
+        }
+    }
+    fn internal_visit_pending_adds<F: FnMut(ItemAccessor<T>)>(&self, p: IteratorParams, mut f: F) {
+        if let Some(p) = Self::internal_visit_pending_adds_params(p) {
+            for it in self.iter(p) {
+                f(it);
+            }
+        }
+    }
+    fn internal_visit_pending_adds_with_control_flow<R, F: FnMut(ItemAccessor<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F) -> Option<R> {
+        if let Some(p) = Self::internal_visit_pending_adds_params(p) {
+            for it in self.iter(p) {
+                if let ControlFlow::Break(r) = f(it) {
+                    return Some(r);
+                }
+            }
+        }
+        None
     }
 }
 
