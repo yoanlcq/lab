@@ -112,6 +112,7 @@
 //   Donc quand tu fais log!(x, "hello"), ça chope le contexte le plus spécialisé obtenable via x, puis ça cherche le service provider le plus proche.
 //   Si besoin de garder le service provider en cache, possible de faire un truc genre LogServiceProvider::find(x).
 
+extern crate bitflags;
 extern crate rayon;
 extern crate parking_lot;
 

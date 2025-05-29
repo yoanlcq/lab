@@ -1,10 +1,22 @@
 #![allow(dead_code, unused_variables, unreachable_code, unused_mut)]
 
-use std::{marker::PhantomData, ops::{ControlFlow, Deref, DerefMut}};
+use std::{cell::Cell, iter::{Skip, Take}, marker::PhantomData, ops::{Deref, DerefMut}};
 
-#[derive(Debug)]
+use rayon::iter::{plumbing::{bridge, Consumer, Producer, ProducerCallback}, IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct RefCounter {
+    refs: usize,
+    refmuts: usize,
+}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct Fatassvec<T> {
     phantom: PhantomData<T>,
+    settled_item_refs : RefCounter,
+    pending_add_item_refs : RefCounter,
+    settled_range_refs: RefCounter,
+    pending_add_range_refs: RefCounter,
 }
 
 impl<T> Default for Fatassvec<T> {
@@ -13,15 +25,77 @@ impl<T> Default for Fatassvec<T> {
     }
 }
 
+fn demo_par_iter<T>(v: &Fatassvec<T>) {
+    // v.par_iter();
+    [1, 2, 3].into_iter().map(Cell::new).par_iter_mut().for_each(|x| *x += 1);
+}
+
+fn demo_how_to_handle_newly_added_items_differently<T>(v: &Fatassvec<T>) {
+    let mut fresh_iter = v.iter().start_at_current_len();
+    for _it in v.iter() {
+        // do operation on already existing items, which could possibly add new items
+    }
+    loop {
+        if fresh_iter.len() == 0 {
+            break;
+        }
+        let new_fresh_iter = v.iter().start_at_current_len();
+        for _it in fresh_iter {
+            // do operation on newly added items... Which... Could also possibly add new items...
+        }
+        fresh_iter = new_fresh_iter;
+    }
+}
+
 impl<T> Fatassvec<T> {
     pub fn new() -> Self {
         unimplemented!()
     }
-    pub fn len(&self, filter: Filter) -> usize {
+    pub fn len_including_pending_removals(&self) -> usize {
+        self.num_settled_plus_pending_add()
+    }
+    pub fn len_excluding_pending_removals(&self) -> usize {
+        self.len_including_pending_removals() - self.num_pending_removal()
+    }
+    pub fn num_settled_plus_pending_add(&self) -> usize {
+        self.num_settled() + self.num_pending_add()
+    }
+    pub fn num_settled(&self) -> usize {
         unimplemented!()
     }
-    pub fn is_empty(&self, filter: Filter) -> bool {
-        self.len(filter) == 0
+    pub fn num_pending_add(&self) -> usize {
+        unimplemented!()
+    }
+    pub fn num_pending_removal(&self) -> usize {
+        self.num_settled_with_pending_removal_value(true) + self.num_pending_add_with_pending_removal_value(true)
+    }
+    pub fn num_settled_pending_removal(&self) -> usize {
+        unimplemented!()
+    }
+    pub fn num_pending_add_pending_removal(&self) -> usize {
+        unimplemented!()
+    }
+    pub fn num_settled_not_pending_removal(&self) -> usize {
+        self.num_settled() - self.num_settled_pending_removal()
+    }
+    pub fn num_pending_add_not_pending_removal(&self) -> usize {
+        self.num_pending_add() - self.num_pending_add_pending_removal()
+    }
+    // Returns the number of settled items where `item.is_pending_removal() == pending_removal`
+    pub fn num_settled_with_pending_removal_value(&self, pending_removal: bool) -> usize {
+        if pending_removal {
+            self.num_settled_pending_removal()
+        } else {
+            self.num_settled_not_pending_removal()
+        }
+    }
+    // Returns the number of pending add items where `item.is_pending_removal() == pending_removal`
+    pub fn num_pending_add_with_pending_removal_value(&self, pending_removal: bool) -> usize {
+        if pending_removal {
+            self.num_pending_add_pending_removal()
+        } else {
+            self.num_pending_add_not_pending_removal()
+        }
     }
     // - If the container is borrowed: this will conceptually enqueue a command to add the new item.
     //   Iterators may be configured to also evaluate items that are pending add, but the caller should note that such items do not respect the container's ordering requirement.
@@ -59,31 +133,42 @@ impl<T> Fatassvec<T> {
     // TODO: set ordering requirement:
     // - None (no ordering whatsoever. Adds to the end. Removes via remove_swap)
     // - Sequential (Adds to the end. Removes via remove_shift)
-    // - Custom (user-specified comparison predicate)
-    // TODO: But modifying items via mutable references may invalide ordering. How do we deal with this? Mark such items as dirty? automatically or manually? How about items modified via shared references with cells?
-    // The user should be given a way to mark items are dirty for ordering. However it's still possible that they forget to do it.
-    // TODO: Maintain a list of "ranges" to quickly access a range of items that satisfy a subset of the ordering predicate (and also remember that there may be pending adds, and those are not sorted, so the caller may have to iterate on them and check the predicate manually)
+    // - Custom (user-specified comparison predicate + swap callback)
+    //
+    // Rules the user has to follow:
+    // - If the comparison predicate depends on external conditions, the user is responsible for marking the container as dirty when that condition changes.
+    //   Otherwise the container would have to constantly sort itself, which is highly counterproductive.
+    // - When an item is modified in a way that invalidates its order in the container, the user is responsible for marking the item (or the container) as dirty.
+    //   The container does not try to "guess" or do this automatically, for the following reasons:
+    //   - Dereferencing a mutable reference to item does not prove that it will be modified;
+    //   - Immutable item refs may be modified if they use interior mutability;
+    //   - An item may indirectly reference data that contributes to its order;
+    //   - Therefore, only the user can know when a mutation affects the order.
+    //
+    // The move/swap callback is used for the following:
+    // - Keeping track of when items are moved within the container
+    // - Syncing the order of other containers with this one
+    // - Allows maintaining ranges of items that satisfy a subset of the ordering predicate.
+    //   For instance, if your ordering predicate separates oranges from bananas, you can maintain a cached index to the gap between the two sets; you can then quickly iterate over either oranges or bananas using that index.
+    //   But remember, while you iterate on the container, you may encounter pending adds, and those cannot respect the container's order until they are settled.
 
-    // TODO: iterator params:
-    // - Include pending add items? (index < nb_committed)
-    // - Include pending removal items? (is_pending_removal[i])
-    // - (Requires ordering?) <= Cannot be implemented in a shared way, because having a live unordered iterator prevents creating an ordered iterator
-    // - Reverse iterator: iterates through committed items first (respecting the reverse order), THEN all pending adds in order (should be done last because the 1st iterations may cause pending adds)
-    
     // TODO: iterator provides:
-    // - Is the item pending add? (self.include_pending_adds && index < nb_committed)
+    // - Is the item pending add? (self.include_pending_adds && index < nb_settled)
     // - Is the item pending removal? (self.include_pending_removals && is_pending_removal[i])
     // - RefCell-like API to access the item
+    //
+    // TODO: iterator should have a fast implementation for nth(), fold(), size_hint(), etc, just like slice::Iter.
 
-    // Items are sorted and never pending
+    // Due to proven exclusive access, all commands have been flushed, so all items are settled.
     pub fn into_iter(self) -> ValueIterator<T> {
         unimplemented!()
     }
-    // Items are sorted and never pending
+    // Due to proven exclusive access, all commands have been flushed, so all items are settled.
     pub fn iter_mut(&mut self) -> ExclusiveIterator<T> {
         unimplemented!()
     }
-    pub fn iter(&self, p: IteratorParams) -> SharedIterator<T> {
+    // This will iterate over all settled items, then all current and future pending adds
+    pub fn iter(&self) -> SharedIterator<T> {
         unimplemented!()
     }
 
@@ -94,14 +179,13 @@ impl<T> Fatassvec<T> {
         unimplemented!()
     }
 
-    fn try_borrow_range(&self, filter: RangeFilter) -> Option<RangeRef<T>> {
+    pub fn try_borrow_range(&self, filter: RangeFilter) -> Option<RangeRef<T>> {
         if !self.can_borrow_range(filter) {
             return None;
         }
         unimplemented!()
     }
-
-    fn try_borrow_range_mut(&self, filter: RangeFilter) -> Option<RangeRefMut<T>> {
+    pub fn try_borrow_range_mut(&self, filter: RangeFilter) -> Option<RangeRefMut<T>> {
         if !self.can_borrow_range_mut(filter) {
             return None;
         }
@@ -109,141 +193,35 @@ impl<T> Fatassvec<T> {
         unimplemented!()
     }
 
-    // This is more efficient than iterating on each item and calling try_borrow() or request_with_ref(), by avoiding these branches; in exchange, your operation might not execute immediately.
-    // Enqueues the command and executes it as soon as the container has no live mutable borrow (i.e when calling borrow() on all items at once would not panic)
-    // During execution of the command, all items are borrowed simultaneously as a single unit.
-    pub fn request_for_each<F: FnMut(ItemRef<T>)>(&self, p: IteratorParams, mut f: F) -> bool {
-        if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
-            for it in self.iter(p) {
-                f(unsafe { it.borrow_unchecked() });
-            }
-            true
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    pub fn request_for_each_with_pending_adds_op<F: FnMut(ItemRef<T>), F2: FnMut(ItemAccessor<T>)>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> bool {
-        if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
-            for it in self.iter(p) {
-                f(unsafe { it.borrow_unchecked() });
-            }
-            self.internal_visit_pending_adds(p, f2);
-            true
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    pub fn request_for_each_with_control_flow<R, F: FnMut(ItemRef<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F) -> Option<R> { // TODO: return Result instead to distinguish cases
-        if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
-            for it in self.iter(p) {
-                if let ControlFlow::Break(r) = f(unsafe { it.borrow_unchecked() }) {
-                    return Some(r);
-                }
-            }
-            None
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    pub fn request_for_each_with_pending_adds_op_and_control_flow<R, F: FnMut(ItemRef<T>) -> ControlFlow<R>, F2: FnMut(ItemAccessor<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> Option<R> { // TODO: return Result instead to distinguish cases
-        if let Some(_range_guard) = self.try_borrow_range(p.filter.into()) {
-            for it in self.iter(p) {
-                if let ControlFlow::Break(r) = f(unsafe { it.borrow_unchecked() }) {
-                    return Some(r);
-                }
-            }
-            self.internal_visit_pending_adds_with_control_flow(p, f2)
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-
-    // This is more efficient than iterating on each item and calling try_borrow_mut() or request_with_mut(), by avoiding these branches; in exchange, your operation might not execute immediately.
-    // Enqueues the command and executes it as soon as the container has no live borrow (i.e when calling borrow_mut() on all items at once would not panic)
-    // During execution of the command, all items are borrowed mutably simultaneously as a single unit.
-    //
-    // When iteration starts, we guarantee there are no pending operations, and the array is sorted.
-    // However, this doesn't prevent new commands from being issued during iteration.
-    pub fn request_for_each_mut<F: FnMut(ItemRefMut<T>)>(&self, p: IteratorParams, mut f: F) -> bool {
-        if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
-            for it in self.iter(p) {
-                f(unsafe { it.borrow_mut_unchecked() });
-            }
-            true
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    pub fn request_for_each_mut_with_pending_adds_op<F: FnMut(ItemRefMut<T>), F2: FnMut(ItemAccessor<T>)>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> bool {
-        if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
-            for it in self.iter(p) {
-                f(unsafe { it.borrow_mut_unchecked() });
-            }
-            self.internal_visit_pending_adds(p, f2);
-            true
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    pub fn request_for_each_mut_with_control_flow<R, F: FnMut(ItemRefMut<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F) -> Option<R> { // TODO: return Result instead to distinguish cases
-        if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
-            for it in self.iter(p) {
-                if let ControlFlow::Break(r) = f(unsafe { it.borrow_mut_unchecked() }) {
-                    return Some(r);
-                }
-            }
-            None
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    pub fn request_for_each_mut_with_pending_adds_op_and_control_flow<R, F: FnMut(ItemRefMut<T>) -> ControlFlow<R>, F2: FnMut(ItemAccessor<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F, mut f2: F2) -> Option<R> { // TODO: return Result instead to distinguish cases
-        if let Some(_range_guard) = self.try_borrow_range_mut(p.filter.into()) {
-            for it in self.iter(p) {
-                if let ControlFlow::Break(r) = f(unsafe { it.borrow_mut_unchecked() }) {
-                    return Some(r);
-                }
-            }
-            self.internal_visit_pending_adds_with_control_flow(p, f2)
-        } else {
-            unimplemented!() // Enqueue the command
-        }
-    }
-    fn internal_visit_pending_adds_params(p: IteratorParams) -> Option<IteratorParams> {
-        if !p.filter.include_pending_adds {
-            let mut new_p = p;
-            new_p.filter.include_pending_adds = true;
-            new_p.filter.include_committed_items = false;
-            Some(new_p)
-        } else {
-            None
-        }
-    }
-    fn internal_visit_pending_adds<F: FnMut(ItemAccessor<T>)>(&self, p: IteratorParams, mut f: F) {
-        if let Some(p) = Self::internal_visit_pending_adds_params(p) {
-            for it in self.iter(p) {
-                f(it);
-            }
-        }
-    }
-    fn internal_visit_pending_adds_with_control_flow<R, F: FnMut(ItemAccessor<T>) -> ControlFlow<R>>(&self, p: IteratorParams, mut f: F) -> Option<R> {
-        if let Some(p) = Self::internal_visit_pending_adds_params(p) {
-            for it in self.iter(p) {
-                if let ControlFlow::Break(r) = f(it) {
-                    return Some(r);
-                }
-            }
-        }
-        None
+    pub fn enqueue_command<R, F: FnMut() -> R>(&self, mut f: F) -> Option<R> {
+        // TODO: if self is locked, enqueue the command and return None. Otherwise execute immediately and return Some(r)
+        unimplemented!()
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct RangeRef<'a, T> {
-    container: &'a Fatassvec<T>,
+    it: SharedIterator<'a, T>,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct RangeRefMut<'a, T> {
-    container: &'a Fatassvec<T>,
+    it: SharedIterator<'a, T>,
+}
+
+// TODO: implement DoubleEndedIterator, ExactSizeIterator etc...
+impl<'a, T> Iterator for RangeRef<'a, T> {
+    type Item = ItemRef<T>;
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(unsafe { self.it.next()?.borrow_unchecked_via_range_guard(self) })
+    }
+}
+
+impl<'a, T> Iterator for RangeRefMut<'a, T> {
+    type Item = ItemRefMut<T>;
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(unsafe { self.it.next()?.borrow_mut_unchecked_via_range_guard(self) })
+    }
 }
 
 impl<'a, T> Drop for RangeRef<'a, T> {
@@ -260,55 +238,34 @@ impl<'a, T> Drop for RangeRefMut<'a, T> {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RangeFilter {
-    include_committed_items: bool,
+    include_settled_items: bool,
     include_pending_adds: bool,
 }
 
-impl From<Filter> for RangeFilter {
-    fn from(value: Filter) -> Self {
-        Self {
-            include_committed_items: value.include_committed_items,
-            include_pending_adds: value.include_pending_adds,
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Filter {
-    include_committed_items: bool,
-    include_pending_adds: bool,
-    include_pending_removals: bool,
-}
-
-impl Default for Filter {
-    fn default() -> Self {
-        Self {
-            include_committed_items: true,
-            include_pending_adds: false,
-            include_pending_removals: false,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct IteratorParams {
-    filter: Filter,
-    requires_respected_ordering: bool,
-    reverse: bool,
-}
-
 pub struct ValueIterator<T> {
     phantom: PhantomData<T>,
 }
 
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExclusiveIterator<'a, T> {
     phantom: PhantomData<&'a mut T>,
 }
 
-pub struct SharedIterator<T> {
-    phantom: PhantomData<T>,
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SharedIterator<'a, T> {
+    // TODO: this should lock the FatassVec, because we don't want any pending removal applied behind us (may cause us to iterate other some items twice)
+    container: &'a Fatassvec<T>,
+    end_index: Option<usize>,
 }
 
+impl<'a, T> Drop for SharedIterator<'a, T> {
+    fn drop(&mut self) {
+        unimplemented!()
+    }
+}
+
+// TODO: implement DoubleEndedIterator, ExactSizeIterator etc...
 impl<T> Iterator for ValueIterator<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
@@ -316,6 +273,7 @@ impl<T> Iterator for ValueIterator<T> {
     }
 }
 
+// TODO: implement DoubleEndedIterator, ExactSizeIterator etc...
 impl<'a, T> Iterator for ExclusiveIterator<'a, T> {
     type Item = &'a mut T;
     fn next(&mut self) -> Option<Self::Item> {
@@ -323,13 +281,205 @@ impl<'a, T> Iterator for ExclusiveIterator<'a, T> {
     }
 }
 
-impl<T> Iterator for SharedIterator<T> {
+// TODO: implement as many itertaor traits as possible
+//
+// NOTE: calling rev() on this, is defined as:
+// - Capturing and saving the current len. (because if we used the current len constantly as it gets updated, we risk iterating twice on some items)
+// - At each iteration, move index to the left
+// - if cur_index crosses start_index, then both will be moved to process the new pending add items, from left to right for efficiency reasons (because still more items may be added during that step, and the order stops making sense anyway).
+//   This violates Rust's DoubleEndedIterator's "[...] back and forth work on the same range, and do not cross: iteration is over when they meet in the middle."
+//   If you want to iterate in reverse excluding all future pending adds, do `iter.stop_at_current_len().rev()` instead.
+//
+// TODO: investigate how well Rust supports having an ExactSizeIterator which size changes during iteration. Hopefully it doesn't cache the returned len? According to the docs, ExactSizeIterator::len(): "The implementation ensures that the iterator will return exactly len() more times a Some(T) value, before returning None.". This says "exactly", not "at least".
+impl<'a, T> Iterator for SharedIterator<'a, T> {
     type Item = ItemAccessor<T>;
     fn next(&mut self) -> Option<Self::Item> {
         unimplemented!()
     }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        // Uphold the guarantee required in the source of std's `ExactSizeIterator::len()`: they do `assert_eq!(upper, Some(lower))`.
+        // Even though this contradicts the part where size_hint() may return a None upper bound if it is not known (I mean, we know it at the instant we call this, but it doesn't mean that it won't ever change, since the owning collection supports adding during iteration)
+        (len, Some(len))
+    }
+    fn count(self) -> usize
+        where
+            Self: Sized, {
+        self.len()
+    }
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        unimplemented!()
+    }
+
+    fn last(mut self) -> Option<Self::Item> {
+        self.next_back()
+    }
+
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+        where
+            F: FnMut(B, Self::Item) -> B,
+    {
+        //
+        // NOTE(Yoan): stolen from std::slice::Iter
+        //
+        // this implementation consists of the following optimizations compared to the
+        // default implementation:
+        // - do-while loop, as is llvm's preferred loop shape,
+        //   see https://releases.llvm.org/16.0.0/docs/LoopTerminology.html#more-canonical-loops
+        // - bumps an index instead of a pointer since the latter case inhibits
+        //   some optimizations, see #111603
+        // - avoids Option wrapping/matching
+        if self.len() == 0 {
+            return init;
+        }
+        let mut acc = init;
+        let mut i = 0usize;
+        loop {
+            // SAFETY: the loop iterates `i in 0..len`, which always is in bounds of
+            // the slice allocation
+            acc = f(acc, unimplemented!());
+            // SAFETY: `i` can't overflow since it'll only reach usize::MAX if the
+            // slice had that length, in which case we'll break out of the loop
+            // after the increment
+            i = unsafe { i.unchecked_add(1) };
+            if i == self.len() {
+                break;
+            }
+        }
+        acc
+    }
 }
 
+impl<'a, T> ExactSizeIterator for SharedIterator<'a, T> {
+    fn len(&self) -> usize {
+        self.len_impl()
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for SharedIterator<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.end_index.expect("Can't iterate backwards in the current state; it wouldn't make sense as items can be added to the back during iteration. If you really intend to iterate backwards ignoring newly added items, use one of the provided methods that sets self.end_index, ensuring that your intent is well-specified");
+        unimplemented!()
+    }
+}
+
+impl<'a, T> SharedIterator<'a, T> {
+    fn len_impl(&self) -> usize {
+        unimplemented!()
+    }
+    pub fn try_take_within_current_bounds(mut self, n: usize) -> Option<Take<Self>> {
+        let end_index = n.saturating_add(unimplemented!());
+        self.try_take_within_current_bounds_via_end_index(end_index)
+    }
+    pub fn try_take_within_current_bounds_via_end_index(mut self, end_index: usize) -> Option<Take<Self>> {
+        if end_index <= self.container.len_including_pending_removals() {
+            self.end_index = Some(end_index);
+            Some(self.take(unimplemented!()))
+        } else {
+            None
+        }
+    }
+    pub fn take_within_current_bounds(self, n: usize) -> Take<Self> {
+        self.try_take_within_current_bounds(n).expect("end_index must be in bounds, because this function is used for unlocking backwards iteration")
+    }
+    // This is different from `take()` because `take()` explicitly supports numbers that may be greater than the current remaining number of iterations.
+    // This function makes use of the knowledge that the user is uninterested in items that are added to the back during iteration, to "unlock" the backwards iteration feature.
+    // That is, if you want to iterate backwards from one end of the container, this API forces you to be explicit about ignoring newly added items, because the implementation cannot support it in a way that is efficient or even makes sense.
+    pub fn take_within_current_bounds_via_end_index(self, end_index: usize) -> Take<Self> {
+        self.try_take_within_current_bounds_via_end_index(end_index).expect("end_index must be in bounds, because this function is used for unlocking backwards iteration")
+    }
+    pub fn stop_at_pending_adds(self) -> Take<Self> {
+        let end_index = self.container.num_settled();
+        self.take_within_current_bounds_via_end_index(end_index)
+    }
+    pub fn start_at_pending_adds(self) -> Skip<Self> {
+        self.skip(unimplemented!())
+    }
+    // Useful for skipping any pending adds that would be added after this call
+    pub fn stop_at_current_len(self) -> Take<Self> {
+        let end_index = self.container.len_including_pending_removals();
+        self.take_within_current_bounds_via_end_index(end_index)
+    }
+    pub fn start_at_pending_adds_and_stop_at_current_len(self) -> Skip<Take<Self>> {
+        self.stop_at_current_len().skip(unimplemented!())
+    }
+    // Useful for getting only the items that were added after creation of this iterator
+    pub fn start_at_current_len(self) -> Skip<Self> {
+        self.skip(unimplemented!())
+    }
+}
+
+/*
+struct DataProducer<'a, T> {
+    data_slice : &'a [T],
+}
+
+impl<'a, T> Producer for DataProducer<'a, T> {
+    type Item = ItemAccessor<T>;
+    type IntoIter = SharedIterator<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        unimplemented!()
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (left, right) = self.data_slice.split_at(index);
+        (
+            DataProducer { data_slice: left },
+            DataProducer { data_slice: right },
+        )
+    }
+}
+
+impl<'a, T> From<SharedIterator<'a, T>> for DataProducer<'a, T> {
+    fn from(iterator: SharedIterator<'a, T>) -> Self {
+        todo!()
+    }
+}
+
+impl<'a, T> ParallelIterator for SharedIterator<'a, T> where T: Send {
+    type Item = ItemAccessor<T>;
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: rayon::iter::plumbing::UnindexedConsumer<Self::Item> {
+        bridge(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.len_impl())
+    }
+}
+
+impl<'a, T> IndexedParallelIterator for SharedIterator<'a, T> where T: Send {
+    fn with_producer<CB: ProducerCallback<Self::Item>>(
+        self,
+        callback: CB,
+    ) -> CB::Output {
+        callback.callback(DataProducer::from(self))
+    }
+
+    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.len_impl()
+    }
+}
+
+impl<'a, T> IntoParallelIterator for &'a Fatassvec<T> {
+    type Iter = SharedIterator<'a, T>;
+    type Item = ItemAccessor<T>;
+
+    fn into_par_iter(self) -> Self::Iter {
+        todo!()
+    }
+}
+ */
+
+// TODO: support ZSTs
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ItemRef<T> {
     phantom: PhantomData<T>,
 }
@@ -351,11 +501,12 @@ impl<T> ItemRef<T> {
     pub fn is_pending_removal(&self) -> bool {
         unimplemented!()
     }
-    pub fn is_committed(&self) -> bool {
+    pub fn is_settled(&self) -> bool {
         unimplemented!()
     }
 }
 
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ItemRefMut<T> {
     phantom: PhantomData<T>,
 }
@@ -383,14 +534,14 @@ impl<T> ItemRefMut<T> {
     pub fn is_pending_removal(&self) -> bool {
         unimplemented!()
     }
-    pub fn is_committed(&self) -> bool {
+    pub fn is_settled(&self) -> bool {
         unimplemented!()
     }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ItemFlags {
-    Committed,
+    Settled,
     PendingAdd,
     PendingRemoval,
     PendingAddAndRemoval,
@@ -405,6 +556,7 @@ impl ItemFlags {
     }
 }
 
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ItemAccessor<T> {
     phantom: PhantomData<T>,
 }
@@ -419,7 +571,19 @@ impl<T> ItemAccessor<T> {
     pub fn is_pending_removal(&self) -> bool {
         unimplemented!()
     }
-    pub fn is_committed(&self) -> bool {
+    pub fn is_settled(&self) -> bool {
+        unimplemented!()
+    }
+    pub fn try_borrow(&self) -> Option<ItemRef<T>> {
+        unimplemented!() // Check this borrow counter + whole_container borrow counter
+    }
+    pub fn try_borrow_mut(&self) -> Option<ItemRefMut<T>> {
+        unimplemented!()
+    }
+    fn try_borrow_via_range_guard(&self, _range_guard: &RangeRef<T>) -> Option<ItemRef<T>> {
+        unimplemented!() // Check this borrow counter + skip ONE whole_container borrow counter
+    }
+    fn try_borrow_mut_via_range_guard(&self, _range_guard: &RangeRefMut<T>) -> Option<ItemRefMut<T>> {
         unimplemented!()
     }
     pub fn borrow(&self) -> ItemRef<T> {
@@ -427,6 +591,12 @@ impl<T> ItemAccessor<T> {
     }
     pub fn borrow_mut(&self) -> ItemRefMut<T> {
         self.try_borrow_mut().unwrap()
+    }
+    fn borrow_via_range_guard(&self, range_guard: &RangeRef<T>) -> ItemRef<T> {
+        self.try_borrow_via_range_guard(range_guard).unwrap()
+    }
+    fn borrow_mut_via_range_guard(&self, range_guard: &RangeRefMut<T>) -> ItemRefMut<T> {
+        self.try_borrow_mut_via_range_guard(range_guard).unwrap()
     }
     pub unsafe fn borrow_unchecked(&self) -> ItemRef<T> {
         #[cfg(feature = "go_safe")]
@@ -444,11 +614,21 @@ impl<T> ItemAccessor<T> {
         #[cfg(not(feature = "go_safe"))]
         self.borrow_mut()
     }
-    pub fn try_borrow(&self) -> Option<ItemRef<T>> {
-        unimplemented!() // Check this borrow counter + whole_container borrow counter
+    unsafe fn borrow_unchecked_via_range_guard(&self, range_guard: &RangeRef<T>) -> ItemRef<T> {
+        #[cfg(feature = "go_safe")]
+        {
+            unimplemented!()
+        }
+        #[cfg(not(feature = "go_safe"))]
+        self.borrow_via_range_guard(range_guard)
     }
-    pub fn try_borrow_mut(&self) -> Option<ItemRefMut<T>> {
-        unimplemented!()
+    unsafe fn borrow_mut_unchecked_via_range_guard(&self, range_guard: &RangeRefMut<T>) -> ItemRefMut<T> {
+        #[cfg(feature = "go_safe")]
+        {
+            unimplemented!()
+        }
+        #[cfg(not(feature = "go_safe"))]
+        self.borrow_mut_via_range_guard(range_guard)
     }
     pub fn request<F: FnMut(ItemRef<T>)>(&self, mut f: F) -> bool {
         match self.try_borrow() {
