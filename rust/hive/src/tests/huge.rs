@@ -30,6 +30,7 @@ mod virtual_memory {
         /// > To determine the size of a page and the allocation granularity on the host computer, use the GetSystemInfo function.
         /// > If this parameter is NULL, the system determines where to allocate the region.
         /// `min_size` is not required to be a multiple of the page size.
+        /// Also, when a page transitions from reserved to committed, its memory is automatically zeroed.
         pub fn virtual_alloc(starting_address_hint: *mut u8, size: usize, flags: u32, protection: u32) -> Result<NonNull<u8>, Error> {
             let p = unsafe { winapi::um::memoryapi::VirtualAlloc(starting_address_hint.cast(), size, flags, protection) };
             if p.is_null() {
