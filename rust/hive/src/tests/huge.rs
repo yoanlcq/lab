@@ -15,6 +15,7 @@ mod virtual_memory {
         use super::Error;
         use std::{mem::MaybeUninit, ptr::NonNull};
 
+        #[inline(always)]
         pub fn get_system_info() -> winapi::um::sysinfoapi::SYSTEM_INFO {
             let mut info = MaybeUninit::uninit();
             unsafe {
@@ -40,8 +41,8 @@ mod virtual_memory {
             }
         }
 
-        pub fn virtual_free(va_base: NonNull<u8>, size: usize, flags: u32) -> Result<(), Error> {
-            match unsafe { winapi::um::memoryapi::VirtualFree(va_base.cast().as_ptr(), size, flags) } {
+        pub fn virtual_free(reserved_virtual_address_range_start: NonNull<u8>, size: usize, flags: u32) -> Result<(), Error> {
+            match unsafe { winapi::um::memoryapi::VirtualFree(reserved_virtual_address_range_start.cast().as_ptr(), size, flags) } {
                 0 => Err(Error::last_os_error()),
                 _ => Ok(())
             }
@@ -61,38 +62,44 @@ mod virtual_memory {
             }
         }
 
+        #[inline(always)]
         pub fn page_size(&self) -> NonZeroUsize {
             #[cfg(windows)]
             NonZeroUsize::new(self.info.dwPageSize as _).unwrap()
         }
 
         // The granularity for the starting address at which virtual memory can be allocated
+        #[inline(always)]
         pub fn allocation_granularity(&self) -> NonZeroUsize {
             #[cfg(windows)]
             NonZeroUsize::new(self.info.dwAllocationGranularity as _).unwrap()
         }
 
+        #[inline(always)]
         pub fn reserve(&self, starting_address_hint: *mut u8, min_size: NonZeroUsize) -> Result<NonNull<u8>, Error> {
             #[cfg(windows)]
             windows_imp::virtual_alloc(starting_address_hint, min_size.get(), winapi::um::winnt::MEM_RESERVE, 0)
         }
 
         // TODO: expose protection flags?
-        pub fn commit(&self, va_base: NonNull<u8>, size: usize) -> Result<(), Error> {
+        #[inline(always)]
+        pub fn commit(&self, reserved_virtual_address_range_start: NonNull<u8>, size: usize) -> Result<(), Error> {
             #[cfg(windows)]
-            windows_imp::virtual_alloc(va_base.as_ptr(), size, winapi::um::winnt::MEM_COMMIT, winapi::um::winnt::PAGE_READWRITE).map(|_| ())
+            windows_imp::virtual_alloc(reserved_virtual_address_range_start.as_ptr(), size, winapi::um::winnt::MEM_COMMIT, winapi::um::winnt::PAGE_READWRITE).map(|_| ())
         }
 
-        /// Windows: `va_base` and `size` are not required to be page-aligned. The function will decommit all pages that intersect the range.
-        pub fn decommit(&self, va_base: NonNull<u8>, size: usize) -> Result<(), Error> {
+        /// Windows: `reserved_virtual_address_range_start` and `size` are not required to be page-aligned. The function will decommit all pages that intersect the range.
+        #[inline(always)]
+        pub fn decommit(&self, reserved_virtual_address_range_start: NonNull<u8>, size: usize) -> Result<(), Error> {
             #[cfg(windows)]
-            windows_imp::virtual_free(va_base, size, winapi::um::winnt::MEM_DECOMMIT)
+            windows_imp::virtual_free(reserved_virtual_address_range_start, size, winapi::um::winnt::MEM_DECOMMIT)
         }
 
         /// NOTE: You MUST pass the ENTIRE range previously returned by a call to `reserve`.
-        pub unsafe fn unreserve(&self, va_base: NonNull<u8>, size: NonZeroUsize) -> Result<(), Error> {
+        #[inline(always)]
+        pub unsafe fn unreserve(&self, reserved_virtual_address_range_start: NonNull<u8>, size: NonZeroUsize) -> Result<(), Error> {
             #[cfg(windows)]
-            windows_imp::virtual_free(va_base, 0 * size.get() /* Must pass 0 and prevent "unused variable `size`" warning */, winapi::um::winnt::MEM_RELEASE)
+            windows_imp::virtual_free(reserved_virtual_address_range_start, 0 * size.get() /* Must pass 0 and prevent "unused variable `size`" warning */, winapi::um::winnt::MEM_RELEASE)
         }
     }
 }
@@ -112,9 +119,9 @@ struct AllocatorState {
 struct Allocator {
     virtual_memory_system: Arc<VirtualMemorySystem>,
     // Aligned to allocation granularity, which itself must be a multiple of the page size
-    va_base: NonNull<u8>,
+    reserved_virtual_address_range_start: NonNull<u8>,
     // Power of two AND multiple of page size
-    va_size: NonZeroUsize,
+    reserved_virtual_address_range_size: NonZeroUsize,
     state: parking_lot::Mutex<AllocatorState>,
     // This is provided outside of `state` to avoid locking.
     // For the sake of correctness, this flag must only be changed while no Allocation exists.
@@ -138,7 +145,7 @@ impl Allocator {
     pub fn create(virtual_memory_system: &Arc<VirtualMemorySystem>, starting_size: NonZeroUsize, track_allocations: bool) -> Result<Self, virtual_memory::Error> {
         #[cfg(not(feature="track_allocations"))]
         if track_allocations {
-            return Err(virtual_memory::Error::other("Feature \"track_allocations\" is disabled"));
+            return Err(virtual_memory::Error::other("Feature \"track_allocations\" is disabled. Please use is_track_allocations_feature_enabled() to detect this and make your code explicit"));
         }
 
         let page_size = virtual_memory_system.page_size();
@@ -152,15 +159,15 @@ impl Allocator {
         let mut attempt_size = ((starting_size.get() / 2) + 1).next_power_of_two().min(isize::MAX as usize);
         loop {
             match virtual_memory_system.reserve(std::ptr::null_mut(), unsafe { NonZeroUsize::new_unchecked(attempt_size) }) {
-                Ok(va_base) => {
-                    assert!(va_base.addr().get().is_multiple_of(allocation_granularity.get()));
+                Ok(reserved_virtual_address_range_start) => {
+                    assert!(reserved_virtual_address_range_start.addr().get().is_multiple_of(allocation_granularity.get()));
 
-                    let va_end = (va_base.addr().get() + attempt_size).next_multiple_of(page_size.get());
-                    let va_size = NonZeroUsize::new(va_end - va_base.addr().get()).unwrap();
+                    let va_end = (reserved_virtual_address_range_start.addr().get() + attempt_size).next_multiple_of(page_size.get());
+                    let reserved_virtual_address_range_size = NonZeroUsize::new(va_end - reserved_virtual_address_range_start.addr().get()).unwrap();
                     return Ok(Self {
                         virtual_memory_system: virtual_memory_system.clone(),
-                        va_base,
-                        va_size,
+                        reserved_virtual_address_range_start,
+                        reserved_virtual_address_range_size,
                         state: Default::default(),
                         #[cfg(feature="track_allocations")]
                         is_tracking_allocations: track_allocations,
@@ -177,14 +184,17 @@ impl Allocator {
         }
     }
     // An alternative to `drop()` that allows you to handle the error if any
+    #[inline(always)]
     pub fn destroy(mut self) -> Result<(), virtual_memory::Error> {
         self.destroy_impl()?;
         Ok(std::mem::forget(self))
     }
     // This MUST NOT be exposed publicly!!
+    #[inline(always)]
     fn destroy_impl(&mut self) -> Result<(), virtual_memory::Error> {
-        unsafe { self.virtual_memory_system.unreserve(self.va_base, self.va_size) }
+        unsafe { self.virtual_memory_system.unreserve(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size) }
     }
+    #[inline(always)]
     pub fn is_tracking_allocations(&self) -> bool {
         #[cfg(feature="track_allocations")]
         {
@@ -193,9 +203,11 @@ impl Allocator {
         #[cfg(not(feature="track_allocations"))]
         false
     }
+    #[inline(always)]
     pub const fn is_track_allocations_feature_enabled() -> bool {
         cfg!(feature="track_allocations")
     }
+    #[inline(always)]
     pub fn can_track_allocations_racy(&self) -> bool {
         Self::is_track_allocations_feature_enabled() && self.state.lock().num_allocations == 0
     }
@@ -213,16 +225,28 @@ impl Allocator {
         #[cfg(not(feature="track_allocations"))]
         Err(virtual_memory::Error::other("Feature \"track_allocations\" is disabled"))
     }
+    #[inline(always)]
     pub fn virtual_memory_system(&self) -> &Arc<VirtualMemorySystem> {
         &self.virtual_memory_system
     }
+    #[inline(always)]
+    pub fn page_size(&self) -> NonZeroUsize {
+        self.virtual_memory_system.page_size()
+    }
+    #[inline(always)]
+    pub fn allocation_granularity(&self) -> NonZeroUsize {
+        self.virtual_memory_system.allocation_granularity()
+    }
     // Note that dereferencing the memory may be unsafe if there are live allocations, because they may be using it!
-    pub fn va_base(&self) -> NonNull<u8> {
-        self.va_base
+    #[inline(always)]
+    pub fn reserved_virtual_address_range_start(&self) -> NonNull<u8> {
+        self.reserved_virtual_address_range_start
     }
-    pub fn va_size(&self) -> NonZeroUsize {
-        self.va_size
+    #[inline(always)]
+    pub fn reserved_virtual_address_range_size(&self) -> NonZeroUsize {
+        self.reserved_virtual_address_range_size
     }
+    #[inline(always)]
     pub fn actual_available_size_for_any_allocation_racy(&self) -> usize {
         self.actual_available_size_for_any_allocation_given_num_allocations(self.state.lock().num_allocations)
     }
@@ -230,7 +254,7 @@ impl Allocator {
     fn actual_available_size_for_any_allocation_given_num_allocations(&self, num_allocations: usize) -> usize {
         let page_size = self.virtual_memory_system.page_size().get();
         let current_max_num_allocations = num_allocations.next_power_of_two();
-        let available_size = self.va_size.get() / current_max_num_allocations;
+        let available_size = self.reserved_virtual_address_range_size.get() / current_max_num_allocations;
         let actual_available_size = (available_size / page_size) * page_size;
         actual_available_size
     }
@@ -278,7 +302,7 @@ impl Allocator {
             (new_index, cached_start)
         };
 
-        let start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.va_base, self.va_size.get(), new_index).0);
+        let start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size.get(), new_index).0);
 
         Ok(( AllocationKey { index: new_index }, start))
     }
@@ -318,8 +342,8 @@ pub struct Allocation {
     allocator: Arc<Allocator>,
     key: AllocationKey,
     // Aligned to page size boundary
-    va_start: NonNull<u8>,
-    // Not necessarily aligned
+    committed_memory_start: NonNull<u8>,
+    // Not necessarily aligned to any boundary and is initially zero
     committed_size: usize,
 }
 
@@ -334,10 +358,11 @@ impl Drop for Allocation {
 
 impl Allocation {
     pub fn create(allocator: &Arc<Allocator>) -> Result<Self, virtual_memory::Error> {
-        let (key, va_start) = allocator.allocate()?;
-        Ok(Self { allocator: allocator.clone(), key, va_start, committed_size: 0 })
+        let (key, committed_memory_start) = allocator.allocate()?;
+        Ok(Self { allocator: allocator.clone(), key, committed_memory_start, committed_size: 0 })
     }
     // An alternative to `drop()` that allows you to handle the error if any
+    #[inline(always)]
     pub fn destroy(mut self) -> Result<(), virtual_memory::Error> {
         self.destroy_impl()?;
         Ok(std::mem::forget(self))
@@ -345,47 +370,52 @@ impl Allocation {
     // This MUST NOT be exposed publicly!!
     fn destroy_impl(&mut self) -> Result<(), virtual_memory::Error> {
         self.decommit_all()?;
-        self.allocator.deallocate(&self.key, self.va_start);
+        self.allocator.deallocate(&self.key, self.committed_memory_start);
         Ok(())
     }
+    #[inline(always)]
     pub fn allocator(&self) -> &Arc<Allocator> {
         &self.allocator
     }
-    pub fn va_start(&self) -> NonNull<u8> {
-        self.va_start
+    #[inline(always)]
+    pub fn page_size(&self) -> NonZeroUsize {
+        self.allocator.virtual_memory_system.page_size()
     }
-    pub fn actual_available_size_racy(&self) -> usize {
-        self.allocator.actual_available_size_for_any_allocation_racy()
+    #[inline(always)]
+    pub fn committed_memory_start(&self) -> NonNull<u8> {
+        self.committed_memory_start
     }
+    #[inline(always)]
     pub fn committed_size(&self) -> usize {
         self.committed_size
     }
+    #[inline(always)]
     pub fn actual_committed_size(&self) -> usize {
         self.committed_size.next_multiple_of(self.page_size().get())
     }
+    #[inline(always)]
     pub fn committed_memory(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.va_start.as_ptr(), self.committed_size) }
+        unsafe { std::slice::from_raw_parts(self.committed_memory_start.as_ptr(), self.committed_size) }
     }
+    #[inline(always)]
     pub fn actual_committed_memory(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.va_start.as_ptr(), self.actual_committed_size()) }
+        unsafe { std::slice::from_raw_parts(self.committed_memory_start.as_ptr(), self.actual_committed_size()) }
     }
+    #[inline(always)]
     pub fn committed_memory_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.va_start.as_ptr(), self.committed_size) }
+        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start.as_ptr(), self.committed_size) }
     }
+    #[inline(always)]
     pub fn actual_committed_memory_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.va_start.as_ptr(), self.actual_committed_size()) }
+        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start.as_ptr(), self.actual_committed_size()) }
     }
-    // Same as `set_committed_size(0)` but faster
-    pub fn decommit_all(&mut self) -> Result<(), virtual_memory::Error> {
-        if self.committed_size > 0 {
-            self.allocator.virtual_memory_system.decommit(self.va_start, self.committed_size)?;
-            self.committed_size = 0;
-        }
-        Ok(())
+    #[inline(always)]
+    pub fn actual_available_size_racy(&self) -> usize {
+        self.allocator.actual_available_size_for_any_allocation_racy()
     }
     pub fn set_committed_size(&mut self, new_size: usize) -> Result<(), virtual_memory::Error> {
         let page_size = self.page_size().get();
-        let start = self.va_start.addr().get();
+        let start = self.committed_memory_start.addr().get();
         let current_page_end = start + self.committed_size.next_multiple_of(page_size);
         let desired_page_end = start + new_size.next_multiple_of(page_size);
         if desired_page_end != current_page_end {
@@ -402,9 +432,9 @@ impl Allocation {
                     }
                     optional_state_lock = Some(state);
                 }
-                self.allocator.virtual_memory_system.commit(unsafe { self.va_start.add(current_page_end) }, desired_page_end - current_page_end)?;
+                self.allocator.virtual_memory_system.commit(unsafe { self.committed_memory_start.add(current_page_end) }, desired_page_end - current_page_end)?;
             } else {
-                self.allocator.virtual_memory_system.decommit(unsafe { self.va_start.add(desired_page_end) }, current_page_end - desired_page_end)?;
+                self.allocator.virtual_memory_system.decommit(unsafe { self.committed_memory_start.add(desired_page_end) }, current_page_end - desired_page_end)?;
             }
 
             // Do this AFTER commit/decommit, because if they failed, we don't want to reach here.
@@ -426,7 +456,13 @@ impl Allocation {
         self.committed_size = new_size;
         Ok(())
     }
-    fn page_size(&self) -> NonZeroUsize {
-        self.allocator.virtual_memory_system.page_size()
+    // Same as `set_committed_size(0)` but more efficient
+    #[inline(always)]
+    pub fn decommit_all(&mut self) -> Result<(), virtual_memory::Error> {
+        if self.committed_size > 0 {
+            self.allocator.virtual_memory_system.decommit(self.committed_memory_start, self.committed_size)?;
+            self.committed_size = 0;
+        }
+        Ok(())
     }
 }
