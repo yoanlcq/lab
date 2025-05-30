@@ -116,6 +116,7 @@
 extern crate bitflags;
 extern crate rayon;
 extern crate parking_lot;
+extern crate winapi;
 
 #[cfg(test)]
 mod tests;
