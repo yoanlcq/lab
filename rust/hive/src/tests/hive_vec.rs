@@ -9,7 +9,7 @@ struct RefCounter {
 }
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-struct Fatassvec<T> {
+struct HiveVec<T> {
     phantom: PhantomData<T>,
     settled_item_refs : RefCounter,
     pending_add_item_refs : RefCounter,
@@ -17,13 +17,13 @@ struct Fatassvec<T> {
     pending_add_range_refs: RefCounter,
 }
 
-impl<T> Default for Fatassvec<T> {
+impl<T> Default for HiveVec<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-fn demo_how_to_handle_newly_added_items_differently<T>(v: &Fatassvec<T>) {
+fn demo_how_to_handle_newly_added_items_differently<T>(v: &HiveVec<T>) {
     let mut fresh_iter = v.iter().start_at_current_len();
     for _it in v.iter().stop_at_current_len() {
         // do operation on already existing items, which could possibly add new items
@@ -40,7 +40,7 @@ fn demo_how_to_handle_newly_added_items_differently<T>(v: &Fatassvec<T>) {
     }
 }
 
-impl<T> Fatassvec<T> {
+impl<T> HiveVec<T> {
     pub fn new() -> Self {
         todo!()
     }
@@ -256,7 +256,7 @@ pub struct ExclusiveIterator<'a, T> {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SharedIterator<'a, T> {
     // TODO: this should lock the FatassVec, because we don't want any pending removal applied behind us (may cause us to iterate other some items twice)
-    container: &'a Fatassvec<T>,
+    container: &'a HiveVec<T>,
     end_index: Option<usize>,
 }
 
@@ -283,13 +283,6 @@ impl<'a, T> Iterator for ExclusiveIterator<'a, T> {
 }
 
 // TODO: implement as many itertaor traits as possible
-//
-// NOTE: calling rev() on this, is defined as:
-// - Capturing and saving the current len. (because if we used the current len constantly as it gets updated, we risk iterating twice on some items)
-// - At each iteration, move index to the left
-// - if cur_index crosses start_index, then both will be moved to process the new pending add items, from left to right for efficiency reasons (because still more items may be added during that step, and the order stops making sense anyway).
-//   This violates Rust's DoubleEndedIterator's "[...] back and forth work on the same range, and do not cross: iteration is over when they meet in the middle."
-//   If you want to iterate in reverse excluding all future pending adds, do `iter.stop_at_current_len().rev()` instead.
 //
 // TODO: investigate how well Rust supports having an ExactSizeIterator which size changes during iteration. Hopefully it doesn't cache the returned len? According to the docs, ExactSizeIterator::len(): "The implementation ensures that the iterator will return exactly len() more times a Some(T) value, before returning None.". This says "exactly", not "at least".
 impl<'a, T> Iterator for SharedIterator<'a, T> {

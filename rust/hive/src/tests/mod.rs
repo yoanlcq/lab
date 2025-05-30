@@ -1,3 +1,3 @@
 mod arena;
 mod idiomatic_ecs;
-mod fatassvec;
+mod hive_vec;

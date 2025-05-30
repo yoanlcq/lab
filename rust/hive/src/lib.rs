@@ -59,6 +59,7 @@
 // Gestion mutable/immutable
 // - Version avec le plus de contrôle: chaque item est basiquement une RefCell. N'importe qui peut itérer facilement sur une hive, et choisit comment il gère les conflits de borrow.
 // - Version la plus efficace : algo style "frame graph" qui connaît en avance tous les borrows et peut prouver que c'est safe; mais pas évident car c'est une tâche similaire à devoir parser du code récursivement.
+//   Et surtout, ça gère très mal (voire pas du tout) l'exécution conditionnelle "deep" et les réactions en chaîne : i.e l'exécution de code paths qui dépendent de quelque chose qui ne peut pas être déterminé en amont.
 // - Version "parfaite": &mut au compile-time seulement sur les hives utilisées (mais ça peut être compliqué si un component a une méthode qui doit borrow une autre hive)
 //   - Ce qui m'embête c'est: gestion du multi-world? besoin que le jeu final aie une grosse struct avec toutes les hives ?
 //   - Autre point : ComponentDefs au runtime ? Par définition, pas de preuve compile-time possible.
