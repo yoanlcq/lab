@@ -96,6 +96,10 @@ mod virtual_memory {
     }
 }
 
+// TODO: To push this to the limit, the Allocator should be using its own allocations to back the storage for its Arc and BTreeMaps
+
+// TODO: check that creating Allocaions from multiple threads is possible
+
 #[derive(Default)]
 struct AllocatorState {
     num_allocations: usize,
