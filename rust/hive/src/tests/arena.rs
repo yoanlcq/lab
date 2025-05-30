@@ -197,7 +197,7 @@ impl<T> RelocatableVecStrongRef<T> {
         self.suballocation_header().mutex.lock().arena_strong_ref.take()
     }
     pub fn push(&mut self, _val: T) {
-        unimplemented!()
+        todo!()
     }
 }
 
@@ -349,13 +349,13 @@ impl ArenaHeader {
     pub unsafe fn drop_suballocations(&self) {
         // TODO: attempt to free inner allocations. Then shrink our allocation until only the memory for the header remains.
         // Should be a matter of calling VirtualFree(client_area().round_up_to_page_size(), MEM_DECOMMIT)
-        unimplemented!()
+        todo!()
     }
     // TODO: parallel allocations, frees, and compaction
     // TODO: pouvoir itérer sur toutes les suballocations de l'arena
     // TODO: thought experiment (juste pour le lol/tester): dans la zone droite d'une arena, faire une suballocation, et créer une arena dedans.
     pub fn create_relocatable_vec<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
-        unimplemented!()
+        todo!()
     }
     fn create_relocatable_vec_internal_to_this_arena<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
         self.create_relocatable_vec().map(|x| {
