@@ -1,7 +1,7 @@
 // Why this name:
 // https://ell.stackexchange.com/a/250169
 
-use std::{collections::{BTreeMap}, num::NonZeroUsize, ptr::NonNull, sync::{Arc}};
+use std::{alloc::{handle_alloc_error, AllocError, Layout}, collections::BTreeMap, marker::PhantomData, num::NonZeroUsize, ptr::NonNull, sync::Arc};
 
 use virtual_memory::VirtualMemorySystem;
 
@@ -125,7 +125,6 @@ struct Allocator {
     state: parking_lot::Mutex<AllocatorState>,
     // This is provided outside of `state` to avoid locking.
     // For the sake of correctness, this flag must only be changed while no Allocation exists.
-    // TODO: Make this a compile-time feature as well
     #[cfg(feature="track_allocations")]
     is_tracking_allocations: bool,
 }
@@ -145,7 +144,7 @@ impl Allocator {
     pub fn create(virtual_memory_system: &Arc<VirtualMemorySystem>, starting_size: NonZeroUsize, track_allocations: bool) -> Result<Self, virtual_memory::Error> {
         #[cfg(not(feature="track_allocations"))]
         if track_allocations {
-            return Err(virtual_memory::Error::other("Feature \"track_allocations\" is disabled. Please use is_track_allocations_feature_enabled() to detect this and make your code explicit"));
+            return Err(virtual_memory::Error::other("Feature \"track_allocations\" is disabled. Please use IS_TRACK_ALLOCATIONS_FEATURE_ENABLED to detect this and make your code explicit"));
         }
 
         let page_size = virtual_memory_system.page_size();
@@ -203,13 +202,10 @@ impl Allocator {
         #[cfg(not(feature="track_allocations"))]
         false
     }
-    #[inline(always)]
-    pub const fn is_track_allocations_feature_enabled() -> bool {
-        cfg!(feature="track_allocations")
-    }
+    pub const IS_TRACK_ALLOCATIONS_FEATURE_ENABLED: bool = cfg!(feature="track_allocations");
     #[inline(always)]
     pub fn can_track_allocations_racy(&self) -> bool {
-        Self::is_track_allocations_feature_enabled() && self.state.lock().num_allocations == 0
+        Self::IS_TRACK_ALLOCATIONS_FEATURE_ENABLED && self.state.lock().num_allocations == 0
     }
     pub fn set_track_allocations(&mut self, track_allocations: bool) -> Result<(), virtual_memory::Error> {
         let state = self.state.lock();
@@ -397,20 +393,28 @@ impl Allocation {
         self.committed_size().next_multiple_of(self.page_size().get())
     }
     #[inline(always)]
-    pub fn committed_memory(&self) -> &[u8] {
+    pub fn committed_memory_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     #[inline(always)]
-    pub fn actual_committed_memory(&self) -> &[u8] {
+    pub fn actual_committed_memory_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
     #[inline(always)]
-    pub fn committed_memory_mut(&mut self) -> &mut [u8] {
+    pub fn committed_memory_slice_mut(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     #[inline(always)]
-    pub fn actual_committed_memory_mut(&mut self) -> &mut [u8] {
+    pub fn actual_committed_memory_slice_mut(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
+    }
+    #[inline(always)]
+    pub fn committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
+        NonNull::slice_from_raw_parts(self.committed_memory_start(), self.committed_size())
+    }
+    #[inline(always)]
+    pub fn actual_committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
+        NonNull::slice_from_raw_parts(self.committed_memory_start(), self.actual_committed_size())
     }
     #[inline(always)]
     pub fn actual_available_size_racy(&self) -> usize {
@@ -486,5 +490,79 @@ impl Allocation {
     }
     pub fn grow(&mut self, additional_size: usize) -> Result<(), virtual_memory::Error> {
         self.set_committed_size(self.committed_size().saturating_add(additional_size))
+    }
+    pub fn set_layout_assuming_committed_size_is_nonzero(&mut self, layout: Layout) -> Result<NonNull<[u8]>, virtual_memory::Error> {
+        assert!(self.storage.is_some()); // Otherwise committed_memory_start() will give a dangling pointer
+        let allocation_start = self.committed_memory_start();
+        let align_offset = allocation_start.align_offset(layout.align());
+        let aligned_start = unsafe { allocation_start.add(align_offset) };
+        let end = unsafe { aligned_start.add(layout.size()) };
+        let new_size = end.addr().get() - allocation_start.addr().get();
+        self.set_committed_size(new_size)?;
+        Ok(NonNull::slice_from_raw_parts(aligned_start, new_size))
+    }
+}
+
+pub struct LinearAllocator {
+    allocation: parking_lot::Mutex<Allocation>,
+}
+
+unsafe impl std::alloc::Allocator for LinearAllocator {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if layout.size() == 0 {
+            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+        }
+        let mut allocation = self.allocation.lock();
+
+        // This allocator does not support multiple non-zero allocations; it supports only one, which can grow and shrink, reflecting the way it's truly implemented.
+        // Supporting multiple non-zero allocations in any way that isn't plain stupid would require advanced management, such as internal allocations for storing a list of free ranges, etc.
+        if allocation.committed_size() > 0 {
+            return Err(AllocError);
+        }
+        allocation.set_committed_size(1).map_err(|_| AllocError)?;
+        allocation.set_layout_assuming_committed_size_is_nonzero(layout).map_err(|_| AllocError)
+    }
+
+    unsafe fn deallocate(&self, _ptr: NonNull<u8>, layout: Layout) {
+        // Caller may allocate() zero-size multiple times. A matching call to deallocate() for one of them must not invalidate any non-zero allocate().
+        if layout.size() == 0 {
+            return;
+        }
+        // If we reach here, then we must be the one non-zero allocation
+        self.allocation.lock().decommit_all().unwrap_or_else(|e| handle_alloc_error(layout))
+    }
+
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        // This works ONLY because we allow no more than ONE non-zero allocation.
+        // If this results in new pages being committed, we know that we are the first one ever to commit them.
+        // We also know that any newly-committed page is zero-initialized.
+        #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
+        self.allocate(layout)
+    }
+
+    unsafe fn grow(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        // Caller may allocate() zero-size multiple times. If we are one of these zero-size allocations, make sure we do not disturb any existing non-zero allocation.
+        if old_layout.size() == 0 {
+            return self.allocate(new_layout);
+        }
+        // If we reach here, then we must be the one non-zero allocation
+        self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout).map_err(|_| AllocError)
+    }
+
+    unsafe fn grow_zeroed(&self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        // See allocate_zeroed() for why this is correct
+        #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
+        self.grow(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn shrink(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if old_layout.size() == 0 {
+            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+        }
+        if new_layout.size() == 0 {
+            return self.allocation.lock().decommit_all().map(|_| NonNull::slice_from_raw_parts(NonNull::dangling(), 0)).map_err(|_| AllocError);
+        }
+        // If we reach here, then we must be the one non-zero allocation
+        self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout).map_err(|_| AllocError)
     }
 }

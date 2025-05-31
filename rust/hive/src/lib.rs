@@ -1,3 +1,4 @@
+#![feature(allocator_api)]
 #![feature(sync_unsafe_cell)]
 
 // Ce que je veux pouvoir faire:
