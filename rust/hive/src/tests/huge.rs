@@ -276,37 +276,37 @@ impl Allocator {
         }
         (start, size)
     }
-    fn allocate(&self) -> Result<(AllocationKey, NonNull<u8>), virtual_memory::Error> {
-        let (new_index, cached_start) = {
+    fn allocate(&self) -> Result<AllocationStorage, virtual_memory::Error> {
+        let (index, cached_start) = {
             let mut state = self.state.lock();
 
             // pop_first() is important as we want to keep low indices used, and high indices free, to increase the odds of being able to free by decrementing `num_allocations` which, in turn, when it crosses power-of-two boundaries, will 2x the available size for all allocations
-            let (new_index, cached_start) = state.free_allocation_indices.pop_first().map(|x| (x.0, Some(x.1))).unwrap_or((state.num_allocations, None));
+            let (index, cached_start) = state.free_allocation_indices.pop_first().map(|x| (x.0, Some(x.1))).unwrap_or((state.num_allocations, None));
 
             // When increasing num_allocations in a way that crosses a power-of-two boundary, it causes the available size for all allocations to be divided by 2
             #[cfg(feature="track_allocations")]
-            if self.is_tracking_allocations && new_index.is_power_of_two() {
+            if self.is_tracking_allocations && index.is_power_of_two() {
                 // Don't unwrap() here, the set may be empty if all allocations have a committed size of 0.
                 if let Some(highest_actual_committed_size_among_allocations) = state.allocations_actual_committed_sizes.last_key_value().map(|x| *x.0) {
-                    let new_available = self.actual_available_size_for_any_allocation_given_num_allocations(new_index + 1);
+                    let new_available = self.actual_available_size_for_any_allocation_given_num_allocations(index + 1);
                     if new_available < highest_actual_committed_size_among_allocations {
                         return Err(virtual_memory::Error::other(format!("Cannot create a new allocation: would reduce actual_available_size_for_any_allocation to {}, which would invalidate at least one allocation because it has an actual committed size of {}", new_available, highest_actual_committed_size_among_allocations)));
                     }
                 }
             }
 
-            if new_index == state.num_allocations {
+            if index == state.num_allocations {
                 state.num_allocations += 1;
             }
 
-            (new_index, cached_start)
+            (index, cached_start)
         };
 
-        let start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size.get(), new_index).0);
+        let committed_memory_start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size.get(), index).0);
 
-        Ok(( AllocationKey { index: new_index }, start))
+        Ok(AllocationStorage { index, committed_memory_start, committed_size: 0 })
     }
-    fn deallocate(&self, key: &AllocationKey, start: NonNull<u8>) {
+    fn deallocate(&self, storage: &AllocationStorage) {
         let mut state = self.state.lock();
 
         // If this was the last live allocation, we can clear our state very efficiently
@@ -315,9 +315,11 @@ impl Allocator {
             return;
         }
 
+        let &AllocationStorage { index, committed_memory_start, committed_size: _ } = storage;
+
         // If this was the last index, no need to add to the free list.
         // This may then trigger a chain reaction where we can keep doing that.
-        if key.index == state.num_allocations - 1 {
+        if index == state.num_allocations - 1 {
             state.num_allocations -= 1;
             while let Some((free_index, _)) = state.free_allocation_indices.last_key_value() {
                 if *free_index == state.num_allocations - 1 {
@@ -330,26 +332,29 @@ impl Allocator {
             return;
         }
 
-        state.free_allocation_indices.insert(key.index, start);
+        state.free_allocation_indices.insert(index, committed_memory_start);
     }
 }
 
-struct AllocationKey {
+struct AllocationStorage {
     index: usize,
-}
-
-pub struct Allocation {
-    allocator: Arc<Allocator>,
-    key: AllocationKey,
     // Aligned to page size boundary
     committed_memory_start: NonNull<u8>,
     // Not necessarily aligned to any boundary and is initially zero
     committed_size: usize,
 }
 
+pub struct Allocation {
+    allocator: Arc<Allocator>,
+    // This is None as long as committed_size == 0.
+    // Making this an Option is not strictly required, but it's better for ensuring that as few resources are used as possible.
+    // The cost of branching on this Option is nothing compared to the benefits it gives
+    storage: Option<AllocationStorage>,
+}
+
 impl Drop for Allocation {
     fn drop(&mut self) {
-        self.destroy_impl().unwrap_or_else(|e| {
+        self.decommit_all().unwrap_or_else(|e| {
             Err::<(), _>(e).unwrap();
             todo!() // Provide a way to override the drop() behavior
         })
@@ -357,21 +362,19 @@ impl Drop for Allocation {
 }
 
 impl Allocation {
-    pub fn create(allocator: &Arc<Allocator>) -> Result<Self, virtual_memory::Error> {
-        let (key, committed_memory_start) = allocator.allocate()?;
-        Ok(Self { allocator: allocator.clone(), key, committed_memory_start, committed_size: 0 })
+    pub fn new(allocator: Arc<Allocator>) -> Self {
+        Self { allocator, storage: None }
+    }
+    // The implementation _may_ avoid the Arc::clone(), hence it takes a reference
+    pub fn with_committed_size(allocator: &Arc<Allocator>, committed_size: usize) -> Result<Self, virtual_memory::Error> {
+        let mut s = Self::new(allocator.clone());
+        s.set_committed_size(committed_size)?;
+        Ok(s)
     }
     // An alternative to `drop()` that allows you to handle the error if any
     #[inline(always)]
     pub fn destroy(mut self) -> Result<(), virtual_memory::Error> {
-        self.destroy_impl()?;
-        Ok(std::mem::forget(self))
-    }
-    // This MUST NOT be exposed publicly!!
-    fn destroy_impl(&mut self) -> Result<(), virtual_memory::Error> {
-        self.decommit_all()?;
-        self.allocator.deallocate(&self.key, self.committed_memory_start);
-        Ok(())
+        self.decommit_all()
     }
     #[inline(always)]
     pub fn allocator(&self) -> &Arc<Allocator> {
@@ -383,40 +386,55 @@ impl Allocation {
     }
     #[inline(always)]
     pub fn committed_memory_start(&self) -> NonNull<u8> {
-        self.committed_memory_start
+        self.storage.as_ref().map(|s| s.committed_memory_start).unwrap_or(NonNull::dangling())
     }
     #[inline(always)]
     pub fn committed_size(&self) -> usize {
-        self.committed_size
+        self.storage.as_ref().map(|s| s.committed_size).unwrap_or(0)
     }
     #[inline(always)]
     pub fn actual_committed_size(&self) -> usize {
-        self.committed_size.next_multiple_of(self.page_size().get())
+        self.committed_size().next_multiple_of(self.page_size().get())
     }
     #[inline(always)]
     pub fn committed_memory(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.committed_memory_start.as_ptr(), self.committed_size) }
+        unsafe { std::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     #[inline(always)]
     pub fn actual_committed_memory(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.committed_memory_start.as_ptr(), self.actual_committed_size()) }
+        unsafe { std::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
     #[inline(always)]
     pub fn committed_memory_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start.as_ptr(), self.committed_size) }
+        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     #[inline(always)]
     pub fn actual_committed_memory_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start.as_ptr(), self.actual_committed_size()) }
+        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
     #[inline(always)]
     pub fn actual_available_size_racy(&self) -> usize {
         self.allocator.actual_available_size_for_any_allocation_racy()
     }
+    // This is called `set_committed_size` because it can either grow or shrink the allocation
     pub fn set_committed_size(&mut self, new_size: usize) -> Result<(), virtual_memory::Error> {
-        let page_size = self.page_size().get();
-        let start = self.committed_memory_start.addr().get();
-        let current_page_end = start + self.committed_size.next_multiple_of(page_size);
+        if new_size == 0 {
+            return self.decommit_all();
+        }
+
+        if new_size > isize::MAX as usize {
+            return Err(virtual_memory::Error::other(format!("Cannot allocate more than isize::MAX, functions such as ptr::add() assume this")));
+        }
+
+        if self.storage.is_none() {
+            self.storage = Some(self.allocator.allocate()?);
+        }
+
+        let storage = unsafe { self.storage.as_mut().unwrap_unchecked() };
+
+        let page_size = self.allocator.virtual_memory_system.page_size().get();
+        let start = storage.committed_memory_start.addr().get();
+        let current_page_end = start + storage.committed_size.next_multiple_of(page_size);
         let desired_page_end = start + new_size.next_multiple_of(page_size);
         if desired_page_end != current_page_end {
             #[cfg(feature="track_allocations")]
@@ -432,9 +450,9 @@ impl Allocation {
                     }
                     optional_state_lock = Some(state);
                 }
-                self.allocator.virtual_memory_system.commit(unsafe { self.committed_memory_start.add(current_page_end) }, desired_page_end - current_page_end)?;
+                self.allocator.virtual_memory_system.commit(unsafe { storage.committed_memory_start.add(current_page_end) }, desired_page_end - current_page_end)?;
             } else {
-                self.allocator.virtual_memory_system.decommit(unsafe { self.committed_memory_start.add(desired_page_end) }, current_page_end - desired_page_end)?;
+                self.allocator.virtual_memory_system.decommit(unsafe { storage.committed_memory_start.add(desired_page_end) }, current_page_end - desired_page_end)?;
             }
 
             // Do this AFTER commit/decommit, because if they failed, we don't want to reach here.
@@ -453,16 +471,20 @@ impl Allocation {
                 }
             }
         }
-        self.committed_size = new_size;
+        storage.committed_size = new_size;
         Ok(())
     }
     // Same as `set_committed_size(0)` but more efficient
     #[inline(always)]
     pub fn decommit_all(&mut self) -> Result<(), virtual_memory::Error> {
-        if self.committed_size > 0 {
-            self.allocator.virtual_memory_system.decommit(self.committed_memory_start, self.committed_size)?;
-            self.committed_size = 0;
+        if let Some(storage) = self.storage.as_ref() {
+            self.allocator.virtual_memory_system.decommit(storage.committed_memory_start, storage.committed_size)?;
+            self.allocator.deallocate(storage);
+            self.storage = None;
         }
         Ok(())
+    }
+    pub fn grow(&mut self, additional_size: usize) -> Result<(), virtual_memory::Error> {
+        self.set_committed_size(self.committed_size().saturating_add(additional_size))
     }
 }
