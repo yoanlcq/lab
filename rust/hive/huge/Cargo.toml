@@ -1,0 +1,12 @@
+[package]
+name = "huge"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["track_allocation_sizes"]
+track_allocation_sizes = []
+
+[dependencies]
+parking_lot = "0.12.4"
+virtual_memory = { path = "../virtual_memory" }

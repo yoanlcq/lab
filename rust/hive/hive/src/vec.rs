@@ -542,35 +542,35 @@ impl<T> ItemAccessor<T> {
         self.try_borrow_mut_via_range_guard(range_guard).unwrap()
     }
     pub unsafe fn borrow_unchecked(&self) -> ItemRef<T> {
-        #[cfg(feature = "go_safe")]
+        #[cfg(feature = "trust_unchecked_borrows")]
         {
             todo!()
         }
-        #[cfg(not(feature = "go_safe"))]
+        #[cfg(not(feature = "trust_unchecked_borrows"))]
         self.borrow()
     }
     pub unsafe fn borrow_mut_unchecked(&self) -> ItemRefMut<T> {
-        #[cfg(feature = "go_safe")]
+        #[cfg(feature = "trust_unchecked_borrows")]
         {
             todo!()
         }
-        #[cfg(not(feature = "go_safe"))]
+        #[cfg(not(feature = "trust_unchecked_borrows"))]
         self.borrow_mut()
     }
     unsafe fn borrow_unchecked_via_range_guard(&self, range_guard: &RangeRef<T>) -> ItemRef<T> {
-        #[cfg(feature = "go_safe")]
+        #[cfg(feature = "trust_unchecked_borrows")]
         {
             todo!()
         }
-        #[cfg(not(feature = "go_safe"))]
+        #[cfg(not(feature = "trust_unchecked_borrows"))]
         self.borrow_via_range_guard(range_guard)
     }
     unsafe fn borrow_mut_unchecked_via_range_guard(&self, range_guard: &RangeRefMut<T>) -> ItemRefMut<T> {
-        #[cfg(feature = "go_safe")]
+        #[cfg(feature = "trust_unchecked_borrows")]
         {
             todo!()
         }
-        #[cfg(not(feature = "go_safe"))]
+        #[cfg(not(feature = "trust_unchecked_borrows"))]
         self.borrow_mut_via_range_guard(range_guard)
     }
     pub fn request<F: FnMut(ItemRef<T>)>(&self, mut f: F) -> bool {

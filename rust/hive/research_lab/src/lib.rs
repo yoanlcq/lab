@@ -1,5 +1,7 @@
-#![feature(allocator_api)]
 #![feature(sync_unsafe_cell)]
+
+pub mod compactable_arena;
+pub mod idiomatic_ecs;
 
 // Ce que je veux pouvoir faire:
 // - Ajouter pendant l'itération
@@ -113,14 +115,6 @@
 //   exemple: un world_context peut avoir son propre log service provider. Ca va prendre le dessus sur le log service provider des autres contextes (mais lui-même peut dire "j'appelle le parent").
 //   Donc quand tu fais log!(x, "hello"), ça chope le contexte le plus spécialisé obtenable via x, puis ça cherche le service provider le plus proche.
 //   Si besoin de garder le service provider en cache, possible de faire un truc genre LogServiceProvider::find(x).
-
-extern crate bitflags;
-extern crate rayon;
-extern crate parking_lot;
-extern crate winapi;
-
-#[cfg(test)]
-mod tests;
 
 /*
 pub mod hive {

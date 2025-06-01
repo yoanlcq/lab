@@ -1,133 +1,4 @@
-use std::{alloc::Layout, error::Error, marker::PhantomData, mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull, sync::atomic::{AtomicPtr, AtomicUsize}};
-
-trait LowLevelAllocator {
-    fn allocate_uninitialized_bytes(size: NonZero<usize>) -> Result<NonNull<[u8]>, impl Error>;
-
-    /// # Safety
-    /// 
-    /// * `ptr` must denote a block of memory [*currently allocated*] via this allocator
-    unsafe fn deallocate(p: NonNull<[u8]>) -> Result<(), impl Error>;
-}
-
-#[cfg(all(windows, not(miri)))]
-#[allow(bad_style, dead_code)]
-mod os {
-    use std::{num::NonZero, ptr::NonNull};
-    use std::error::Error;
-
-    use super::{workarounds, LowLevelAllocator};
-
-    // #[cfg(feature = "std")]
-    type c_void = std::os::raw::c_void;
-    // #[cfg(not(feature = "std"))]
-    // enum c_void {}
-
-    pub const PAGE_NOACCESS: u32 = 0x01;
-    pub const PAGE_READONLY: u32 = 0x02;
-    pub const PAGE_READWRITE: u32 = 0x04;
-    pub const PAGE_WRITECOPY: u32 = 0x08;
-    pub const PAGE_EXECUTE: u32 = 0x10;
-    pub const PAGE_EXECUTE_READ: u32 = 0x20;
-    pub const PAGE_EXECUTE_READWRITE: u32 = 0x40;
-    pub const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
-    pub const PAGE_GUARD: u32 = 0x100;
-    pub const PAGE_NOCACHE: u32 = 0x200;
-    pub const PAGE_WRITECOMBINE: u32 = 0x400;
-    pub const PAGE_ENCLAVE_THREAD_CONTROL: u32 = 0x80000000;
-    pub const PAGE_REVERT_TO_FILE_MAP: u32 = 0x80000000;
-    pub const PAGE_TARGETS_NO_UPDATE: u32 = 0x40000000;
-    pub const PAGE_TARGETS_INVALID: u32 = 0x40000000;
-    pub const PAGE_ENCLAVE_UNVALIDATED: u32 = 0x20000000;
-    pub const PAGE_ENCLAVE_DECOMMIT: u32 = 0x10000000;
-
-    pub const MEM_COMMIT: u32 = 0x1000;
-    pub const MEM_RESERVE: u32 = 0x2000;
-    pub const MEM_DECOMMIT: u32 = 0x4000;
-    pub const MEM_RELEASE: u32 = 0x8000;
-    pub const MEM_FREE: u32 = 0x10000;
-    pub const MEM_PRIVATE: u32 = 0x20000;
-    pub const MEM_MAPPED: u32 = 0x40000;
-    pub const MEM_RESET: u32 = 0x80000;
-    pub const MEM_TOP_DOWN: u32 = 0x100000;
-    pub const MEM_WRITE_WATCH: u32 = 0x200000;
-    pub const MEM_PHYSICAL: u32 = 0x400000;
-    pub const MEM_ROTATE: u32 = 0x800000;
-    pub const MEM_DIFFERENT_IMAGE_BASE_OK: u32 = 0x800000;
-    pub const MEM_RESET_UNDO: u32 = 0x1000000;
-    pub const MEM_LARGE_PAGES: u32 = 0x20000000;
-    pub const MEM_4MB_PAGES: u32 = 0x80000000;
-    pub const MEM_64K_PAGES: u32 = MEM_LARGE_PAGES | MEM_PHYSICAL;
-
-    extern "system" {
-        pub fn VirtualAlloc(
-            lpAddress: *mut c_void,
-            dwSize: usize,
-            flAllocationType: u32,
-            flProtect: u32,
-        ) -> *mut c_void;
-
-        pub fn VirtualFree(
-            lpAddress: *mut c_void,
-            dwSize: usize,
-            dwFreeType: u32,
-        ) -> i32;
-
-        // TODO: DiscardVirtualMemory(), OfferVirtualMemory() and ReclaimVirtualMemory() could be used since Windows 8.1
-    }
-
-    pub struct LowLevelAllocatorImpl;
-
-    impl LowLevelAllocator for LowLevelAllocatorImpl {
-        fn allocate_uninitialized_bytes(size: NonZero<usize>) -> Result<NonNull<[u8]>, impl Error> {
-            // SAFETY: We pass valid parameters and check the result.
-            let p = unsafe { VirtualAlloc(std::ptr::null_mut(), size.get(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
-            if p.is_null() {
-                Err(std::io::Error::last_os_error())
-            } else {
-                // SAFETY: The pointer is obviously non-null, we just checked.
-                let p = unsafe { NonNull::new_unchecked(p) };
-                Ok(NonNull::slice_from_raw_parts(p.cast(), size.get()))
-            }
-        }
-
-        unsafe fn deallocate(p: NonNull<[u8]>) -> Result<(), impl Error> {
-            let ok = VirtualFree(workarounds::non_null_slice_ptr(p).cast().as_ptr(), 0, MEM_RELEASE);
-            if ok == 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
-#[cfg(any(miri, not(windows)))]
-mod os {
-    use std::{error::Error, num::NonZero, ptr::NonNull};
-
-    use super::LowLevelAllocator;
-    use super::workarounds;
-
-    pub struct LowLevelAllocatorImpl;
-
-    impl LowLevelAllocator for LowLevelAllocatorImpl {
-        fn allocate_uninitialized_bytes(size: NonZero<usize>) -> Result<NonNull<[u8]>, impl Error> {
-            let mut v = Vec::<u8>::with_capacity(size.get());
-            let p = v.as_mut_ptr();
-            std::mem::forget(v);
-            // SAFETY: The pointer of a Vec<u8> with non-zero capacity can never be null
-            return Ok(NonNull::slice_from_raw_parts(unsafe { NonNull::new_unchecked(p) }, size.get()));
-            #[allow(unreachable_code)]
-            Err(std::io::Error::last_os_error())
-        }
-
-        unsafe fn deallocate(p: NonNull<[u8]>) -> Result<(), impl Error> {
-            return Ok(drop(Vec::from_raw_parts(workarounds::non_null_slice_ptr(p).as_ptr(), 0, p.len())));
-            #[allow(unreachable_code)]
-            Err(std::io::Error::last_os_error())
-        }
-    }
-}
+use std::{alloc::Layout, marker::PhantomData, mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull, sync::atomic::{AtomicPtr, AtomicUsize}};
 
 mod workarounds {
     use std::{mem::MaybeUninit, num::NonZero, ptr::NonNull};
@@ -179,7 +50,7 @@ struct SuballocationHeader {
 
 #[repr(C)] // Just for a better debugging experience
 #[derive(Debug)]
-struct RelocatableVecStrongRef<T> {
+pub struct RelocatableVecStrongRef<T> {
     suballocation_header_ptr: NonNull<SuballocationHeader>,
 
     // I don't fully understand yet why this is needed. Something about covariance. Rc<T> does this internally, so I'm just doing the same.
@@ -226,7 +97,7 @@ impl<T> Drop for RelocatableVecStrongRef<T> {
 
 #[repr(C)] // Just for a better debugging experience
 #[derive(Debug, Clone)]
-struct RelocatableVecWeakRef<T> {
+pub struct RelocatableVecWeakRef<T> {
     arena_weak_ref: ArenaWeakRef,
     suballocation_header_ptr: NonNull<SuballocationHeader>,
     generation: usize,
@@ -280,7 +151,7 @@ impl<T> RelocatableVecWeakRef<T> {
 
 #[repr(C)] // Just for a better debugging experience
 #[derive(Debug)]
-struct ArenaHeader {
+pub struct ArenaHeader {
     allocation: NonNull<[u8]>,
     strong_ref_count: AtomicUsize,
     weak_ref_count: AtomicUsize,
@@ -290,19 +161,13 @@ struct ArenaHeader {
 }
 
 impl ArenaHeader {
-    pub fn min_required_size() -> NonZero<usize> {
+    pub fn min_required_size() -> NonZeroUsize {
         NonZero::new(std::mem::align_of::<ArenaHeader>() - 1 + std::mem::size_of::<ArenaHeader>()).unwrap()
-    }
-    pub fn create(size: NonZero<usize>) -> ArenaStrongRef {
-        let allocation = os::LowLevelAllocatorImpl::allocate_uninitialized_bytes(size).unwrap();
-        assert!(allocation.len() >= size.get());
-        Self::with_allocation_impl(allocation)
     }
     /// # Safety
     /// 
     /// * You must ensure that the `allocation` lives at least as long as the ArenaStrongRef.
     pub unsafe fn with_allocation(allocation: NonNull<[u8]>) -> ArenaStrongRef {
-        // TODO: we should take the deallocator as well, in order to know how to free the memory!
         // TODO: feature: when trying to allocate from an arena, if there is no more room, it could call into some user-provided strategy, possibly attempting to create a new arena with some capacity, and then redirect to THAT arena. This should be useful during development if we are on a good machine and memory usage momentarily exceeds the expected amount due to a poorly optimized gameplay section; would allow us to issue a warning but not interrupt whatever we're trying to do (profiling, debugging, looking for an issue, etc).
         Self::with_allocation_impl(allocation)
     }
@@ -365,17 +230,8 @@ impl ArenaHeader {
     }
 }
 
-impl Drop for ArenaHeader {
-    fn drop(&mut self) {
-        // SAFETY: we are only dropped when there are no more strong or weak references to us.
-        // We make sure that our API only provides sub-allocations that refer to us by strong or weak reference.
-        // Therefore there is no risk of use-after-free.
-        unsafe { os::LowLevelAllocatorImpl::deallocate(self.allocation).unwrap() }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ArenaStrongRef {
+pub struct ArenaStrongRef {
     arena_header_ptr: NonNull<ArenaHeader>,
 
     // I don't fully understand yet why this is needed. Something about covariance. Rc<T> does this internally, so I'm just doing the same.
@@ -422,7 +278,7 @@ impl Drop for ArenaStrongRef {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ArenaWeakRef {
+pub struct ArenaWeakRef {
     arena_header_ptr: NonNull<ArenaHeader>,
 }
 
@@ -509,6 +365,5 @@ impl Drop for ArenaWeakRef {
 
 #[test]
 fn test_arena() {
-    let _arena = ArenaHeader::create(NonZero::new(2048).unwrap());
 }
 
