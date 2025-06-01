@@ -12,7 +12,7 @@ use virtual_memory::{ProtectionFlags, VirtualMemorySystem};
 // TODO: test that the functions work... In particular, reserve() does not set protection flags, will it work?
 // TODO: check that creating Allocations from multiple threads is possible
 // TODO: Provide good (and illustrated) documentation
-// TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code?
+// TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code? Clippy: https://rust-lang.github.io/rust-clippy/master/#undocumented_unsafe_blocks
 // TODO: automated copyright notice?
 // TODO: automated licenses gathering?
 // TODO: automated export of non-confidential source code and commits?
