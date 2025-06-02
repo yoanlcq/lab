@@ -1,13 +1,89 @@
 // TODO: expose MEM_WRITE_WATCH and similar APIs?
 
-use std::{num::{NonZeroUsize}, ptr::NonNull};
+use std::num::NonZeroUsize;
 
 pub use std::io::Error as Error;
+
+type Result<T> = std::result::Result<T, Error>;
 
 use bitflags::bitflags;
 
 #[cfg(windows)]
 mod windows_imp;
+
+// This is provided in order to be a bit nicer to read than `usize` when we are dealing with addresses, and to avoid confusing them with actual allocation sizes.
+//
+// This is not `NonNull<u8>`, because `NonNull` assumes that the memory be aliased, which is why isn't `Send` nor `Sync`.
+// However, a virtual address does not necessarily index into committed memory. As long as it is not committed, it should be `Send` and `Sync`, hence this type exists.
+//
+// This is also not `NonZeroUsize` because technically you could manipulate the very first page in the range, which address is zero.
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Addr(usize);
+
+impl Addr {
+    #[inline(always)]
+    pub fn new(addr: usize) -> Self {
+        Self(addr)
+    }
+    #[inline(always)]
+    pub fn get(&self) -> usize {
+        self.0
+    }
+}
+
+// In the APIs provided by this crate, virtual address ranges are **ALWAYS** treated as having their bounds implicitly extended in both directions until they are aligned to a page boundary.
+// For instance, given a page size of 4096, a range defined by `start = 4095` and `size = 2` will be treated as if it were the `0..8192` range.
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddrRange {
+    addr: Addr,
+    size: usize,
+}
+
+impl AddrRange {
+    #[inline(always)]
+    pub fn new(addr: Addr, size: usize) -> Self {
+        Self { addr, size }
+    }
+    #[must_use]
+    #[inline(always)]
+    pub fn covering_page_size(self, page_size: NonZeroUsize) -> Self {
+        let start = (self.addr.get() / page_size) * page_size.get();
+        let end = (self.addr.get() + self.size).next_multiple_of(page_size.get());
+        Self::new(Addr::new(start), end - start)
+    }
+    #[inline(always)]
+    pub fn addr(&self) -> Addr {
+        self.addr
+    }
+    #[inline(always)]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+// The chosen representation for a range of committed virtual memory.
+// This is not a slice because there's no telling what the memory's protection flags were set to.
+// Unlike `AddrRange`, we now lose the `Send` + `Sync` capabilities.
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PtrRange {
+    ptr: *mut u8,
+    size: usize,
+}
+
+impl PtrRange {
+    #[inline(always)]
+    pub fn new(ptr: *mut u8, size: usize) -> Self {
+        Self { ptr, size }
+    }
+    #[inline(always)]
+    pub fn ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+    #[inline(always)]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
 
 /// This represents a "handle" to the OS's virtual memory API.
 ///
@@ -49,14 +125,19 @@ impl VirtualMemorySystem {
     /// that is, if some other code (such as the global allocator) wants to reserve a virtual address range in the current process,
     /// they will have to call the same underlying API, and it will not return a range that intersects any of the currently reserved ones.
     ///
-    /// `starting_address_hint` may be `null` to let the OS decide the starting address automatically.
+    /// `starting_address_hint` may be `None` to let the OS decide the starting address automatically.
+    /// If you specify `Some(0)`, the behavior will depend on how the OS's API chooses to interpret it; but there's no reason to do that, since `Some(1)` will represent the same page but not be treated as a special case.
+    /// However you may still encounter an issue because 0 is sometimes used as a failure status; for instance Windows's `VirtualAlloc()` cannot return `null` because that is how it indicates failure.
     /// 
     /// This can only reserve whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     /// For instance, if `page_size() == 4096`, `starting_address_hint == 4095` and `size == 2`, then assuming the call succeeds, the reserved range will be `0 .. 8192`.
     #[inline(always)]
-    pub fn reserve(&self, starting_address_hint: Option<NonNull<u8>>, size: NonZeroUsize) -> Result<NonNull<u8>, Error> {
+    pub fn reserve(&self, starting_address_hint: Option<Addr>, size: usize) -> Result<AddrRange> {
         #[cfg(windows)]
-        windows_imp::virtual_alloc(starting_address_hint.map(NonNull::as_ptr).unwrap_or(std::ptr::null_mut()), size.get(), winapi::um::winnt::MEM_RESERVE, winapi::um::winnt::PAGE_NOACCESS)
+        {
+            let non_null = windows_imp::virtual_alloc(starting_address_hint.map(|x| x.get()).unwrap_or(0), size, winapi::um::winnt::MEM_RESERVE, winapi::um::winnt::PAGE_NOACCESS)?;
+            Ok(AddrRange::new(Addr::new(non_null.addr().get()), size).covering_page_size(self.page_size))
+        }
     }
 
     /// NOTE: It is unspecified whether `protection_flags` will be applied to pages that were already committed.
@@ -65,18 +146,22 @@ impl VirtualMemorySystem {
     /// 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     #[inline(always)]
-    pub fn commit(&self, ptr: *mut u8, size: usize, protection_flags: ProtectionFlags) -> Result<(), Error> {
+    pub fn commit(&self, addr_range: AddrRange, protection_flags: ProtectionFlags) -> Result<PtrRange> {
         #[cfg(windows)]
-        windows_imp::virtual_alloc(ptr, size, winapi::um::winnt::MEM_COMMIT, protection_flags.to_windows()).map(|_| ())
+        {
+            let non_null = windows_imp::virtual_alloc(addr_range.addr.get(), addr_range.size, winapi::um::winnt::MEM_COMMIT, protection_flags.to_windows())?;
+            let aligned_addr_range = addr_range.covering_page_size(self.page_size);
+            Ok(PtrRange::new(non_null.as_ptr().with_addr(aligned_addr_range.addr.get()), aligned_addr_range.size))
+        }
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     /// 
     /// Safety: You must make sure that nobody else is currently using that memory.
     #[inline(always)]
-    pub unsafe fn decommit(&self, ptr: *mut u8, size: usize) -> Result<(), Error> {
+    pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
         #[cfg(windows)]
-        unsafe { windows_imp::virtual_free(ptr, size, winapi::um::winnt::MEM_DECOMMIT) }
+        unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, winapi::um::winnt::MEM_DECOMMIT) }
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
@@ -87,39 +172,40 @@ impl VirtualMemorySystem {
     ///
     /// On Windows, this will implicitly de-commit the pages for you before unreserving.
     #[inline(always)]
-    pub unsafe fn unreserve(&self, ptr: NonNull<u8>, size: NonZeroUsize) -> Result<(), Error> {
+    pub unsafe fn unreserve(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
-        unsafe { windows_imp::virtual_free(ptr.as_ptr(), 0 * size.get() /* Must pass 0 and prevent "unused variable `size`" warning */, winapi::um::winnt::MEM_RELEASE) }
+        unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, winapi::um::winnt::MEM_RELEASE) }
     }
 
     // If succeeds, returns the previous protection flags of the FIRST page that intersects the specified range
+    // Safety: You must make sure the new protection flags will not cause issues with existing allocations
     #[inline(always)]
-    pub fn set_protection_flags(&self, ptr: *mut u8, size: usize, flags: ProtectionFlags) -> Result<OsProtectionFlags, Error> {
+    pub unsafe fn set_protection_flags(&self, addr_range: AddrRange, flags: ProtectionFlags) -> Result<OsProtectionFlags> {
         #[cfg(windows)]
-        windows_imp::virtual_protect(ptr, size, flags.to_windows())
+        windows_imp::virtual_protect(addr_range.addr.get(), addr_range.size, flags.to_windows())
     }
 
     #[inline(always)]
-    pub fn bind_to_physical_memory(&self, ptr: *mut u8, size: usize) -> Result<(), Error> {
+    pub fn bind_to_physical_memory(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
-        windows_imp::virtual_lock(ptr, size)
+        windows_imp::virtual_lock(addr_range.addr.get(), addr_range.size)
     }
 
     #[inline(always)]
-    pub fn unbind_from_physical_memory(&self, ptr: *mut u8, size: usize) -> Result<(), Error> {
+    pub fn unbind_from_physical_memory(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
-        windows_imp::virtual_unlock(ptr, size)
+        windows_imp::virtual_unlock(addr_range.addr.get(), addr_range.size)
     }
 
     #[inline(always)]
-    pub fn page_range_info(&self, ptr: *mut u8) -> Result<PageRangeInfo, Error> {
+    pub fn page_range_info(&self, addr: Addr) -> Result<PageRangeInfo> {
         #[cfg(windows)]
-        windows_imp::virtual_query(ptr).map(|x| PageRangeInfo::from_windows(&x))
+        windows_imp::virtual_query(addr.get()).map(|x| PageRangeInfo::from_windows(&x))
     }
 
     #[inline(always)]
-    pub fn page_range_info_iter(&self, ptr: *mut u8) -> PageRangeInfoIterator {
-        PageRangeInfoIterator { virtual_memory_system: self, ptr, finished: false }
+    pub fn page_range_info_iter(&self, addr: Addr) -> PageRangeInfoIterator {
+        PageRangeInfoIterator { virtual_memory_system: self, addr, finished: false }
     }
 }
 
@@ -177,29 +263,28 @@ impl ProtectionFlags {
 
         Self::from_bits_retain(modifiers | flags | if has_execute { 4 } else { 0 })
     }
+    #[inline(always)]
     pub fn from_os(flags: OsProtectionFlags) -> Self {
         #[cfg(windows)]
         Self::from_windows(flags)
     }
 }
 
-
-
 pub struct PageRangeInfoIterator<'a> {
     virtual_memory_system: &'a VirtualMemorySystem,
-    ptr: *mut u8,
+    addr: Addr,
     finished: bool,
 }
 
 impl<'a> Iterator for PageRangeInfoIterator<'a> {
-    type Item = Result<PageRangeInfo, Error>;
+    type Item = Result<PageRangeInfo>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished {
             return None;
         }
-        let r = self.virtual_memory_system.page_range_info(self.ptr);
+        let r = self.virtual_memory_system.page_range_info(self.addr);
         if let Ok(info) = r.as_ref() {
-            self.ptr = self.ptr.wrapping_add(info.size);
+            self.addr = Addr::new(self.addr.get() + info.size);
         } else {
             self.finished = true;
         }
@@ -250,24 +335,31 @@ impl PageRangeInfo {
             not_free,
         }
     }
+    #[inline(always)]
     pub fn ptr(&self) -> *mut u8 {
         self.ptr
     }
+    #[inline(always)]
     pub fn size(&self) -> usize {
         self.size
     }
+    #[inline(always)]
     pub fn state(&self) -> PageState {
         self.state
     }
+    #[inline(always)]
     pub fn os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.protection_flags)?
     }
+    #[inline(always)]
     pub fn type_(&self) -> Option<PageType> {
         self.not_free.map(|x| x.type_)
     }
+    #[inline(always)]
     pub fn allocation_ptr(&self) -> Option<*mut u8> {
         self.not_free.map(|x| x.allocation_ptr)
     }
+    #[inline(always)]
     pub fn allocation_os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.allocation_protection_flags)
     }

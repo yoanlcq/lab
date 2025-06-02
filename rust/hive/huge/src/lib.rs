@@ -1,35 +1,50 @@
 #![feature(allocator_api)]
 
-use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ptr::NonNull, sync::Arc};
+use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ops::Add, ptr::NonNull, sync::Arc};
 
-use virtual_memory::{ProtectionFlags, VirtualMemorySystem, Error};
+use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, VirtualMemorySystem};
 
 type Result<T> = std::result::Result<T, Error>;
 
-// TODO: enumerate memory ranges, just out of curiosity (https://stackoverflow.com/a/20350190)
 // TODO: test that the functions work... In particular, reserve() does not set protection flags, will it work?
 // TODO: check that creating Allocations from multiple threads is possible
+// TODO: enumerate memory ranges, just out of curiosity (https://stackoverflow.com/a/20350190)
 // TODO: Provide good (and illustrated) documentation
 // TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code? Clippy: https://rust-lang.github.io/rust-clippy/master/#undocumented_unsafe_blocks
 // TODO: automated copyright notice?
 // TODO: automated licenses gathering?
 // TODO: automated export of non-confidential source code and commits?
 
-#[derive(Default)]
-struct AllocatorState {
-    num_allocations: usize,
-    // Storing the pointer is not strictly necessary, it's just an optimization to avoid the iterative "index to pointer" algorithm
-    free_allocation_indices: BTreeMap<usize, NonNull<u8>>,
-    #[cfg(feature="track_allocation_sizes")]
-    allocations_actual_committed_sizes: BTreeMap<usize, usize>,
+mod unique {
+    use std::ptr::NonNull;
+
+    #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Unique<T>(NonNull<T>);
+
+    // OK because the caller of new() promises that nobody else is using the data pointed to by the pointer
+    unsafe impl<T> Send for Unique<T> {}
+
+    // OK because it has no interior mutability
+    unsafe impl<T> Sync for Unique<T> {}
+
+    impl<T> Unique<T> {
+        pub unsafe fn new(p: NonNull<T>) -> Self {
+            Self(p)
+        }
+        pub fn get(&self) -> NonNull<T> {
+            self.0
+        }
+    }
 }
+
+use unique::Unique;
 
 // A wrapper around a function; it allows you to opt-out of dynamic allocation if you don't want it
 pub enum DropResultHandler {
     Unwrap,
     Ignore,
     Fn(fn(Result<()>)),
-    Box(Box<dyn FnMut(Result<()>)>),
+    Box(Box<dyn FnMut(Result<()>) + Send + Sync>),
 }
 
 impl Default for DropResultHandler {
@@ -49,12 +64,22 @@ impl DropResultHandler {
     }
 }
 
+#[derive(Default)]
+struct AllocatorState {
+    num_allocations: usize,
+    // Storing the pointer is not strictly necessary, it's just an optimization to avoid the iterative "index to pointer" algorithm
+    // Maps indices to cached allocation address
+    free_allocation_indices: BTreeMap<usize, Addr>,
+    // Maps allocation index to committed size
+    #[cfg(feature="track_allocation_sizes")]
+    allocations_actual_committed_sizes: BTreeMap<usize, usize>,
+}
+
 pub struct Allocator {
     virtual_memory_system: Arc<VirtualMemorySystem>,
-    // Aligned to allocation granularity, which itself must be a multiple of the page size
-    reserved_virtual_address_range_start: NonNull<u8>,
-    // Power of two AND multiple of page size
-    reserved_virtual_address_range_size: NonZeroUsize,
+    // start: Aligned to allocation granularity, which itself must be a multiple of the page size
+    // size: Power of two AND multiple of page size
+    reserved_addr_range: AddrRange,
     state: parking_lot::Mutex<AllocatorState>,
     drop_result_handler: DropResultHandler,
     // This is provided outside of `state` to avoid locking.
@@ -87,16 +112,12 @@ impl Allocator {
 
         let mut attempt_size = ((starting_size.get() / 2) + 1).next_power_of_two().min(isize::MAX as usize);
         loop {
-            match virtual_memory_system.reserve(None, unsafe { NonZeroUsize::new_unchecked(attempt_size) }) {
-                Ok(reserved_virtual_address_range_start) => {
-                    assert!(reserved_virtual_address_range_start.addr().get().is_multiple_of(allocation_granularity.get()));
-
-                    let va_end = (reserved_virtual_address_range_start.addr().get() + attempt_size).next_multiple_of(page_size.get());
-                    let reserved_virtual_address_range_size = NonZeroUsize::new(va_end - reserved_virtual_address_range_start.addr().get()).unwrap();
+            match virtual_memory_system.reserve(None, attempt_size) {
+                Ok(reserved_addr_range) => {
+                    assert!(reserved_addr_range.addr().get().is_multiple_of(allocation_granularity.get()));
                     return Ok(Self {
                         virtual_memory_system: virtual_memory_system.clone(),
-                        reserved_virtual_address_range_start,
-                        reserved_virtual_address_range_size,
+                        reserved_addr_range,
                         state: Default::default(),
                         drop_result_handler,
                         #[cfg(feature="track_allocation_sizes")]
@@ -128,7 +149,7 @@ impl Allocator {
     // This MUST NOT be exposed publicly!!
     #[inline(always)]
     fn destroy_impl(&mut self) -> Result<()> {
-        unsafe { self.virtual_memory_system.unreserve(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size) }
+        unsafe { self.virtual_memory_system.unreserve(self.reserved_addr_range) }
     }
     #[inline(always)]
     pub fn is_tracking_allocation_sizes(&self) -> bool {
@@ -172,12 +193,8 @@ impl Allocator {
     }
     // Note that dereferencing the memory may be unsafe if there are live allocations, because they may be using it!
     #[inline(always)]
-    pub fn reserved_virtual_address_range_start(&self) -> NonNull<u8> {
-        self.reserved_virtual_address_range_start
-    }
-    #[inline(always)]
-    pub fn reserved_virtual_address_range_size(&self) -> NonZeroUsize {
-        self.reserved_virtual_address_range_size
+    pub fn reserved_addr_range(&self) -> AddrRange {
+        self.reserved_addr_range
     }
     #[inline(always)]
     pub fn actual_available_size_for_any_allocation_racy(&self) -> usize {
@@ -187,27 +204,28 @@ impl Allocator {
     fn actual_available_size_for_any_allocation_given_num_allocations(&self, num_allocations: usize) -> usize {
         let page_size = self.virtual_memory_system.page_size().get();
         let current_max_num_allocations = num_allocations.next_power_of_two();
-        let available_size = self.reserved_virtual_address_range_size.get() / current_max_num_allocations;
+        let available_size = self.reserved_addr_range.size() / current_max_num_allocations;
         let actual_available_size = (available_size / page_size) * page_size;
         actual_available_size
     }
     // This function is designed for working with a `size` equal to 0 or power of two.
     // It is still safe to call if the condition is not met, but the resulting pointer will not be unique for the given index.
-    pub fn allocate_from_index(mut start: NonNull<u8>, mut size: usize, mut index: usize) -> (NonNull<u8>, usize) {
+    pub fn allocate_from_index(range: AddrRange, mut index: usize) -> AddrRange {
+        let (mut start, mut size) = (range.addr().get(), range.size());
         loop {
             size /= 2;
             if size == 0 {
                 break;
             }
             if index & 1 != 0 {
-                start = unsafe { start.add(size) };
+                start = start + size;
             }
             if index <= 1 {
                 break;
             }
             index >>= 1;
         }
-        (start, size)
+        AddrRange::new(Addr::new(start), size)
     }
     fn allocate(&self) -> Result<AllocationStorage> {
         let (index, cached_start) = {
@@ -235,9 +253,9 @@ impl Allocator {
             (index, cached_start)
         };
 
-        let committed_memory_start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size.get(), index).0);
+        let committed_memory_start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.reserved_addr_range, index).addr());
 
-        Ok(AllocationStorage { index, committed_memory_start, committed_size: 0 })
+        Ok(AllocationStorage { index, committed_addr_range: AddrRange::new(committed_memory_start, 0) })
     }
     fn deallocate(&self, storage: &AllocationStorage) {
         let mut state = self.state.lock();
@@ -248,7 +266,7 @@ impl Allocator {
             return;
         }
 
-        let &AllocationStorage { index, committed_memory_start, committed_size: _ } = storage;
+        let &AllocationStorage { index, committed_addr_range } = storage;
 
         // If this was the last index, no need to add to the free list.
         // This may then trigger a chain reaction where we can keep doing that.
@@ -265,16 +283,15 @@ impl Allocator {
             return;
         }
 
-        state.free_allocation_indices.insert(index, committed_memory_start);
+        state.free_allocation_indices.insert(index, committed_addr_range.addr());
     }
 }
 
 struct AllocationStorage {
     index: usize,
-    // Aligned to page size boundary
-    committed_memory_start: NonNull<u8>,
-    // Not necessarily aligned to any boundary and is initially zero
-    committed_size: usize,
+    // This is not NonNull or PtrRange because we want to be Send and Sync.
+    // Storage is accessed via getters which enforce the usual rules.
+    committed_addr_range: AddrRange,
 }
 
 pub struct Allocation {
@@ -324,11 +341,11 @@ impl Allocation {
     }
     #[inline(always)]
     pub fn committed_memory_start(&self) -> NonNull<u8> {
-        self.storage.as_ref().map(|s| s.committed_memory_start).unwrap_or(NonNull::dangling())
+        self.storage.as_ref().map(|s| s.committed_addr_range.addr().get()).unwrap_or(NonNull::dangling())
     }
     #[inline(always)]
     pub fn committed_size(&self) -> usize {
-        self.storage.as_ref().map(|s| s.committed_size).unwrap_or(0)
+        self.storage.as_ref().map(|s| s.committed_addr_range.size()).unwrap_or(0)
     }
     #[inline(always)]
     pub fn actual_committed_size(&self) -> usize {
@@ -518,9 +535,29 @@ mod linear_allocator {
 
 #[cfg(test)]
 mod tests {
+    use std::{num::NonZeroUsize, sync::Arc};
+
+    use virtual_memory::ProtectionFlags;
+
+    use super::{Allocator, Allocation, DropResultHandler};
 
     #[test]
     fn it_works() {
+        let virtual_memory_system = Arc::new(virtual_memory::VirtualMemorySystem::new());
+        let allocator = Arc::new(Allocator::create(&virtual_memory_system, NonZeroUsize::new(4096 * 1024).unwrap(), DropResultHandler::Unwrap, Allocator::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED).expect("Failed to create allocator"));
+
+        {
+            let allocator = allocator.clone();
+            std::thread::spawn(move || {
+                let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
+                allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE);
+            });
+        }
+
+        let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
+        allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE);
+
+        println!("Hello world!")
     }
 }
 
