@@ -1,13 +1,11 @@
-// Why this name:
-// https://ell.stackexchange.com/a/250169
-
 #![feature(allocator_api)]
 
-use std::{alloc::{handle_alloc_error, AllocError, Layout}, collections::BTreeMap, num::NonZeroUsize, ptr::NonNull, sync::Arc};
+use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ptr::NonNull, sync::Arc};
 
-use virtual_memory::{ProtectionFlags, VirtualMemorySystem};
+use virtual_memory::{ProtectionFlags, VirtualMemorySystem, Error};
 
-// TODO: Fix the todo!()s in Drop
+type Result<T> = std::result::Result<T, Error>;
+
 // TODO: enumerate memory ranges, just out of curiosity (https://stackoverflow.com/a/20350190)
 // TODO: test that the functions work... In particular, reserve() does not set protection flags, will it work?
 // TODO: check that creating Allocations from multiple threads is possible
@@ -26,6 +24,31 @@ struct AllocatorState {
     allocations_actual_committed_sizes: BTreeMap<usize, usize>,
 }
 
+// A wrapper around a function; it allows you to opt-out of dynamic allocation if you don't want it
+pub enum DropResultHandler {
+    Unwrap,
+    Ignore,
+    Fn(fn(Result<()>)),
+    Box(Box<dyn FnMut(Result<()>)>),
+}
+
+impl Default for DropResultHandler {
+    fn default() -> Self {
+        Self::Unwrap
+    }
+}
+
+impl DropResultHandler {
+    pub fn call(&mut self, r: Result<()>) {
+        match *self {
+            Self::Unwrap => r.unwrap(),
+            Self::Ignore => {},
+            Self::Fn(f) => f(r),
+            Self::Box(ref mut f) => f(r),
+        }
+    }
+}
+
 pub struct Allocator {
     virtual_memory_system: Arc<VirtualMemorySystem>,
     // Aligned to allocation granularity, which itself must be a multiple of the page size
@@ -33,6 +56,7 @@ pub struct Allocator {
     // Power of two AND multiple of page size
     reserved_virtual_address_range_size: NonZeroUsize,
     state: parking_lot::Mutex<AllocatorState>,
+    drop_result_handler: DropResultHandler,
     // This is provided outside of `state` to avoid locking.
     // For the sake of correctness, this flag must only be changed while no Allocation exists.
     #[cfg(feature="track_allocation_sizes")]
@@ -41,18 +65,16 @@ pub struct Allocator {
 
 impl Drop for Allocator {
     fn drop(&mut self) {
-        self.destroy_impl().unwrap_or_else(|e| {
-            Err::<(), _>(e).unwrap();
-            todo!() // Provide a way to override the drop() behavior
-        })
+        let r = self.destroy_impl();
+        self.drop_result_handler.call(r);
     }
 }
 
 impl Allocator {
-    pub fn create(virtual_memory_system: &Arc<VirtualMemorySystem>, starting_size: NonZeroUsize, track_allocation_sizes: bool) -> Result<Self, virtual_memory::Error> {
+    pub fn create(virtual_memory_system: &Arc<VirtualMemorySystem>, starting_size: NonZeroUsize, drop_result_handler: DropResultHandler, track_allocation_sizes: bool) -> Result<Self> {
         #[cfg(not(feature="track_allocation_sizes"))]
         if track_allocation_sizes {
-            return Err(virtual_memory::Error::other("Feature \"track_allocation_sizes\" is disabled. Please use IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED to detect this and make your code explicit"));
+            return Err(Error::other("Feature \"track_allocation_sizes\" is disabled. Please use IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED to detect this and make your code explicit"));
         }
 
         let page_size = virtual_memory_system.page_size();
@@ -76,6 +98,7 @@ impl Allocator {
                         reserved_virtual_address_range_start,
                         reserved_virtual_address_range_size,
                         state: Default::default(),
+                        drop_result_handler,
                         #[cfg(feature="track_allocation_sizes")]
                         track_allocation_sizes: track_allocation_sizes,
                     });
@@ -90,15 +113,21 @@ impl Allocator {
             attempt_size /= 2;
         }
     }
+    pub fn drop_result_handler(&self) -> &DropResultHandler {
+        &self.drop_result_handler
+    }
+    pub fn set_drop_handler(&mut self, drop_result_handler: DropResultHandler) {
+        self.drop_result_handler = drop_result_handler;
+    }
     // An alternative to `drop()` that allows you to handle the error if any
     #[inline(always)]
-    pub fn destroy(mut self) -> Result<(), virtual_memory::Error> {
+    pub fn destroy(mut self) -> Result<()> {
         self.destroy_impl()?;
         Ok(std::mem::forget(self))
     }
     // This MUST NOT be exposed publicly!!
     #[inline(always)]
-    fn destroy_impl(&mut self) -> Result<(), virtual_memory::Error> {
+    fn destroy_impl(&mut self) -> Result<()> {
         unsafe { self.virtual_memory_system.unreserve(self.reserved_virtual_address_range_start, self.reserved_virtual_address_range_size) }
     }
     #[inline(always)]
@@ -115,10 +144,10 @@ impl Allocator {
     pub fn can_track_allocations_racy(&self) -> bool {
         Self::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED && self.state.lock().num_allocations == 0
     }
-    pub fn set_track_allocations(&mut self, track_allocation_sizes: bool) -> Result<(), virtual_memory::Error> {
+    pub fn set_track_allocations(&mut self, track_allocation_sizes: bool) -> Result<()> {
         let state = self.state.lock();
         if state.num_allocations > 0 {
-            return Err(virtual_memory::Error::other("Calling set_track_allocations() is forbidden while there are live allocations"))
+            return Err(Error::other("Calling set_track_allocations() is forbidden while there are live allocations"))
         }
         #[cfg(feature="track_allocation_sizes")]
         {
@@ -127,7 +156,7 @@ impl Allocator {
             Ok(())
         }
         #[cfg(not(feature="track_allocation_sizes"))]
-        Err(virtual_memory::Error::other("Feature \"track_allocation_sizes\" is disabled"))
+        Err(Error::other("Feature \"track_allocation_sizes\" is disabled"))
     }
     #[inline(always)]
     pub fn virtual_memory_system(&self) -> &Arc<VirtualMemorySystem> {
@@ -180,7 +209,7 @@ impl Allocator {
         }
         (start, size)
     }
-    fn allocate(&self) -> Result<AllocationStorage, virtual_memory::Error> {
+    fn allocate(&self) -> Result<AllocationStorage> {
         let (index, cached_start) = {
             let mut state = self.state.lock();
 
@@ -194,7 +223,7 @@ impl Allocator {
                 if let Some(highest_actual_committed_size_among_allocations) = state.allocations_actual_committed_sizes.last_key_value().map(|x| *x.0) {
                     let new_available = self.actual_available_size_for_any_allocation_given_num_allocations(index + 1);
                     if new_available < highest_actual_committed_size_among_allocations {
-                        return Err(virtual_memory::Error::other(format!("Cannot create a new allocation: would reduce actual_available_size_for_any_allocation to {}, which would invalidate at least one allocation because it has an actual committed size of {}", new_available, highest_actual_committed_size_among_allocations)));
+                        return Err(Error::other(format!("Cannot create a new allocation: would reduce actual_available_size_for_any_allocation to {}, which would invalidate at least one allocation because it has an actual committed size of {}", new_available, highest_actual_committed_size_among_allocations)));
                     }
                 }
             }
@@ -254,30 +283,35 @@ pub struct Allocation {
     // Making this an Option is not strictly required, but it's better for ensuring that as few resources are used as possible.
     // The cost of branching on this Option is nothing compared to the benefits it gives
     storage: Option<AllocationStorage>,
+    drop_result_handler: DropResultHandler,
 }
 
 impl Drop for Allocation {
     fn drop(&mut self) {
-        self.decommit_all().unwrap_or_else(|e| {
-            Err::<(), _>(e).unwrap();
-            todo!() // Provide a way to override the drop() behavior
-        })
+        let r = self.decommit_all();
+        self.drop_result_handler.call(r);
     }
 }
 
 impl Allocation {
-    pub fn new(allocator: Arc<Allocator>) -> Self {
-        Self { allocator, storage: None }
+    pub fn new(allocator: Arc<Allocator>, drop_result_handler: DropResultHandler) -> Self {
+        Self { allocator, storage: None, drop_result_handler }
     }
     // The implementation _may_ avoid the Arc::clone(), hence it takes a reference
-    pub fn with_committed_size(allocator: &Arc<Allocator>, committed_size: usize, protection_flags: ProtectionFlags) -> Result<Self, virtual_memory::Error> {
-        let mut s = Self::new(allocator.clone());
+    pub fn with_committed_size(allocator: &Arc<Allocator>, drop_result_handler: DropResultHandler, committed_size: usize, protection_flags: ProtectionFlags) -> Result<Self> {
+        let mut s = Self::new(allocator.clone(), drop_result_handler);
         s.set_committed_size(committed_size, protection_flags)?;
         Ok(s)
     }
+    pub fn drop_result_handler(&self) -> &DropResultHandler {
+        &self.drop_result_handler
+    }
+    pub fn set_drop_handler(&mut self, drop_result_handler: DropResultHandler) {
+        self.drop_result_handler = drop_result_handler;
+    }
     // An alternative to `drop()` that allows you to handle the error if any
     #[inline(always)]
-    pub fn destroy(mut self) -> Result<(), virtual_memory::Error> {
+    pub fn destroy(mut self) -> Result<()> {
         self.decommit_all()
     }
     #[inline(always)]
@@ -329,13 +363,13 @@ impl Allocation {
         self.allocator.actual_available_size_for_any_allocation_racy()
     }
     // This is called `set_committed_size` because it can either grow or shrink the allocation
-    pub fn set_committed_size(&mut self, new_size: usize, protection_flags: ProtectionFlags) -> Result<(), virtual_memory::Error> {
+    pub fn set_committed_size(&mut self, new_size: usize, protection_flags: ProtectionFlags) -> Result<()> {
         if new_size == 0 {
             return self.decommit_all();
         }
 
         if new_size > isize::MAX as usize {
-            return Err(virtual_memory::Error::other(format!("Cannot allocate more than isize::MAX, functions such as ptr::add() assume this")));
+            return Err(Error::other(format!("Cannot allocate more than isize::MAX, functions such as ptr::add() assume this")));
         }
 
         if self.storage.is_none() {
@@ -358,7 +392,7 @@ impl Allocation {
                     let state = self.allocator.state.lock();
                     let actual_available_size = self.allocator.actual_available_size_for_any_allocation_given_num_allocations(state.num_allocations);
                     if new_actual_committed_size > actual_available_size {
-                        return Err(virtual_memory::Error::other(format!("Cannot set the committed size to {} (actual: {}); available = {}", new_size, new_actual_committed_size, actual_available_size)));
+                        return Err(Error::other(format!("Cannot set the committed size to {} (actual: {}); available = {}", new_size, new_actual_committed_size, actual_available_size)));
                     }
                     optional_state_lock = Some(state);
                 }
@@ -388,7 +422,7 @@ impl Allocation {
     }
     // Same as `set_committed_size(0)` but more efficient
     #[inline(always)]
-    pub fn decommit_all(&mut self) -> Result<(), virtual_memory::Error> {
+    pub fn decommit_all(&mut self) -> Result<()> {
         if let Some(storage) = self.storage.as_ref() {
             unsafe { self.allocator.virtual_memory_system.decommit(storage.committed_memory_start.as_ptr(), storage.committed_size) }?;
             self.allocator.deallocate(storage);
@@ -396,10 +430,10 @@ impl Allocation {
         }
         Ok(())
     }
-    pub fn grow(&mut self, additional_size: usize, protection_flags: ProtectionFlags) -> Result<(), virtual_memory::Error> {
+    pub fn grow(&mut self, additional_size: usize, protection_flags: ProtectionFlags) -> Result<()> {
         self.set_committed_size(self.committed_size().saturating_add(additional_size), protection_flags)
     }
-    pub fn set_layout_assuming_committed_size_is_nonzero(&mut self, layout: Layout, protection_flags: ProtectionFlags) -> Result<NonNull<[u8]>, virtual_memory::Error> {
+    pub fn set_layout_assuming_committed_size_is_nonzero(&mut self, layout: Layout, protection_flags: ProtectionFlags) -> Result<NonNull<[u8]>> {
         assert!(self.storage.is_some()); // Otherwise committed_memory_start() will give a dangling pointer
         let allocation_start = self.committed_memory_start();
         let align_offset = allocation_start.align_offset(layout.align());
@@ -416,63 +450,69 @@ pub struct LinearAllocator {
     protection_flags: ProtectionFlags,
 }
 
-unsafe impl std::alloc::Allocator for LinearAllocator {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        if layout.size() == 0 {
-            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
-        }
-        let mut allocation = self.allocation.lock();
+mod linear_allocator {
+    use std::{alloc::{handle_alloc_error, AllocError, Layout}, ptr::NonNull};
 
-        // This allocator does not support multiple non-zero allocations; it supports only one, which can grow and shrink, reflecting the way it's truly implemented.
-        // Supporting multiple non-zero allocations in any way that isn't plain stupid would require advanced management, such as internal allocations for storing a list of free ranges, etc.
-        if allocation.committed_size() > 0 {
-            return Err(AllocError);
-        }
-        allocation.set_committed_size(1, self.protection_flags).map_err(|_| AllocError)?;
-        allocation.set_layout_assuming_committed_size_is_nonzero(layout, self.protection_flags).map_err(|_| AllocError)
-    }
+    use super::LinearAllocator;
 
-    unsafe fn deallocate(&self, _ptr: NonNull<u8>, layout: Layout) {
-        // Caller may allocate() zero-size multiple times. A matching call to deallocate() for one of them must not invalidate any non-zero allocate().
-        if layout.size() == 0 {
-            return;
-        }
-        // If we reach here, then we must be the one non-zero allocation
-        self.allocation.lock().decommit_all().unwrap_or_else(|_| handle_alloc_error(layout))
-    }
+    unsafe impl std::alloc::Allocator for LinearAllocator {
+        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            if layout.size() == 0 {
+                return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+            }
+            let mut allocation = self.allocation.lock();
 
-    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        // This works ONLY because we allow no more than ONE non-zero allocation.
-        // If this results in new pages being committed, we know that we are the first one ever to commit them.
-        // We also know that any newly-committed page is zero-initialized.
-        #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
-        self.allocate(layout)
-    }
-
-    unsafe fn grow(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        // Caller may allocate() zero-size multiple times. If we are one of these zero-size allocations, make sure we do not disturb any existing non-zero allocation.
-        if old_layout.size() == 0 {
-            return self.allocate(new_layout);
+            // This allocator does not support multiple non-zero allocations; it supports only one, which can grow and shrink, reflecting the way it's truly implemented.
+            // Supporting multiple non-zero allocations in any way that isn't plain stupid would require advanced management, such as internal allocations for storing a list of free ranges, etc.
+            if allocation.committed_size() > 0 {
+                return Err(AllocError);
+            }
+            allocation.set_committed_size(1, self.protection_flags).map_err(|_| AllocError)?;
+            allocation.set_layout_assuming_committed_size_is_nonzero(layout, self.protection_flags).map_err(|_| AllocError)
         }
-        // If we reach here, then we must be the one non-zero allocation
-        self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
-    }
 
-    unsafe fn grow_zeroed(&self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        // See allocate_zeroed() for why this is correct
-        #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
-        unsafe { self.grow(ptr, old_layout, new_layout) }
-    }
+        unsafe fn deallocate(&self, _ptr: NonNull<u8>, layout: Layout) {
+            // Caller may allocate() zero-size multiple times. A matching call to deallocate() for one of them must not invalidate any non-zero allocate().
+            if layout.size() == 0 {
+                return;
+            }
+            // If we reach here, then we must be the one non-zero allocation
+            self.allocation.lock().decommit_all().unwrap_or_else(|_| handle_alloc_error(layout))
+        }
 
-    unsafe fn shrink(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        if old_layout.size() == 0 {
-            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+        fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            // This works ONLY because we allow no more than ONE non-zero allocation.
+            // If this results in new pages being committed, we know that we are the first one ever to commit them.
+            // We also know that any newly-committed page is zero-initialized.
+            #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
+            self.allocate(layout)
         }
-        if new_layout.size() == 0 {
-            return self.allocation.lock().decommit_all().map(|_| NonNull::slice_from_raw_parts(NonNull::dangling(), 0)).map_err(|_| AllocError);
+
+        unsafe fn grow(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            // Caller may allocate() zero-size multiple times. If we are one of these zero-size allocations, make sure we do not disturb any existing non-zero allocation.
+            if old_layout.size() == 0 {
+                return self.allocate(new_layout);
+            }
+            // If we reach here, then we must be the one non-zero allocation
+            self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
         }
-        // If we reach here, then we must be the one non-zero allocation
-        self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
+
+        unsafe fn grow_zeroed(&self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            // See allocate_zeroed() for why this is correct
+            #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
+            unsafe { self.grow(ptr, old_layout, new_layout) }
+        }
+
+        unsafe fn shrink(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            if old_layout.size() == 0 {
+                return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+            }
+            if new_layout.size() == 0 {
+                return self.allocation.lock().decommit_all().map(|_| NonNull::slice_from_raw_parts(NonNull::dangling(), 0)).map_err(|_| AllocError);
+            }
+            // If we reach here, then we must be the one non-zero allocation
+            self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
+        }
     }
 }
 
