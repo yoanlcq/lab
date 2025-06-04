@@ -244,6 +244,9 @@ impl ProtectionFlags {
         if access == 0 {
             return modifiers | 1; // PAGE_NOACCESS
         }
+        if access & Self::WRITE.bits() != 0 {
+            access = access & !Self::READ.bits();
+        }
         if access & Self::EXECUTE.bits() != 0 {
             access = access & !Self::EXECUTE.bits();
             access <<= 4;
@@ -261,7 +264,11 @@ impl ProtectionFlags {
         flags >>= 1; // PAGE_NOACCESS
         flags &= 3;
 
-        Self::from_bits_retain(modifiers | flags | if has_execute { 4 } else { 0 })
+        if flags & Self::WRITE.bits() != 0 {
+            flags |= Self::READ.bits();
+        }
+
+        Self::from_bits_retain(modifiers | flags | if has_execute { Self::EXECUTE.bits() } else { 0 })
     }
     #[inline(always)]
     pub fn from_os(flags: OsProtectionFlags) -> Self {

@@ -1,15 +1,15 @@
 #![feature(allocator_api)]
 
-use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ops::Add, ptr::NonNull, sync::Arc};
+use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ptr::NonNull, sync::Arc};
 
-use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, VirtualMemorySystem};
+use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, PtrRange, VirtualMemorySystem};
 
 type Result<T> = std::result::Result<T, Error>;
 
-// TODO: test that the functions work... In particular, reserve() does not set protection flags, will it work?
-// TODO: check that creating Allocations from multiple threads is possible
+// TODO: take note that I was able to reserve a 2^46 range
 // TODO: enumerate memory ranges, just out of curiosity (https://stackoverflow.com/a/20350190)
 // TODO: Provide good (and illustrated) documentation
+// TODO: run under Miri
 // TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code? Clippy: https://rust-lang.github.io/rust-clippy/master/#undocumented_unsafe_blocks
 // TODO: automated copyright notice?
 // TODO: automated licenses gathering?
@@ -255,7 +255,7 @@ impl Allocator {
 
         let committed_memory_start = cached_start.unwrap_or_else(|| Self::allocate_from_index(self.reserved_addr_range, index).addr());
 
-        Ok(AllocationStorage { index, committed_addr_range: AddrRange::new(committed_memory_start, 0) })
+        Ok(AllocationStorage { index, addr: committed_memory_start, ptr: None, size: 0 })
     }
     fn deallocate(&self, storage: &AllocationStorage) {
         let mut state = self.state.lock();
@@ -266,7 +266,7 @@ impl Allocator {
             return;
         }
 
-        let &AllocationStorage { index, committed_addr_range } = storage;
+        let &AllocationStorage { index, addr, ptr: _, size: _ } = storage;
 
         // If this was the last index, no need to add to the free list.
         // This may then trigger a chain reaction where we can keep doing that.
@@ -283,15 +283,17 @@ impl Allocator {
             return;
         }
 
-        state.free_allocation_indices.insert(index, committed_addr_range.addr());
+        state.free_allocation_indices.insert(index, addr);
     }
 }
 
 struct AllocationStorage {
     index: usize,
-    // This is not NonNull or PtrRange because we want to be Send and Sync.
-    // Storage is accessed via getters which enforce the usual rules.
-    committed_addr_range: AddrRange,
+    addr: Addr,
+    // The pointer's addr is ALWAYS equal to `addr` above,
+    // but we store the pointer separately so that its provenance is properly tracked
+    ptr: Option<Unique<u8>>,
+    size: usize,
 }
 
 pub struct Allocation {
@@ -340,12 +342,16 @@ impl Allocation {
         self.allocator.virtual_memory_system.page_size()
     }
     #[inline(always)]
+    pub fn allocation_addr(&self) -> Option<Addr> {
+        self.storage.as_ref().map(|s| s.addr)
+    }
+    // NOTE: The returned pointer is only guaranteed to have an addr equal to `allocation_addr()` as long as `committed_size() >= 1`.
     pub fn committed_memory_start(&self) -> NonNull<u8> {
-        self.storage.as_ref().map(|s| s.committed_addr_range.addr().get()).unwrap_or(NonNull::dangling())
+        self.storage.as_ref().map(|s| s.ptr.as_ref().map(Unique::get).unwrap_or(NonNull::dangling())).unwrap_or(NonNull::dangling())
     }
     #[inline(always)]
     pub fn committed_size(&self) -> usize {
-        self.storage.as_ref().map(|s| s.committed_addr_range.size()).unwrap_or(0)
+        self.storage.as_ref().map(|s| s.size).unwrap_or(0)
     }
     #[inline(always)]
     pub fn actual_committed_size(&self) -> usize {
@@ -396,8 +402,8 @@ impl Allocation {
         let storage = unsafe { self.storage.as_mut().unwrap_unchecked() };
 
         let page_size = self.allocator.virtual_memory_system.page_size().get();
-        let start = storage.committed_memory_start.addr().get();
-        let current_page_end = start + storage.committed_size.next_multiple_of(page_size);
+        let start = storage.addr.get();
+        let current_page_end = start + storage.size.next_multiple_of(page_size);
         let desired_page_end = start + new_size.next_multiple_of(page_size);
         if desired_page_end != current_page_end {
             #[cfg(feature="track_allocation_sizes")]
@@ -413,9 +419,23 @@ impl Allocation {
                     }
                     optional_state_lock = Some(state);
                 }
-                self.allocator.virtual_memory_system.commit(unsafe { storage.committed_memory_start.add(current_page_end) }.as_ptr(), desired_page_end - current_page_end, protection_flags)?;
+                let commit_result = self.allocator.virtual_memory_system.commit(AddrRange::new(Addr::new(current_page_end), desired_page_end - current_page_end), protection_flags);
+                if storage.ptr.is_none() {
+                    match commit_result {
+                        Ok(ptr_range) => storage.ptr = Some(unsafe { Unique::new(NonNull::new(ptr_range.ptr()).unwrap()) }),
+                        Err(e) => {
+                            #[cfg(feature="track_allocation_sizes")]
+                            drop(optional_state_lock);
+
+                            self.allocator.deallocate(storage);
+                            self.storage = None;
+                            return Err(e);
+                        }
+                    }
+                }
+                commit_result?;
             } else {
-                unsafe { self.allocator.virtual_memory_system.decommit(storage.committed_memory_start.add(desired_page_end).as_ptr(), current_page_end - desired_page_end) }?;
+                unsafe { self.allocator.virtual_memory_system.decommit(PtrRange::new(storage.ptr.unwrap().get().with_addr(NonZeroUsize::new(desired_page_end).unwrap()).as_ptr(), current_page_end - desired_page_end)) }?;
             }
 
             // Do this AFTER commit/decommit, because if they failed, we don't want to reach here.
@@ -434,14 +454,14 @@ impl Allocation {
                 }
             }
         }
-        storage.committed_size = new_size;
+        storage.size = new_size;
         Ok(())
     }
     // Same as `set_committed_size(0)` but more efficient
     #[inline(always)]
     pub fn decommit_all(&mut self) -> Result<()> {
         if let Some(storage) = self.storage.as_ref() {
-            unsafe { self.allocator.virtual_memory_system.decommit(storage.committed_memory_start.as_ptr(), storage.committed_size) }?;
+            unsafe { self.allocator.virtual_memory_system.decommit(PtrRange::new(storage.ptr.unwrap().get().as_ptr(), storage.size)) }?;
             self.allocator.deallocate(storage);
             self.storage = None;
         }
@@ -544,20 +564,18 @@ mod tests {
     #[test]
     fn it_works() {
         let virtual_memory_system = Arc::new(virtual_memory::VirtualMemorySystem::new());
-        let allocator = Arc::new(Allocator::create(&virtual_memory_system, NonZeroUsize::new(4096 * 1024).unwrap(), DropResultHandler::Unwrap, Allocator::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED).expect("Failed to create allocator"));
+        let allocator = Arc::new(Allocator::create(&virtual_memory_system, NonZeroUsize::new(isize::MAX as _).unwrap(), DropResultHandler::Unwrap, Allocator::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED).expect("Failed to create allocator"));
 
         {
             let allocator = allocator.clone();
             std::thread::spawn(move || {
                 let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
-                allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE);
+                allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE).unwrap();
             });
         }
 
         let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
-        allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE);
-
-        println!("Hello world!")
+        allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE).unwrap();
     }
 }
 
