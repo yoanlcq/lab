@@ -1,4 +1,6 @@
 //! Tiny wrapper around the current platform's virtual memory system.
+//! 
+//! Please refer to `examples/general_functionality.rs` for an introduction to the API.
 
 // TODO: expose MEM_WRITE_WATCH and similar APIs?
 
@@ -504,6 +506,4 @@ mod tests {
             vms.unreserve(r).unwrap();
         }
     }
-
-    // TODO: Add "visit page infos" example
 }
