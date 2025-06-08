@@ -3,6 +3,6 @@ resolver = "3"
 members = [
     "hive",
     "huge",
-    "research_lab",
+    "research_lab", "unique_ptr",
     "virtual_memory",
 ]

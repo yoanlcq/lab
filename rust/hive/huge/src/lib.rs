@@ -1,43 +1,17 @@
 #![feature(allocator_api)]
 
 use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ptr::NonNull, sync::Arc};
-
 use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, PtrRange, VirtualMemorySystem};
+use unique_ptr::Unique;
 
 type Result<T> = std::result::Result<T, Error>;
 
-// TODO: take note that I was able to reserve a 2^46 range
-// TODO: enumerate memory ranges, just out of curiosity (https://stackoverflow.com/a/20350190)
 // TODO: Provide good (and illustrated) documentation
 // TODO: run under Miri
 // TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code? Clippy: https://rust-lang.github.io/rust-clippy/master/#undocumented_unsafe_blocks
 // TODO: automated copyright notice?
 // TODO: automated licenses gathering?
 // TODO: automated export of non-confidential source code and commits?
-
-mod unique {
-    use std::ptr::NonNull;
-
-    #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct Unique<T>(NonNull<T>);
-
-    // OK because the caller of new() promises that nobody else is using the data pointed to by the pointer
-    unsafe impl<T> Send for Unique<T> {}
-
-    // OK because it has no interior mutability
-    unsafe impl<T> Sync for Unique<T> {}
-
-    impl<T> Unique<T> {
-        pub unsafe fn new(p: NonNull<T>) -> Self {
-            Self(p)
-        }
-        pub fn get(&self) -> NonNull<T> {
-            self.0
-        }
-    }
-}
-
-use unique::Unique;
 
 // A wrapper around a function; it allows you to opt-out of dynamic allocation if you don't want it
 pub enum DropResultHandler {
@@ -61,6 +35,11 @@ impl DropResultHandler {
             Self::Fn(f) => f(r),
             Self::Box(ref mut f) => f(r),
         }
+    }
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
     }
 }
 
@@ -96,6 +75,7 @@ impl Drop for Allocator {
 }
 
 impl Allocator {
+    /// NOTE: On Windows, the highest power of two I was able to reserve that way is 2^46.
     pub fn create(virtual_memory_system: &Arc<VirtualMemorySystem>, starting_size: NonZeroUsize, drop_result_handler: DropResultHandler, track_allocation_sizes: bool) -> Result<Self> {
         #[cfg(not(feature="track_allocation_sizes"))]
         if track_allocation_sizes {
@@ -104,11 +84,6 @@ impl Allocator {
 
         let page_size = virtual_memory_system.page_size();
         let allocation_granularity = virtual_memory_system.allocation_granularity();
-
-        // These are not "absolutely 100%" guaranteed by the virtual_memory API (because it does't need to),
-        // however this allocator in particular relies strongly on those facts which must be true in practice unless the operating system or CPU brand is insane
-        assert!(page_size.get().is_power_of_two());
-        assert!(allocation_granularity.get().is_multiple_of(page_size.get()));
 
         let mut attempt_size = ((starting_size.get() / 2) + 1).next_power_of_two().min(isize::MAX as usize);
         loop {
@@ -140,7 +115,7 @@ impl Allocator {
     pub fn set_drop_handler(&mut self, drop_result_handler: DropResultHandler) {
         self.drop_result_handler = drop_result_handler;
     }
-    // An alternative to `drop()` that allows you to handle the error if any
+    /// An alternative to `drop()` that allows you to handle the error if any
     #[inline(always)]
     pub fn destroy(mut self) -> Result<()> {
         self.destroy_impl()?;
@@ -151,6 +126,9 @@ impl Allocator {
     fn destroy_impl(&mut self) -> Result<()> {
         unsafe { self.virtual_memory_system.unreserve(self.reserved_addr_range) }
     }
+
+    pub const IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED: bool = cfg!(feature="track_allocation_sizes");
+
     #[inline(always)]
     pub fn is_tracking_allocation_sizes(&self) -> bool {
         #[cfg(feature="track_allocation_sizes")]
@@ -160,7 +138,8 @@ impl Allocator {
         #[cfg(not(feature="track_allocation_sizes"))]
         false
     }
-    pub const IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED: bool = cfg!(feature="track_allocation_sizes");
+
+    /// This is suffixed `_racy` because the returned value may change from one call to the next depending on what the background threads are doing.
     #[inline(always)]
     pub fn can_track_allocations_racy(&self) -> bool {
         Self::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED && self.state.lock().num_allocations == 0
@@ -191,16 +170,16 @@ impl Allocator {
     pub fn allocation_granularity(&self) -> NonZeroUsize {
         self.virtual_memory_system.allocation_granularity()
     }
-    // Note that dereferencing the memory may be unsafe if there are live allocations, because they may be using it!
     #[inline(always)]
     pub fn reserved_addr_range(&self) -> AddrRange {
         self.reserved_addr_range
     }
+    /// This is suffixed `_racy` because the returned value may change from one call to the next depending on what the background threads are doing.
     #[inline(always)]
     pub fn actual_available_size_for_any_allocation_racy(&self) -> usize {
         self.actual_available_size_for_any_allocation_given_num_allocations(self.state.lock().num_allocations)
     }
-    // This is rounded DOWN to page size boundary. Example: page_size = 4096, available = 2048, in this case actual_available = 0.
+    /// This is rounded DOWN to page size boundary. Example: page_size = 4096, available = 2048, in this case actual_available = 0.
     fn actual_available_size_for_any_allocation_given_num_allocations(&self, num_allocations: usize) -> usize {
         let page_size = self.virtual_memory_system.page_size().get();
         let current_max_num_allocations = num_allocations.next_power_of_two();
@@ -208,8 +187,8 @@ impl Allocator {
         let actual_available_size = (available_size / page_size) * page_size;
         actual_available_size
     }
-    // This function is designed for working with a `size` equal to 0 or power of two.
-    // It is still safe to call if the condition is not met, but the resulting pointer will not be unique for the given index.
+    /// This function is designed for working with a `size` equal to 0 or power of two.
+    /// It is still safe to call if the condition is not met, but the resulting pointer will not be unique for the given index.
     pub fn allocate_from_index(range: AddrRange, mut index: usize) -> AddrRange {
         let (mut start, mut size) = (range.addr().get(), range.size());
         loop {
@@ -285,6 +264,11 @@ impl Allocator {
 
         state.free_allocation_indices.insert(index, addr);
     }
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
+    }
 }
 
 struct AllocationStorage {
@@ -298,7 +282,7 @@ struct AllocationStorage {
 
 pub struct Allocation {
     allocator: Arc<Allocator>,
-    // This is None as long as committed_size == 0.
+    // This is `None` as long as `committed_size == 0`.
     // Making this an Option is not strictly required, but it's better for ensuring that as few resources are used as possible.
     // The cost of branching on this Option is nothing compared to the benefits it gives
     storage: Option<AllocationStorage>,
@@ -316,7 +300,7 @@ impl Allocation {
     pub fn new(allocator: Arc<Allocator>, drop_result_handler: DropResultHandler) -> Self {
         Self { allocator, storage: None, drop_result_handler }
     }
-    // The implementation _may_ avoid the Arc::clone(), hence it takes a reference
+    /// The implementation _may_ avoid the Arc::clone(), hence it takes a reference
     pub fn with_committed_size(allocator: &Arc<Allocator>, drop_result_handler: DropResultHandler, committed_size: usize, protection_flags: ProtectionFlags) -> Result<Self> {
         let mut s = Self::new(allocator.clone(), drop_result_handler);
         s.set_committed_size(committed_size, protection_flags)?;
@@ -328,7 +312,7 @@ impl Allocation {
     pub fn set_drop_handler(&mut self, drop_result_handler: DropResultHandler) {
         self.drop_result_handler = drop_result_handler;
     }
-    // An alternative to `drop()` that allows you to handle the error if any
+    /// An alternative to `drop()` that allows you to handle the error if any
     #[inline(always)]
     pub fn destroy(mut self) -> Result<()> {
         self.decommit_all()
@@ -345,7 +329,7 @@ impl Allocation {
     pub fn allocation_addr(&self) -> Option<Addr> {
         self.storage.as_ref().map(|s| s.addr)
     }
-    // NOTE: The returned pointer is only guaranteed to have an addr equal to `allocation_addr()` as long as `committed_size() >= 1`.
+    /// NOTE: The returned pointer is only guaranteed to have an addr equal to `allocation_addr()` as long as `committed_size() >= 1`.
     pub fn committed_memory_start(&self) -> NonNull<u8> {
         self.storage.as_ref().map(|s| s.ptr.as_ref().map(Unique::get).unwrap_or(NonNull::dangling())).unwrap_or(NonNull::dangling())
     }
@@ -381,11 +365,12 @@ impl Allocation {
     pub fn actual_committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
         NonNull::slice_from_raw_parts(self.committed_memory_start(), self.actual_committed_size())
     }
+    /// This is suffixed `_racy` because the returned value may change from one call to the next depending on what the background threads are doing.
     #[inline(always)]
     pub fn actual_available_size_racy(&self) -> usize {
         self.allocator.actual_available_size_for_any_allocation_racy()
     }
-    // This is called `set_committed_size` because it can either grow or shrink the allocation
+    /// This is called `set_committed_size` because it can either grow or shrink the allocation
     pub fn set_committed_size(&mut self, new_size: usize, protection_flags: ProtectionFlags) -> Result<()> {
         if new_size == 0 {
             return self.decommit_all();
@@ -457,7 +442,7 @@ impl Allocation {
         storage.size = new_size;
         Ok(())
     }
-    // Same as `set_committed_size(0)` but more efficient
+    /// Same as `set_committed_size(0)` but more efficient
     #[inline(always)]
     pub fn decommit_all(&mut self) -> Result<()> {
         if let Some(storage) = self.storage.as_ref() {
@@ -480,11 +465,24 @@ impl Allocation {
         self.set_committed_size(new_size, protection_flags)?;
         Ok(NonNull::slice_from_raw_parts(aligned_start, new_size))
     }
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
+    }
 }
 
 pub struct LinearAllocator {
     allocation: parking_lot::Mutex<Allocation>,
     protection_flags: ProtectionFlags,
+}
+
+impl LinearAllocator {
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
+    }
 }
 
 mod linear_allocator {
@@ -566,16 +564,18 @@ mod tests {
         let virtual_memory_system = Arc::new(virtual_memory::VirtualMemorySystem::new());
         let allocator = Arc::new(Allocator::create(&virtual_memory_system, NonZeroUsize::new(isize::MAX as _).unwrap(), DropResultHandler::Unwrap, Allocator::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED).expect("Failed to create allocator"));
 
-        {
+        let join_handle = {
             let allocator = allocator.clone();
             std::thread::spawn(move || {
                 let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
                 allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE).unwrap();
-            });
-        }
+            })
+        };
 
         let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
         allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE).unwrap();
+
+        join_handle.join().unwrap();
     }
 }
 

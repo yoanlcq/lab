@@ -8,7 +8,10 @@ fn main() {
     // Get some information. The `.get()` is because these are `NonZeroUsize`.
     let page_size = virtual_memory_system.page_size().get();
     let allocation_granularity = virtual_memory_system.allocation_granularity().get();
+
+    // Some stuff we promise to user code
     assert!(allocation_granularity.is_multiple_of(page_size));
+    assert!(page_size.is_power_of_two());
 
     // Start by reserving a range of virtual addresses.
     // This does NOT "allocate" memory, it just ensures the range is yours to use.
