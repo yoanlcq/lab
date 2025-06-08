@@ -1,3 +1,80 @@
+//! Tiny wrapper around the current platform's virtual memory system.
+//! 
+//! # Example
+//! 
+// NOTE: This example is copy-pasted from the test fn general_functionality(), please keep both in sync
+//! ```
+//! use virtual_memory::*;
+//! 
+//! // Instantiate a "virtual memory system"; it usually has no platform-specific equivalent, but does represent a platform-specific "initialization + information gathering" step.
+//! // You can instantiate as many as you like, they are all the same, since virtual memory is a process-wide resource.
+//! let virtual_memory_system = VirtualMemorySystem::new();
+//!
+//! // Get some information. The `.get()` is because these are `NonZeroUsize`.
+//! let page_size = virtual_memory_system.page_size().get();
+//! let allocation_granularity = virtual_memory_system.allocation_granularity().get();
+//! assert!(allocation_granularity.is_multiple_of(page_size));
+//!
+//! // Start by reserving a range of virtual addresses.
+//! // This does NOT "allocate" memory, it just ensures the range is yours to use.
+//! let reserved_range = {
+//!     // Let the OS decide the starting address
+//!     let starting_address_hint= None;
+//!
+//!     // Reserving a few pages should be fine.
+//!     // Note that the size is not required to be a multiple of the page size; in this crate, all APIs implicity calculate the range of pages touched by user-provided ranges, because this is generally done by the platform-specific API anyway.
+//!     let reserve_size = (page_size * 4) / 3;
+//!
+//!     virtual_memory_system.reserve(starting_address_hint, reserve_size).expect("Should be able to reserve a few pages worth of virtual address space")
+//! };
+//!
+//! // The returned range is exactly aligned to page boundaries
+//! assert!(reserved_range.addr().get().is_multiple_of(allocation_granularity));
+//! assert!(reserved_range.size() == page_size * 2);
+//!
+//! // Next let's make our reserved virtual address range usable by telling the OS to allow memory accesses to some pages.
+//! // This still does not yet "allocate" physical memory for the virtual pages; the allocation will occur only when the page's memory is accessed for the first time, and at that moment it will be zeroed.
+//! // For the sake of simplicity we pass the full reserved range, but you don't have to: you could choose to only commit a subset of pages as needed according to your allocation patterns.
+//! let protection_flags = ProtectionFlags::READ_WRITE;
+//! let committed_range = virtual_memory_system.commit(reserved_range, protection_flags).expect("commit() should not fail since the range was just reserved");
+//!
+//! assert_eq!(committed_range.ptr().addr(), reserved_range.addr().get());
+//! assert_eq!(committed_range.size(), reserved_range.size());
+//!
+//! // We can then start using that memory!
+//! for i in 0..committed_range.size() {
+//!     // SAFETY: everything is within range and we are the only ones using that memory
+//!     let byte = unsafe { &mut *committed_range.ptr().add(i) };
+//!     // Newly-committed pages have their memory set to zero by the OS
+//!     assert_eq!(*byte, 0, "Newly-committed pages are supposed to have their memory zeroed by the OS");
+//!     // We set the protection to READ_WRITE, so we can write
+//!     *byte = i as u8;
+//! }
+//!
+//! // We can get information about a range of pages sharing the same properties starting at some address
+//! let page_range_info = virtual_memory_system.page_range_info(reserved_range.addr()).expect("Getting the page info should not fail, as it was reserved");
+//! assert_eq!(page_range_info.allocation_addr().unwrap(), reserved_range.addr());
+//! assert_eq!(page_range_info.allocation_os_protection_flags().map(ProtectionFlags::from_os).unwrap(), ProtectionFlags::empty());
+//! assert_eq!(page_range_info.os_protection_flags().map(ProtectionFlags::from_os).unwrap(), protection_flags);
+//! assert_eq!(page_range_info.addr().get(), committed_range.ptr().addr());
+//! assert_eq!(page_range_info.size(), committed_range.size());
+//! assert_eq!(page_range_info.state(), PageState::Committed);
+//! assert_eq!(page_range_info.type_().unwrap(), PageType::Private);
+//!
+//! // Don't forget to clean-up.
+//! // Obviously, on any modern OS, this also happens automatically when the process exists.
+//!
+//! // SAFETY: Nobody is currently using the memory withing the committed range
+//! unsafe {
+//!     virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range");
+//! }
+//!
+//! // SAFETY: We're passing a virtual address range returned by reserve()
+//! unsafe {
+//!     virtual_memory_system.unreserve(reserved_range).expect("unreserve() should not fail, because the range is exactly the one returned by reserve()");
+//! }
+//! ```
+//! 
 // TODO: expose MEM_WRITE_WATCH and similar APIs?
 
 use std::num::NonZeroUsize;
@@ -29,6 +106,11 @@ impl Addr {
     pub fn get(&self) -> usize {
         self.0
     }
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
+    }
 }
 
 // In the APIs provided by this crate, virtual address ranges are **ALWAYS** treated as having their bounds implicitly extended in both directions until they are aligned to a page boundary.
@@ -58,6 +140,11 @@ impl AddrRange {
     #[inline(always)]
     pub fn size(&self) -> usize {
         self.size
+    }
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
     }
 }
 
@@ -93,6 +180,12 @@ impl PtrRange {
 pub struct VirtualMemorySystem {
     page_size: NonZeroUsize,
     allocation_granularity: NonZeroUsize,
+}
+
+impl Drop for VirtualMemorySystem {
+    fn drop(&mut self) {
+        // Nothing, just implement Drop to stay compatible with user code in case there is a need for it one day
+    }
 }
 
 impl VirtualMemorySystem {
@@ -141,6 +234,7 @@ impl VirtualMemorySystem {
     }
 
     /// NOTE: It is unspecified whether `protection_flags` will be applied to pages that were already committed.
+    /// On Windows, `protection_flags` will be applied to the entire passed range.
     /// 
     /// When a page transitions from "reserved" to "committed", its memory is zeroed. Note that this does not happen when committing an already-committed page.
     /// 
@@ -157,7 +251,9 @@ impl VirtualMemorySystem {
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     /// 
-    /// Safety: You must make sure that nobody else is currently using that memory.
+    /// # Safety
+    /// 
+    /// You must make sure that nobody else is currently using that memory.
     #[inline(always)]
     pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
         #[cfg(windows)]
@@ -166,7 +262,8 @@ impl VirtualMemorySystem {
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     /// 
-    /// Safety:
+    /// # Safety
+    /// 
     /// - You MUST pass the ENTIRE range previously returned by a call to `reserve` (i.e: the returned pointer, and the requested size).
     /// - You must make sure that nobody else is currently using that memory.
     ///
@@ -177,8 +274,11 @@ impl VirtualMemorySystem {
         unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, winapi::um::winnt::MEM_RELEASE) }
     }
 
-    // If succeeds, returns the previous protection flags of the FIRST page that intersects the specified range
-    // Safety: You must make sure the new protection flags will not cause issues with existing allocations
+    /// If succeeds, returns the previous protection flags of the FIRST page that intersects the specified range
+    /// 
+    /// # Safety
+    /// 
+    /// You must make sure the new protection flags will not cause issues with existing allocations
     #[inline(always)]
     pub unsafe fn set_protection_flags(&self, addr_range: AddrRange, flags: ProtectionFlags) -> Result<OsProtectionFlags> {
         #[cfg(windows)]
@@ -206,6 +306,12 @@ impl VirtualMemorySystem {
     #[inline(always)]
     pub fn page_range_info_iter(&self, addr: Addr) -> PageRangeInfoIterator {
         PageRangeInfoIterator { virtual_memory_system: self, addr, finished: false }
+    }
+
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
     }
 }
 
@@ -301,7 +407,7 @@ impl<'a> Iterator for PageRangeInfoIterator<'a> {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PageRangeInfo {
-    ptr: *mut u8,
+    addr: Addr,
     size: usize,
     state: PageState,
     not_free: Option<PageRangeInfoNotFree>,
@@ -312,7 +418,7 @@ struct PageRangeInfoNotFree {
     // Undefined if state == Reserved
     protection_flags: Option<OsProtectionFlags>,
     type_: PageType,
-    allocation_ptr: *mut u8,
+    allocation_addr: Addr,
     // May be 0 if the caller does not have access
     allocation_protection_flags: OsProtectionFlags,
 }
@@ -330,21 +436,21 @@ impl PageRangeInfo {
             Some(PageRangeInfoNotFree {
                 protection_flags: if State == winapi::um::winnt::MEM_RESERVE { None } else { Some(Protect) },
                 type_: PageType::try_from_windows(Type).unwrap(),
-                allocation_ptr: AllocationBase.cast(),
+                allocation_addr: Addr::new(AllocationBase as _),
                 allocation_protection_flags: AllocationProtect,
             })
         };
 
         Self {
-            ptr: BaseAddress.cast(),
+            addr: Addr::new(BaseAddress as _),
             size: RegionSize,
             state: PageState::try_from_windows(State).unwrap(),
             not_free,
         }
     }
     #[inline(always)]
-    pub fn ptr(&self) -> *mut u8 {
-        self.ptr
+    pub fn addr(&self) -> Addr {
+        self.addr
     }
     #[inline(always)]
     pub fn size(&self) -> usize {
@@ -363,12 +469,17 @@ impl PageRangeInfo {
         self.not_free.map(|x| x.type_)
     }
     #[inline(always)]
-    pub fn allocation_ptr(&self) -> Option<*mut u8> {
-        self.not_free.map(|x| x.allocation_ptr)
+    pub fn allocation_addr(&self) -> Option<Addr> {
+        self.not_free.map(|x| x.allocation_addr)
     }
     #[inline(always)]
     pub fn allocation_os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.allocation_protection_flags)
+    }
+    #[allow(dead_code)]
+    fn must_be_send_and_sync() {
+        fn f<T: Send + Sync>() {}
+        f::<Self>();
     }
 }
 
@@ -414,11 +525,96 @@ impl PageType {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
-    // TODO: is it fine to reserve with no protection?
-    // TODO: does committing change the protection of existing pages?
+    // NOTE: This example is copy-pasted in the crate's doc, please keep both in sync
+    #[test]
+    fn general_functionality() {
+        // Instantiate a "virtual memory system"; it usually has no platform-specific equivalent, but does represent a platform-specific "initialization + information gathering" step.
+        // You can instantiate as many as you like, they are all the same, since virtual memory is a process-wide resource.
+        let virtual_memory_system = VirtualMemorySystem::new();
+
+        // Get some information. The `.get()` is because these are `NonZeroUsize`.
+        let page_size = virtual_memory_system.page_size().get();
+        let allocation_granularity = virtual_memory_system.allocation_granularity().get();
+        assert!(allocation_granularity.is_multiple_of(page_size));
+
+        // Start by reserving a range of virtual addresses.
+        // This does NOT "allocate" memory, it just ensures the range is yours to use.
+        let reserved_range = {
+            // Let the OS decide the starting address
+            let starting_address_hint= None;
+
+            // Reserving a few pages should be fine.
+            // Note that the size is not required to be a multiple of the page size; in this crate, all APIs implicity calculate the range of pages touched by user-provided ranges, because this is generally done by the platform-specific API anyway.
+            let reserve_size = (page_size * 4) / 3;
+
+            virtual_memory_system.reserve(starting_address_hint, reserve_size).expect("Should be able to reserve a few pages worth of virtual address space")
+        };
+
+        // The returned range is exactly aligned to page boundaries
+        assert!(reserved_range.addr().get().is_multiple_of(allocation_granularity));
+        assert!(reserved_range.size() == page_size * 2);
+
+        // Next let's make our reserved virtual address range usable by telling the OS to allow memory accesses to some pages.
+        // This still does not yet "allocate" physical memory for the virtual pages; the allocation will occur only when the page's memory is accessed for the first time, and at that moment it will be zeroed.
+        // For the sake of simplicity we pass the full reserved range, but you don't have to: you could choose to only commit a subset of pages as needed according to your allocation patterns.
+        let protection_flags = ProtectionFlags::READ_WRITE;
+        let committed_range = virtual_memory_system.commit(reserved_range, protection_flags).expect("commit() should not fail since the range was just reserved");
+
+        assert_eq!(committed_range.ptr().addr(), reserved_range.addr().get());
+        assert_eq!(committed_range.size(), reserved_range.size());
+
+        // We can then start using that memory!
+        for i in 0..committed_range.size() {
+            // SAFETY: everything is within range and we are the only ones using that memory
+            let byte = unsafe { &mut *committed_range.ptr().add(i) };
+            // Newly-committed pages have their memory set to zero by the OS
+            assert_eq!(*byte, 0, "Newly-committed pages are supposed to have their memory zeroed by the OS");
+            // We set the protection to READ_WRITE, so we can write
+            *byte = i as u8;
+        }
+
+        // We can get information about a range of pages sharing the same properties starting at some address
+        let page_range_info = virtual_memory_system.page_range_info(reserved_range.addr()).expect("Getting the page info should not fail, as it was reserved");
+        assert_eq!(page_range_info.allocation_addr().unwrap(), reserved_range.addr());
+        assert_eq!(page_range_info.allocation_os_protection_flags().map(ProtectionFlags::from_os).unwrap(), ProtectionFlags::empty());
+        assert_eq!(page_range_info.os_protection_flags().map(ProtectionFlags::from_os).unwrap(), protection_flags);
+        assert_eq!(page_range_info.addr().get(), committed_range.ptr().addr());
+        assert_eq!(page_range_info.size(), committed_range.size());
+        assert_eq!(page_range_info.state(), PageState::Committed);
+        assert_eq!(page_range_info.type_().unwrap(), PageType::Private);
+
+        // Don't forget to clean-up.
+        // Obviously, on any modern OS, this also happens automatically when the process exists.
+
+        // SAFETY: Nobody is currently using the memory withing the committed range
+        unsafe {
+            virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range");
+        }
+
+        // SAFETY: We're passing a virtual address range returned by reserve()
+        unsafe {
+            virtual_memory_system.unreserve(reserved_range).expect("unreserve() should not fail, because the range is exactly the one returned by reserve()");
+        }
+    }
 
     #[test]
-    fn it_works() {
+    fn committing_already_committed_pages() {
+        let vms = VirtualMemorySystem::new();
+        let page_size = vms.page_size().get();
+        let r = vms.reserve(None, page_size * 2).unwrap();
+        let ra = AddrRange::new(r.addr(), page_size);
+        let rb = AddrRange::new(r.addr(), page_size * 2);
+        vms.commit(ra, ProtectionFlags::READ_WRITE).unwrap();
+        let pb = vms.commit(rb, ProtectionFlags::READ_WRITE_EXECUTE).unwrap();
+        let info = vms.page_range_info(ra.addr()).unwrap();
+        assert_eq!(info.os_protection_flags().map(ProtectionFlags::from_os).unwrap(), ProtectionFlags::READ_WRITE_EXECUTE);
+        unsafe {
+            vms.decommit(pb).unwrap();
+            vms.unreserve(r).unwrap();
+        }
     }
+
+    // TODO: Add "visit page infos" example
 }
