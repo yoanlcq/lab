@@ -4,14 +4,25 @@ use std::{mem::MaybeUninit, ptr::NonNull};
 #[inline(always)]
 pub fn get_system_info() -> winapi::um::sysinfoapi::SYSTEM_INFO {
     let mut info = MaybeUninit::uninit();
-    unsafe {
+
+    #[cfg_attr(not(miri), allow(unused_mut))]
+    let mut info = unsafe {
         winapi::um::sysinfoapi::GetSystemInfo(info.as_mut_ptr());
         info.assume_init()
+    };
+
+    // Miri handles `GetSystemInfo()` specially by zeroing the struct; at the time of this writing it only preserves `dwPageSize` dans `dwNumberOfProcessors`
+    // https://doc.rust-lang.org/nightly/nightly-rustc/src/miri/shims/windows/foreign_items.rs.html#430
+    #[cfg(miri)]
+    {
+        info.dwAllocationGranularity = std::cmp::max(info.dwAllocationGranularity, info.dwPageSize); // Take the max() in case Miri ends up providing proper support later
     }
+
+    info
 }
 
 pub fn virtual_alloc(starting_address_hint: usize, size: usize, flags: u32, protection: u32) -> Result<NonNull<u8>, Error> {
-    let p = unsafe { winapi::um::memoryapi::VirtualAlloc(starting_address_hint as *mut _, size, flags, protection) };
+    let p = unsafe { winapi::um::memoryapi::VirtualAlloc(std::ptr::without_provenance_mut(starting_address_hint), size, flags, protection) };
     if p.is_null() {
         Err(Error::last_os_error())
     } else {
