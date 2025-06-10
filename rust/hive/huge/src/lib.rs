@@ -1,6 +1,6 @@
 #![feature(allocator_api)]
 
-use std::{alloc::Layout, collections::BTreeMap, num::NonZeroUsize, ptr::NonNull, sync::Arc};
+use std::{alloc::Layout, collections::BTreeMap, fmt::Debug, num::NonZeroUsize, ptr::NonNull, sync::Arc};
 use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, PtrRange, VirtualMemorySystem};
 use unique_ptr::Unique;
 
@@ -27,6 +27,21 @@ impl Default for DropResultHandler {
     }
 }
 
+impl Debug for DropResultHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Unwrap => write!(f, "Unwrap"),
+            Self::Ignore => write!(f, "Ignore"),
+            Self::Fn(func) => {
+                write!(f, "Fn(")?;
+                func.fmt(f)?;
+                write!(f, ")")
+            },
+            Self::Box(_) => write!(f, "Box(<closure>)"),
+        }
+    }
+}
+
 impl DropResultHandler {
     pub fn call(&mut self, r: Result<()>) {
         match *self {
@@ -43,7 +58,7 @@ impl DropResultHandler {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct AllocatorState {
     num_allocations: usize,
     // Storing the pointer is not strictly necessary, it's just an optimization to avoid the iterative "index to pointer" algorithm
@@ -54,6 +69,7 @@ struct AllocatorState {
     allocations_actual_committed_sizes: BTreeMap<usize, usize>,
 }
 
+#[derive(Debug)]
 pub struct Allocator {
     virtual_memory_system: Arc<VirtualMemorySystem>,
     // start: Aligned to allocation granularity, which itself must be a multiple of the page size
@@ -271,6 +287,7 @@ impl Allocator {
     }
 }
 
+#[derive(Debug)]
 struct AllocationStorage {
     index: usize,
     addr: Addr,
@@ -280,6 +297,7 @@ struct AllocationStorage {
     size: usize,
 }
 
+#[derive(Debug)]
 pub struct Allocation {
     allocator: Arc<Allocator>,
     // This is `None` as long as `committed_size == 0`.
@@ -472,6 +490,7 @@ impl Allocation {
     }
 }
 
+#[derive(Debug)]
 pub struct LinearAllocator {
     allocation: parking_lot::Mutex<Allocation>,
     protection_flags: ProtectionFlags,
