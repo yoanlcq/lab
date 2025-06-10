@@ -1,19 +1,75 @@
 //! Tiny wrapper around the current platform's virtual memory system.
 //! 
 //! Please refer to `examples/general_functionality.rs` for an introduction to the API.
+#![warn(
+    clippy::all,
+    clippy::pedantic,
+    clippy::restriction,
+    clippy::nursery,
+    clippy::cargo,
+)]
+
+// General guidelines
+#![allow(clippy::absolute_paths, reason = "It's great")]
+#![allow(clippy::arbitrary_source_item_ordering, reason = "It's complicated, especially functions in impls")]
+#![allow(clippy::as_conversions, reason = "It's fine")]
+#![allow(clippy::as_pointer_underscore, reason = "It's fine")]
+#![allow(clippy::as_underscore, reason = "It's fine")]
+#![allow(clippy::blanket_clippy_restriction_lints, reason = "We want most of clippy::restriction except some items")]
+#![allow(clippy::implicit_return, reason = "It's great")]
+#![allow(clippy::min_ident_chars, reason = "It's great")]
+#![allow(clippy::missing_trait_methods, reason = "It's fine")]
+#![allow(clippy::question_mark_used, reason = "It's fine")]
+#![allow(clippy::shadow_reuse, reason = "It's fine")]
+#![allow(clippy::shadow_same, reason = "It's fine")]
+#![allow(clippy::shadow_unrelated, reason = "It's fine")]
+#![allow(clippy::single_call_fn, reason = "It's fine")]
+#![allow(clippy::single_char_lifetime_names, reason = "It's fine")]
+#![allow(clippy::unreadable_literal, reason = "It's fine, I don't want to split 4096 into 4_096")]
+
+// Maybe they got a point for this crate
+#![allow(clippy::pub_use, reason = "We need to alias the type from std")]
+
+// Tmp
+#![allow(clippy::cargo_common_metadata, reason = "Temporary to breathe")]
+#![allow(clippy::inline_always, reason = "Temporary to breathe")]
+#![allow(clippy::missing_const_for_fn, reason = "Temporary to breathe")]
+#![allow(clippy::missing_docs_in_private_items, reason = "Temporary to breathe")]
+#![allow(clippy::missing_inline_in_public_items, reason = "Temporary to breathe")]
+#![allow(clippy::missing_panics_doc, reason = "Temporary to breathe")]
+#![allow(clippy::must_use_candidate, reason = "Temporary to breathe")]
+#![allow(clippy::unwrap_used, reason = "Temporary to breathe")]
+
+// From the GSheets
+#![allow(clippy::allow_attributes, reason = "Temporary to breathe")]
+#![allow(clippy::allow_attributes_without_reason, reason = "Temporary to breathe")]
+#![allow(clippy::arithmetic_side_effects, reason = "Temporary to breathe")]
+#![allow(clippy::borrow_as_ptr, reason = "Temporary to breathe")]
+#![allow(clippy::default_numeric_fallback, reason = "Temporary to breathe")]
+#![allow(clippy::elidable_lifetime_names, reason = "Temporary to breathe")]
+#![allow(clippy::empty_drop, reason = "Temporary to breathe")]
+#![allow(clippy::exhaustive_enums, reason = "Temporary to breathe")]
+#![allow(clippy::exhaustive_structs, reason = "Temporary to breathe")]
+#![allow(clippy::map_unwrap_or, reason = "Temporary to breathe")]
+#![allow(clippy::missing_errors_doc, reason = "Temporary to breathe")]
+#![allow(clippy::missing_inline_in_public_items, reason = "Temporary to breathe")]
+#![allow(clippy::missing_panics_doc, reason = "Temporary to breathe")]
+#![allow(clippy::multiple_unsafe_ops_per_block, reason = "Temporary to breathe")]
+#![allow(clippy::std_instead_of_core, reason = "Temporary to breathe")]
+#![allow(clippy::undocumented_unsafe_blocks, reason = "Temporary to breathe")]
 
 // TODO: expose MEM_WRITE_WATCH and similar APIs?
 
-use std::num::NonZeroUsize;
+use core::num::NonZeroUsize;
+use bitflags::bitflags;
 
 pub use std::io::Error as Error;
 
-type Result<T> = std::result::Result<T, Error>;
-
-use bitflags::bitflags;
-
 #[cfg(windows)]
 mod windows_imp;
+
+type Result<T> = core::result::Result<T, Error>;
+
 
 // This is provided in order to be a bit nicer to read than `usize` when we are dealing with addresses, and to avoid confusing them with actual allocation sizes.
 //
@@ -25,15 +81,16 @@ mod windows_imp;
 pub struct Addr(usize);
 
 impl Addr {
-    #[inline(always)]
-    pub fn new(addr: usize) -> Self {
+    #[must_use]
+    #[inline]
+    pub const fn new(addr: usize) -> Self {
         Self(addr)
     }
-    #[inline(always)]
+    #[must_use]
     pub fn get(&self) -> usize {
         self.0
     }
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "This function just exists to check an invariant at compile-time")]
     fn must_be_send_and_sync() {
         fn f<T: Send + Sync>() {}
         f::<Self>();
