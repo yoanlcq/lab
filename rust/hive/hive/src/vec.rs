@@ -541,6 +541,9 @@ impl<T> ItemAccessor<T> {
     fn borrow_mut_via_range_guard(&self, range_guard: &RangeRefMut<T>) -> ItemRefMut<T> {
         self.try_borrow_mut_via_range_guard(range_guard).unwrap()
     }
+    /// # Safety
+    /// 
+    /// You must make sure that the item is not borrowed mutably, to respect Rust's strict aliasing rules. Failure to do so may result in Undefined Behavior.
     pub unsafe fn borrow_unchecked(&self) -> ItemRef<T> {
         #[cfg(feature = "trust_unchecked_borrows")]
         {
@@ -549,6 +552,9 @@ impl<T> ItemAccessor<T> {
         #[cfg(not(feature = "trust_unchecked_borrows"))]
         self.borrow()
     }
+    /// # Safety
+    /// 
+    /// You must make sure that the item is not borrowed (mutably or not) by anyone else, to respect Rust's strict aliasing rules. Failure to do so may result in Undefined Behavior.
     pub unsafe fn borrow_mut_unchecked(&self) -> ItemRefMut<T> {
         #[cfg(feature = "trust_unchecked_borrows")]
         {

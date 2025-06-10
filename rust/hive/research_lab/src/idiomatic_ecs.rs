@@ -19,10 +19,12 @@ pub struct Entities {
     map: HashMap<EID, Entity>,
 }
 
+type EIDClosure = Box<dyn FnMut(EID)>;
+
 #[derive(Default)]
 pub struct Positions {
     map: HashMap<EID, SyncUnsafeCell<f32>>,
-    pre_remove: HashMap<EID, Vec<Box<dyn FnMut(EID)>>>,
+    pre_remove: HashMap<EID, Vec<EIDClosure>>,
 }
 
 impl Positions {

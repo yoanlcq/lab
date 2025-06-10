@@ -32,9 +32,9 @@ fn main() {
                 num_ranges += 1;
             },
             Err(e) => {
-                println!("Error (this may be normal if this is the last iteration): {}", e);
+                println!("Error (this may be normal if this is the last iteration): {e}");
             }
         }
     }
-    println!("Listed {} page ranges", num_ranges);
+    println!("Listed {num_ranges} page ranges");
 }

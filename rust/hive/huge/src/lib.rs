@@ -6,9 +6,9 @@ use unique_ptr::Unique;
 
 type Result<T> = std::result::Result<T, Error>;
 
+// TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code? Clippy: https://rust-lang.github.io/rust-clippy/master/#undocumented_unsafe_blocks
 // TODO: Provide good (and illustrated) documentation
 // TODO: run under Miri
-// TODO: Be pedantic about "# Safety" in the doc and "SAFETY: " in the code? Clippy: https://rust-lang.github.io/rust-clippy/master/#undocumented_unsafe_blocks
 // TODO: automated copyright notice?
 // TODO: automated licenses gathering?
 // TODO: automated export of non-confidential source code and commits?
@@ -112,7 +112,7 @@ impl Allocator {
                         state: Default::default(),
                         drop_result_handler,
                         #[cfg(feature="track_allocation_sizes")]
-                        track_allocation_sizes: track_allocation_sizes,
+                        track_allocation_sizes,
                     });
                 },
                 Err(e) => {
@@ -135,7 +135,8 @@ impl Allocator {
     #[inline(always)]
     pub fn destroy(mut self) -> Result<()> {
         self.destroy_impl()?;
-        Ok(std::mem::forget(self))
+        std::mem::forget(self);
+        Ok(())
     }
     // This MUST NOT be exposed publicly!!
     #[inline(always)]
@@ -200,8 +201,7 @@ impl Allocator {
         let page_size = self.virtual_memory_system.page_size().get();
         let current_max_num_allocations = num_allocations.next_power_of_two();
         let available_size = self.reserved_addr_range.size() / current_max_num_allocations;
-        let actual_available_size = (available_size / page_size) * page_size;
-        actual_available_size
+        (available_size / page_size) * page_size
     }
     /// This function is designed for working with a `size` equal to 0 or power of two.
     /// It is still safe to call if the condition is not met, but the resulting pointer will not be unique for the given index.
@@ -213,7 +213,7 @@ impl Allocator {
                 break;
             }
             if index & 1 != 0 {
-                start = start + size;
+                start += size;
             }
             if index <= 1 {
                 break;
@@ -236,7 +236,7 @@ impl Allocator {
                 if let Some(highest_actual_committed_size_among_allocations) = state.allocations_actual_committed_sizes.last_key_value().map(|x| *x.0) {
                     let new_available = self.actual_available_size_for_any_allocation_given_num_allocations(index + 1);
                     if new_available < highest_actual_committed_size_among_allocations {
-                        return Err(Error::other(format!("Cannot create a new allocation: would reduce actual_available_size_for_any_allocation to {}, which would invalidate at least one allocation because it has an actual committed size of {}", new_available, highest_actual_committed_size_among_allocations)));
+                        return Err(Error::other(format!("Cannot create a new allocation: would reduce actual_available_size_for_any_allocation to {new_available}, which would invalidate at least one allocation because it has an actual committed size of {highest_actual_committed_size_among_allocations}")));
                     }
                 }
             }
@@ -395,7 +395,7 @@ impl Allocation {
         }
 
         if new_size > isize::MAX as usize {
-            return Err(Error::other(format!("Cannot allocate more than isize::MAX, functions such as ptr::add() assume this")));
+            return Err(Error::other("Cannot allocate more than isize::MAX, functions such as ptr::add() assume this"));
         }
 
         if self.storage.is_none() {
@@ -418,7 +418,7 @@ impl Allocation {
                     let state = self.allocator.state.lock();
                     let actual_available_size = self.allocator.actual_available_size_for_any_allocation_given_num_allocations(state.num_allocations);
                     if new_actual_committed_size > actual_available_size {
-                        return Err(Error::other(format!("Cannot set the committed size to {} (actual: {}); available = {}", new_size, new_actual_committed_size, actual_available_size)));
+                        return Err(Error::other(format!("Cannot set the committed size to {new_size} (actual: {new_actual_committed_size}); available = {actual_available_size}")));
                     }
                     optional_state_lock = Some(state);
                 }

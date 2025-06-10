@@ -201,7 +201,7 @@ impl ArenaHeader {
         assert_eq!(arena_header.strong_ref_count.load(std::sync::atomic::Ordering::SeqCst), 1, "After creating internal structures, the arena's strong ref count must still be 1");
         let arena_header_ptr = NonNull::from(arena_header);
         assert_ne!(arena_header_ptr.addr(), NonZeroUsize::MAX);
-        ArenaStrongRef { arena_header_ptr, phantom: PhantomData::default() }
+        ArenaStrongRef { arena_header_ptr, phantom: PhantomData }
     }
     pub fn client_area(&self) -> NonNull<[u8]> {
         let self_p = NonNull::from(self);
@@ -211,6 +211,9 @@ impl ArenaHeader {
         debug_assert!(self_p.addr() >= self.allocation.addr() && start.addr() <= end);
         NonNull::slice_from_raw_parts(start, end.get() - start.addr().get())
     }
+    /// # Safety
+    /// 
+    /// You must ensure that nobody is using the memory
     pub unsafe fn drop_suballocations(&self) {
         // TODO: attempt to free inner allocations. Then shrink our allocation until only the memory for the header remains.
         // Should be a matter of calling VirtualFree(client_area().round_up_to_page_size(), MEM_DECOMMIT)
@@ -223,10 +226,7 @@ impl ArenaHeader {
         todo!()
     }
     fn create_relocatable_vec_internal_to_this_arena<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
-        self.create_relocatable_vec().map(|x| {
-            x.take_arena_strong_ref();
-            x
-        })
+        self.create_relocatable_vec().inspect(|x| { x.take_arena_strong_ref(); })
     }
 }
 
@@ -259,7 +259,7 @@ impl Clone for ArenaStrongRef {
         self.arena_header().strong_ref_count.fetch_add(1, std::sync::atomic::Ordering::Acquire);
         Self {
             arena_header_ptr: self.arena_header_ptr,
-            phantom: PhantomData::default(),
+            phantom: PhantomData,
         }
     }
 }
@@ -322,7 +322,7 @@ impl ArenaWeakRef {
         if self.arena_header()?.strong_ref_count.fetch_update(std::sync::atomic::Ordering::Acquire, std::sync::atomic::Ordering::Relaxed, checked_increment).is_ok() {
             Some(ArenaStrongRef {
                 arena_header_ptr: self.arena_header_ptr,
-                phantom: PhantomData::default(),
+                phantom: PhantomData,
             })
         } else {
             None

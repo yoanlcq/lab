@@ -115,6 +115,12 @@ impl Drop for VirtualMemorySystem {
     }
 }
 
+impl Default for VirtualMemorySystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VirtualMemorySystem {
     // How "expensive" this is depends on the OS, but it's generally cheap and you typically don't need to do this many times.
     pub fn new() -> Self {
@@ -275,17 +281,17 @@ impl Default for ProtectionFlags {
 
 impl ProtectionFlags {
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
-    fn to_windows_uint(&self) -> OsProtectionFlagsPrimitiveUint {
-        let modifiers = (*self & Self::MODIFIERS_MASK).bits();
-        let mut access = (*self & Self::ACCESS_MASK).bits();
+    fn to_windows_uint(self) -> OsProtectionFlagsPrimitiveUint {
+        let modifiers = (self & Self::MODIFIERS_MASK).bits();
+        let mut access = (self & Self::ACCESS_MASK).bits();
         if access == 0 {
             return modifiers | 1; // PAGE_NOACCESS
         }
         if access & Self::WRITE.bits() != 0 {
-            access = access & !Self::READ.bits();
+            access &= !Self::READ.bits();
         }
         if access & Self::EXECUTE.bits() != 0 {
-            access = access & !Self::EXECUTE.bits();
+            access &= !Self::EXECUTE.bits();
             access <<= 4;
         }
         modifiers | (access << 1)
@@ -293,7 +299,6 @@ impl ProtectionFlags {
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
     fn from_windows_uint(mut flags: OsProtectionFlagsPrimitiveUint) -> Self {
         let modifiers = flags & Self::MODIFIERS_MASK.bits();
-        flags &= !Self::MODIFIERS_MASK.bits();
 
         let has_execute = flags & 0xf0 != 0;
         if has_execute {
@@ -310,7 +315,7 @@ impl ProtectionFlags {
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
     #[inline(always)]
-    pub fn to_windows(&self) -> OsProtectionFlags {
+    pub fn to_windows(self) -> OsProtectionFlags {
         OsProtectionFlags(self.to_windows_uint())
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
@@ -324,7 +329,7 @@ impl ProtectionFlags {
         Self::from_windows(flags)
     }
     #[inline(always)]
-    pub fn to_os(&self) -> OsProtectionFlags {
+    pub fn to_os(self) -> OsProtectionFlags {
         #[cfg(windows)]
         self.to_windows()
     }
