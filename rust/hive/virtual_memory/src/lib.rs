@@ -1,6 +1,7 @@
 //! Tiny wrapper around the current platform's virtual memory system.
 //! 
 //! Please refer to `examples/general_functionality.rs` for an introduction to the API.
+/*
 #![warn(
     clippy::all,
     clippy::pedantic,
@@ -57,6 +58,7 @@
 #![allow(clippy::multiple_unsafe_ops_per_block, reason = "Temporary to breathe")]
 #![allow(clippy::std_instead_of_core, reason = "Temporary to breathe")]
 #![allow(clippy::undocumented_unsafe_blocks, reason = "Temporary to breathe")]
+*/
 
 // TODO: expose MEM_WRITE_WATCH and similar APIs?
 

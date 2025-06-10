@@ -3,6 +3,9 @@ name = "huge"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 default = ["track_allocation_sizes"]
 track_allocation_sizes = []
