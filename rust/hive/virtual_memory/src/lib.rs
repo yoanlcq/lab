@@ -70,6 +70,9 @@ pub use std::io::Error as Error;
 #[cfg(windows)]
 mod windows_imp;
 
+// #[cfg(miri)]
+mod miri_workaround;
+
 type Result<T> = core::result::Result<T, Error>;
 
 
@@ -127,6 +130,22 @@ impl AddrRange {
     pub fn size(&self) -> usize {
         self.size
     }
+    #[inline(always)]
+    pub fn to_usize_range(self) -> std::ops::Range<usize> {
+        self.addr.get() .. self.addr.get() + self.size
+    }
+    #[inline(always)]
+    pub fn start(&self) -> usize {
+        self.addr.get()
+    }
+    #[inline(always)]
+    pub fn end(&self) -> usize {
+        self.addr.get() + self.size
+    }
+    #[inline(always)]
+    pub fn contains(&self, other: AddrRange) -> bool {
+        self.start() <= other.start() && other.end() <= self.end()
+    }
     #[allow(dead_code)]
     fn must_be_send_and_sync() {
         fn f<T: Send + Sync>() {}
@@ -148,6 +167,12 @@ impl PtrRange {
     pub fn new(ptr: *mut u8, size: usize) -> Self {
         Self { ptr, size }
     }
+    #[must_use]
+    #[inline(always)]
+    pub fn covering_page_size(self, page_size: NonZeroUsize) -> Self {
+        let addr_range = self.to_addr_range().covering_page_size(page_size);
+        Self::new(self.ptr.with_addr(addr_range.addr().get()), addr_range.size())
+    }
     #[inline(always)]
     pub fn ptr(&self) -> *mut u8 {
         self.ptr
@@ -156,16 +181,22 @@ impl PtrRange {
     pub fn size(&self) -> usize {
         self.size
     }
+    #[inline(always)]
+    pub fn to_addr_range(self) -> AddrRange {
+        AddrRange::new(Addr::new(self.ptr.addr()), self.size)
+    }
 }
 
 /// This represents a "handle" to the OS's virtual memory API.
 ///
 /// In practice (e.g on Windows or Unix) there is generally no such thing, however what is interesting and maybe "expensive" to get is system information such as page size.
 /// So you could choose to instantiate as many `VirtualMemorySystem`s as you like if you're fine with that, or to instantiate only one. Your call, depending on what you know or prefer.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone)]
 pub struct VirtualMemorySystem {
     page_size: NonZeroUsize,
     allocation_granularity: NonZeroUsize,
+    // #[cfg(miri)]
+    miri_workaround_system: miri_workaround::System,
 }
 
 impl Drop for VirtualMemorySystem {
@@ -189,6 +220,8 @@ impl VirtualMemorySystem {
             Self {
                 page_size: NonZeroUsize::new(dwPageSize as _).unwrap(),
                 allocation_granularity: NonZeroUsize::new(dwAllocationGranularity as _).unwrap(),
+                // #[cfg(miri)]
+                miri_workaround_system: miri_workaround::System::new(NonZeroUsize::new(dwPageSize as _).unwrap(), NonZeroUsize::new(dwAllocationGranularity as _).unwrap()),
             }
         }
     }
@@ -218,11 +251,13 @@ impl VirtualMemorySystem {
     /// For instance, if `page_size() == 4096`, `starting_address_hint == 4095` and `size == 2`, then assuming the call succeeds, the reserved range will be `0 .. 8192`.
     #[inline(always)]
     pub fn reserve(&self, starting_address_hint: Option<Addr>, size: usize) -> Result<AddrRange> {
-        #[cfg(windows)]
+        #[cfg(all(windows, not(miri)))]
         {
             let non_null = windows_imp::virtual_alloc(starting_address_hint.map(|x| x.get()).unwrap_or(0), size, winapi::um::winnt::MEM_RESERVE, winapi::um::winnt::PAGE_NOACCESS)?;
             Ok(AddrRange::new(Addr::new(non_null.addr().get()), size).covering_page_size(self.page_size))
         }
+        #[cfg(miri)]
+        self.miri_workaround_system.reserve(starting_address_hint, size)
     }
 
     /// NOTE: It is unspecified whether `protection_flags` will be applied to pages that were already committed.
@@ -231,14 +266,18 @@ impl VirtualMemorySystem {
     /// When a page transitions from "reserved" to "committed", its memory is zeroed. Note that this does not happen when committing an already-committed page.
     /// 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
+    /// 
+    /// This returns a `PtrRange` corresponding to `addr_range.covering_page_size(page_size)`.
     #[inline(always)]
     pub fn commit(&self, addr_range: AddrRange, protection_flags: ProtectionFlags) -> Result<PtrRange> {
-        #[cfg(windows)]
+        #[cfg(all(windows, not(miri)))]
         {
             let non_null = windows_imp::virtual_alloc(addr_range.addr.get(), addr_range.size, winapi::um::winnt::MEM_COMMIT, protection_flags.to_windows().0)?;
             let aligned_addr_range = addr_range.covering_page_size(self.page_size);
             Ok(PtrRange::new(non_null.as_ptr().with_addr(aligned_addr_range.addr.get()), aligned_addr_range.size))
         }
+        #[cfg(miri)]
+        self.miri_workaround_system.commit(addr_range, protection_flags)
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
@@ -248,8 +287,10 @@ impl VirtualMemorySystem {
     /// You must make sure that nobody else is currently using that memory.
     #[inline(always)]
     pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
-        #[cfg(windows)]
+        #[cfg(all(windows, not(miri)))]
         unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, winapi::um::winnt::MEM_DECOMMIT) }
+        #[cfg(miri)]
+        unsafe { self.decommit(ptr_range) }
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
@@ -262,8 +303,10 @@ impl VirtualMemorySystem {
     /// On Windows, this will implicitly de-commit the pages for you before unreserving.
     #[inline(always)]
     pub unsafe fn unreserve(&self, addr_range: AddrRange) -> Result<()> {
-        #[cfg(windows)]
+        #[cfg(all(windows, not(miri)))]
         unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, winapi::um::winnt::MEM_RELEASE) }
+        #[cfg(miri)]
+        unsafe { self.miri_workaround_system.unreserve(addr_range) }
     }
 
     /// If succeeds, returns the previous protection flags of the FIRST page that intersects the specified range
