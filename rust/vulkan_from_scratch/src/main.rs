@@ -1,9 +1,9 @@
 extern crate ash;
 extern crate winapi;
 
-use std::ffi::CStr;
 use std::{ffi::OsStr, mem::MaybeUninit};
 use std::os::windows::ffi::OsStrExt;
+use std::io::Error;
 
 use ash::vk;
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
@@ -69,7 +69,7 @@ impl VkPhysicalDeviceWrapper {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Error> {
     let allocation_callbacks = None;
     let vk = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan API");
     unsafe {
@@ -116,10 +116,7 @@ fn main() {
             let queue_priorities = [1.; 64];
             let queue_create_infos: Vec<_> = chosen_physical_device.required_queues().into_iter().map(|x| {
                 assert!(queue_priorities.len() >= x.count as _);
-                vk::DeviceQueueCreateInfo {
-                    queue_family_index: x.family_index,
-                    .. Default::default()
-                }.queue_priorities(&queue_priorities[.. x.count as _])
+                vk::DeviceQueueCreateInfo::default().queue_family_index(x.family_index).queue_priorities(&queue_priorities[.. x.count as _])
             }).collect();
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_create_infos)
@@ -183,4 +180,6 @@ fn main() {
             DispatchMessageW(msg.assume_init_mut());
         }
     }
+
+    Ok(())
 }
