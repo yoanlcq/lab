@@ -3,36 +3,11 @@ extern crate ash_window;
 extern crate windows;
 extern crate raw_window_handle;
 
-use std::io::Error;
+mod display;
+mod gpu;
+mod window;
 
 use ash::vk;
-
-use windows::{
-    core::{w},
-    Win32::Foundation::*,
-    Win32::Graphics::Gdi::*,
-    Win32::System::LibraryLoader::*,
-    Win32::UI::WindowsAndMessaging::*,
-};
-
-extern "system" fn wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_DESTROY => {
-            unsafe {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-        }
-        _ => unsafe {
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-    }
-}
 
 extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -99,7 +74,7 @@ impl VkPhysicalDeviceWrapper {
     }
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> Result<(), std::io::Error> {
     let allocation_callbacks = None;
     let vk = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan API");
     unsafe {
@@ -197,48 +172,10 @@ fn main() -> Result<(), Error> {
         vk_instance.destroy_instance(None);
     }
 
-    let hinstance = unsafe { GetModuleHandleW(None) }.unwrap(); // Question: maybe not as simple as this? https://stackoverflow.com/a/78906765
-    let window_class_name = w!("VulkanFromScratch");
-    let window_title = w!("Window Title");
-    unsafe {
-        let wndclass = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wndproc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: hinstance.into(),
-            hIcon: HICON::default(),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hbrBackground: GetSysColorBrush(COLOR_WINDOW),
-            lpszMenuName: windows::core::PCWSTR::null(),
-            lpszClassName: window_class_name,
-        };
-        let atom = RegisterClassW(&wndclass);
-        assert_ne!(atom, 0);
-    }
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(), // extended style flags
-            window_class_name,
-            window_title,
-            WS_OVERLAPPEDWINDOW, // style flags
-            CW_USEDEFAULT, CW_USEDEFAULT, // x, y
-            CW_USEDEFAULT, CW_USEDEFAULT, // width, height
-            None, // parent window
-            None, // menu
-            Some(hinstance.into()),
-            None // optional payload passed to WM_CREATE
-        )
-    }.unwrap();
-    unsafe {
-        _ = ShowWindow(hwnd, SW_SHOW);
-
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).into() {
-            _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    let display = window::Display::open(&window::DisplayParams {})?;
+    let window = display.create_window(&window::WindowParams {})?;
+    window.show();
+    display.main_event_loop();
 
     Ok(())
 }
