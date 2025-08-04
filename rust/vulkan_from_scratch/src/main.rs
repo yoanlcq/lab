@@ -1,29 +1,32 @@
 extern crate ash;
-extern crate winapi;
+extern crate windows;
 
-use std::{ffi::OsStr, mem::MaybeUninit};
-use std::os::windows::ffi::OsStrExt;
 use std::io::Error;
 
 use ash::vk;
-use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
-use winapi::shared::windef::HWND;
-use winapi::um::winuser::{DefWindowProcW, LoadCursorW, PostQuitMessage, RegisterClassW, COLOR_WINDOW, IDC_ARROW, WM_DESTROY, WNDCLASSW};
-use winapi::um::{libloaderapi::GetModuleHandleW, winuser::{CreateWindowExW, DispatchMessageW, GetMessageW, ShowWindow, TranslateMessage, CW_USEDEFAULT, SW_SHOW, WS_OVERLAPPEDWINDOW}};
 
-unsafe extern "system" fn wndproc(
+use windows::Win32::Graphics::Gdi::COLOR_WINDOW;
+use windows::{
+    core::{w},
+    Win32::Foundation::*,
+    Win32::Graphics::Gdi::*,
+    Win32::System::LibraryLoader::*,
+    Win32::UI::WindowsAndMessaging::*,
+};
+
+extern "system" fn wndproc(
     hwnd: HWND,
-    msg: UINT,
+    msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        msg if msg == WM_DESTROY => {
+        WM_DESTROY => {
             unsafe {
                 PostQuitMessage(0);
-                0
+                LRESULT(0)
             }
-        },
+        }
         _ => unsafe {
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -38,7 +41,7 @@ struct VkPhysicalDeviceWrapper {
     physical_device: vk::PhysicalDevice,
     props: vk::PhysicalDeviceProperties,
     features: vk::PhysicalDeviceFeatures,
-    mem_props: vk::PhysicalDeviceMemoryProperties,
+    // mem_props: vk::PhysicalDeviceMemoryProperties,
     queue_family_props: Vec<vk::QueueFamilyProperties>,
 }
 
@@ -49,7 +52,7 @@ impl VkPhysicalDeviceWrapper {
                 physical_device,
                 props: vk_instance.get_physical_device_properties(physical_device),
                 features: vk_instance.get_physical_device_features(physical_device),
-                mem_props: vk_instance.get_physical_device_memory_properties(physical_device),
+                // mem_props: vk_instance.get_physical_device_memory_properties(physical_device),
                 queue_family_props: vk_instance.get_physical_device_queue_family_properties(physical_device),
             }
         }
@@ -133,51 +136,46 @@ fn main() -> Result<(), Error> {
         vk_instance.destroy_instance(None);
     }
 
-    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) }; // Question: maybe not as simple as this? https://stackoverflow.com/a/78906765
-    let window_class_name = OsStr::new("VulkanFromScratch\0").encode_wide().collect::<Vec<_>>();
-    let window_title = OsStr::new("Window Title\0").encode_wide().collect::<Vec<_>>();
+    let hinstance = unsafe { GetModuleHandleW(None) }.unwrap(); // Question: maybe not as simple as this? https://stackoverflow.com/a/78906765
+    let window_class_name = w!("VulkanFromScratch");
+    let window_title = w!("Window Title");
     unsafe {
         let wndclass = WNDCLASSW {
-            style: 0,
+            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             cbClsExtra: 0,
-            cbWndExtra: 0, 
-            hInstance: hinstance,
-            hIcon: std::ptr::null_mut(),
-            hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
-            hbrBackground: (COLOR_WINDOW + 1) as _,
-            lpszMenuName: std::ptr::null_mut(),
-            lpszClassName: window_class_name.as_ptr(),
+            cbWndExtra: 0,
+            hInstance: hinstance.into(),
+            hIcon: HICON::default(),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
+            hbrBackground: GetSysColorBrush(COLOR_WINDOW),
+            lpszMenuName: windows::core::PCWSTR::null(),
+            lpszClassName: window_class_name,
         };
         let atom = RegisterClassW(&wndclass);
-        if atom == 0 {
-            std::process::exit(1);
-        }
+        assert_ne!(atom, 0);
     }
     let hwnd = unsafe {
         CreateWindowExW(
-            0, // extended style flags
-            window_class_name.as_ptr(),
-            window_title.as_ptr(),
+            WINDOW_EX_STYLE::default(), // extended style flags
+            window_class_name,
+            window_title,
             WS_OVERLAPPEDWINDOW, // style flags
             CW_USEDEFAULT, CW_USEDEFAULT, // x, y
             CW_USEDEFAULT, CW_USEDEFAULT, // width, height
-            std::ptr::null_mut(), // parent window
-            std::ptr::null_mut(), // menu
-            hinstance,
-            std::ptr::null_mut() // optional payload passed to WM_CREATE
+            None, // parent window
+            None, // menu
+            Some(hinstance.into()),
+            None // optional payload passed to WM_CREATE
         )
-    };
+    }.unwrap();
     unsafe {
-        ShowWindow(hwnd, SW_SHOW);
-        loop {
-            let mut msg = MaybeUninit::uninit();
-            let has_message = GetMessageW(msg.as_mut_ptr(), std::ptr::null_mut(), 0, 0);
-            if has_message == 0 {
-                break;
-            }
-            TranslateMessage(msg.assume_init_mut());
-            DispatchMessageW(msg.assume_init_mut());
+        _ = ShowWindow(hwnd, SW_SHOW);
+
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).into() {
+            _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
     }
 
