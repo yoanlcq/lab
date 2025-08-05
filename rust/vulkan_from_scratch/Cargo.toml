@@ -3,6 +3,14 @@ name = "vulkan_from_scratch"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "vulkan_from_scratch_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vulkan_from_scratch_bin"
+path = "src/main.rs"
+
 [dependencies]
 ash = "0.38.0"
 ash-window = "0.13.0"

@@ -1,3 +1,5 @@
+use std::{cell::RefCell, os::windows::ffi::OsStrExt, rc::Rc};
+
 use super::{DisplayParams, WindowParams};
 
 use windows::{
@@ -10,8 +12,21 @@ use windows::{
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_CLOSE => {
+            unsafe {
+                // TODO: consider asking the user before exit and calling DestroyWindow() only if confirmed
+                DestroyWindow(hwnd).unwrap();
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             unsafe {
+                // TODO: PostQuitMessage only if there are no more windows OR the app is willing to exit
+                // Several situations:
+                // - Closing one of the windows is enough to close the app
+                // - Closing all of the windows is enough to close the app
+                // Then:
+                // - Dispatch a global event on "request exit"
                 PostQuitMessage(0);
             }
             LRESULT(0)
@@ -25,16 +40,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 #[derive(Debug)]
 pub struct Display {
     hinstance: HINSTANCE,
+    typical_window_class: RefCell<std::rc::Weak<WindowClass>>
 }
 
 #[derive(Debug)]
 pub struct Window {
+    #[allow(dead_code)]
+    class: Rc<WindowClass>,
     hwnd: HWND,
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
-        unsafe { _ = CloseWindow(self.hwnd) }
+        unsafe { _ = DestroyWindow(self.hwnd) }
     }
 }
 
@@ -45,35 +63,29 @@ impl Display {
             // Options:
             // - Consider passing None instead to APIs where possible
             // - Consider allowing the caller to override this
-            hinstance: unsafe { GetModuleHandleW(None) }?.into()
+            hinstance: unsafe { GetModuleHandleW(None) }?.into(),
+            typical_window_class: Default::default(),
         })
     }
     pub fn create_window(&self, _params: &WindowParams) -> Result<Window, std::io::Error> {
-        let window_class_name = w!("VulkanFromScratch");
         let window_title = w!("Window Title");
 
-        let wndclass = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wndproc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: self.hinstance,
-            hIcon: HICON::default(),
-            hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }?,
-            hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
-            lpszMenuName: windows::core::PCWSTR::null(),
-            lpszClassName: window_class_name,
+        let class = {
+            let mut class_lock = self.typical_window_class.borrow_mut();
+            match class_lock.upgrade() {
+                Some(class) => class,
+                None => {
+                    let class = Rc::new(self.register_window_class()?);
+                    *class_lock = Rc::downgrade(&class);
+                    class
+                },
+            }
         };
-
-        let atom = unsafe { RegisterClassW(&wndclass) };
-        if atom == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
 
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(), // extended style flags
-                window_class_name,
+                windows::core::PCWSTR::from_raw(class.name.as_ptr()),
                 window_title,
                 WS_OVERLAPPEDWINDOW, // style flags
                 CW_USEDEFAULT, CW_USEDEFAULT, // x, y
@@ -86,6 +98,7 @@ impl Display {
         }?;
 
         Ok(Window {
+            class,
             hwnd
         })
     }
@@ -99,6 +112,32 @@ impl Display {
             }
         }
     }
+
+    fn register_window_class(&self) -> Result<WindowClass, std::io::Error> {
+        let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0").encode_wide().collect();
+        let wndclass = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wndproc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: self.hinstance,
+            hIcon: HICON::default(),
+            hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }?,
+            hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
+            lpszMenuName: windows::core::PCWSTR::null(),
+            lpszClassName: windows::core::PCWSTR::from_raw(name.as_ptr()),
+        };
+
+        let atom = unsafe { RegisterClassW(&wndclass) };
+        if atom == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(WindowClass {
+            name,
+            hinstance: self.hinstance,
+        })
+    }
 }
 
 impl Window {
@@ -107,3 +146,16 @@ impl Window {
     }
 }
 
+#[derive(Debug)]
+struct WindowClass {
+    name: Vec<u16>,
+    hinstance: HINSTANCE,
+}
+
+impl Drop for WindowClass {
+    fn drop(&mut self) {
+        unsafe {
+            _ = UnregisterClassW(windows::core::PCWSTR::from_raw(self.name.as_ptr()), Some(self.hinstance));
+        }
+    }
+}

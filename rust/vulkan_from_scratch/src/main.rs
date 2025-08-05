@@ -1,11 +1,4 @@
-extern crate ash;
-extern crate ash_window;
-extern crate windows;
-extern crate raw_window_handle;
-
-mod display;
-mod gpu;
-mod window;
+use vulkan_from_scratch_lib::window;
 
 use ash::vk;
 
@@ -173,8 +166,10 @@ fn main() -> Result<(), std::io::Error> {
     }
 
     let display = window::Display::open(&window::DisplayParams {})?;
-    let window = display.create_window(&window::WindowParams {})?;
-    window.show();
+    let window0 = display.create_window(&window::WindowParams {})?;
+    let window1 = display.create_window(&window::WindowParams {})?;
+    window0.show();
+    window1.show();
     display.main_event_loop();
 
     Ok(())
