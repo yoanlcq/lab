@@ -1,4 +1,8 @@
+use std::{any::Any, fmt::Debug};
+
 use ash::vk;
+
+use crate::gpu::{ApiArc, DeviceImpl, DeviceParams};
 
 use super::{ApiParams, ApiImpl};
 
@@ -28,11 +32,11 @@ extern "system" fn vulkan_debug_callback(
     vk::FALSE
 }
 
-struct VkDesiredQueueItem {
+struct DesiredQueueItem {
     family_index: u32,
     count: u32,
 }
-struct VkPhysicalDeviceWrapper {
+struct PhysicalDeviceWrapper {
     physical_device: vk::PhysicalDevice,
     props: vk::PhysicalDeviceProperties,
     features: vk::PhysicalDeviceFeatures,
@@ -40,7 +44,7 @@ struct VkPhysicalDeviceWrapper {
     queue_family_props: Vec<vk::QueueFamilyProperties>,
 }
 
-impl VkPhysicalDeviceWrapper {
+impl PhysicalDeviceWrapper {
     pub fn new(vk_instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Self {
         unsafe {
             Self {
@@ -52,14 +56,14 @@ impl VkPhysicalDeviceWrapper {
             }
         }
     }
-    pub fn required_queues(&self) -> Vec<VkDesiredQueueItem> {
+    pub fn required_queues(&self) -> Vec<DesiredQueueItem> {
         let mut out = Vec::with_capacity(1);
         for (i, it) in self.queue_family_props.iter().enumerate() {
             if it.queue_count == 0 { // ???
                 continue;
             }
             if it.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
-                out.push(VkDesiredQueueItem { family_index: i as _, count: 1 });
+                out.push(DesiredQueueItem { family_index: i as _, count: 1 });
                 break;
             }
         }
@@ -67,31 +71,35 @@ impl VkPhysicalDeviceWrapper {
     }
 }
 
-pub struct Api {
+pub struct VulkanApi {
+    #[allow(dead_code)] // !!! ash::Entry must not be dropped, otherwise further calls will crash
+    vk: ash::Entry,
     instance: ash::Instance,
-    device: ash::Device,
     debug_utils_loader: ash::ext::debug_utils::Instance,
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
+    allocator: Option<vk::AllocationCallbacks<'static>>,
 }
 
-impl Drop for Api {
+impl Debug for VulkanApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VulkanApi")
+            .field("instance", &self.instance.handle())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for VulkanApi {
     fn drop(&mut self) {
-        let allocator = Self::allocator();
         unsafe {
-            self.device.device_wait_idle().unwrap();
-            self.device.destroy_device(allocator.as_ref());
-            self.debug_utils_loader.destroy_debug_utils_messenger(self.debug_utils_messenger, allocator.as_ref());
-            self.instance.destroy_instance(allocator.as_ref());
+            self.debug_utils_loader.destroy_debug_utils_messenger(self.debug_utils_messenger, self.allocator.as_ref());
+            self.instance.destroy_instance(self.allocator.as_ref());
         }
     }
 }
 
-impl Api {
-    fn allocator() -> Option<vk::AllocationCallbacks<'static>> {
-        None
-    }
+impl VulkanApi {
     pub fn create(params: &ApiParams) -> Result<Self, std::io::Error> {
-        let allocator = Self::allocator();
+        let allocator = None;
         let vk = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan API");
         unsafe {
             let instance = {
@@ -140,51 +148,96 @@ impl Api {
             let debug_utils_loader = ash::ext::debug_utils::Instance::new(&vk, &instance);
             let debug_utils_messenger = debug_utils_loader.create_debug_utils_messenger(&debug_info, allocator.as_ref()).unwrap();
 
-            let mut physical_devices: Vec<VkPhysicalDeviceWrapper> = instance.enumerate_physical_devices().unwrap().into_iter().map(|physical_device| VkPhysicalDeviceWrapper::new(&instance, physical_device)).collect();
-
-            let physical_device_types_sorted = [
-                vk::PhysicalDeviceType::DISCRETE_GPU,
-                vk::PhysicalDeviceType::INTEGRATED_GPU,
-                vk::PhysicalDeviceType::VIRTUAL_GPU,
-                vk::PhysicalDeviceType::CPU,
-                vk::PhysicalDeviceType::OTHER,
-            ];
-
-            physical_devices.sort_by(|a, b| {
-                let a_type_score = physical_device_types_sorted.iter().position(|x| *x == a.props.device_type);
-                let b_type_score = physical_device_types_sorted.iter().position(|x| *x == b.props.device_type);
-                a_type_score.cmp(&b_type_score)
-                // TODO: among these, try to find the best GPU. taking into account required+desired features+extensions
-            });
-
-            let chosen_physical_device = physical_devices.iter().find(|x| {
-                !x.required_queues().is_empty()
-            }).unwrap();
-
-            let device = {
-                let queue_priorities = [1.; 64];
-                let queue_create_infos: Vec<_> = chosen_physical_device.required_queues().into_iter().map(|x| {
-                    assert!(queue_priorities.len() >= x.count as _);
-                    vk::DeviceQueueCreateInfo::default().queue_family_index(x.family_index).queue_priorities(&queue_priorities[.. x.count as _])
-                }).collect();
-                let device_create_info = vk::DeviceCreateInfo::default()
-                    .queue_create_infos(&queue_create_infos)
-                    .enabled_extension_names(&[])
-                    .enabled_features(&chosen_physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
-                instance.create_device(chosen_physical_device.physical_device, &device_create_info, allocator.as_ref()).unwrap()
-            };
-
             Ok(Self {
+                vk,
                 instance,
-                device,
                 debug_utils_loader,
                 debug_utils_messenger,
+                allocator,
             })
         }
     }
 }
 
-impl ApiImpl for Api {
+impl ApiImpl for VulkanApi {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>, std::io::Error> {
+        let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }.unwrap().into_iter().map(|physical_device| PhysicalDeviceWrapper::new(&self.instance, physical_device)).collect();
 
+        let physical_device_types_sorted = [
+            vk::PhysicalDeviceType::DISCRETE_GPU,
+            vk::PhysicalDeviceType::INTEGRATED_GPU,
+            vk::PhysicalDeviceType::VIRTUAL_GPU,
+            vk::PhysicalDeviceType::CPU,
+            vk::PhysicalDeviceType::OTHER,
+        ];
+
+        physical_devices.sort_by(|a, b| {
+            let a_type_score = physical_device_types_sorted.iter().position(|x| *x == a.props.device_type);
+            let b_type_score = physical_device_types_sorted.iter().position(|x| *x == b.props.device_type);
+            a_type_score.cmp(&b_type_score)
+            // TODO: among these, try to find the best GPU. taking into account required+desired features+extensions
+        });
+
+        let chosen_physical_device = physical_devices.iter().find(|x| {
+            !x.required_queues().is_empty()
+        }).unwrap();
+
+        let device = {
+            let queue_priorities = [1.; 64];
+            let queue_create_infos: Vec<_> = chosen_physical_device.required_queues().into_iter().map(|x| {
+                assert!(queue_priorities.len() >= x.count as _);
+                vk::DeviceQueueCreateInfo::default().queue_family_index(x.family_index).queue_priorities(&queue_priorities[.. x.count as _])
+            }).collect();
+            let device_create_info = vk::DeviceCreateInfo::default()
+                .queue_create_infos(&queue_create_infos)
+                .enabled_extension_names(&[])
+                .enabled_features(&chosen_physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
+            unsafe {
+                self.instance.create_device(chosen_physical_device.physical_device, &device_create_info, self.allocator.as_ref())
+            }.unwrap()
+        };
+
+        Ok(Box::new(VulkanDevice {
+            api: api_arc.clone(),
+            device
+        }))
+    }
 }
 
+pub struct VulkanDevice {
+    api: ApiArc,
+    device: ash::Device,
+}
+
+impl Debug for VulkanDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VulkanDevice")
+            .field("handle", &self.device.handle())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VulkanDevice {
+    fn api(&self) -> &VulkanApi {
+        self.api.0.imp.as_any().downcast_ref::<VulkanApi>().unwrap()
+    }
+}
+
+impl Drop for VulkanDevice {
+    fn drop(&mut self) {
+        let allocator = self.api().allocator;
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+            self.device.destroy_device(allocator.as_ref());
+        }
+    }
+}
+
+impl DeviceImpl for VulkanDevice {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
