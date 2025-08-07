@@ -1,3 +1,5 @@
+#![allow(clippy::wildcard_imports)]
+
 use std::cell::RefCell;
 use std::io::Result;
 use std::os::windows::ffi::OsStrExt;
@@ -9,9 +11,8 @@ use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
 
-use crate::discard_result::discard_result;
-
 use super::{DisplayParams, WindowParams};
+use crate::result_hole;
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
@@ -19,7 +20,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             unsafe {
                 // TODO: consider asking the user before exit and calling DestroyWindow() only if
                 // confirmed
-                discard_result(DestroyWindow(hwnd));
+                result_hole::add(DestroyWindow(hwnd));
             }
             LRESULT(0)
         }
@@ -54,7 +55,7 @@ pub struct Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        unsafe { discard_result(DestroyWindow(self.hwnd)) }
+        unsafe { result_hole::add(DestroyWindow(self.hwnd)) }
     }
 }
 
@@ -66,7 +67,7 @@ impl Display {
             // - Consider passing None instead to APIs where possible
             // - Consider allowing the caller to override this
             hinstance: unsafe { GetModuleHandleW(None) }?.into(),
-            typical_window_class: Default::default(),
+            typical_window_class: RefCell::new(std::rc::Weak::new()),
         })
     }
     pub fn create_window(&self, _params: &WindowParams) -> Result<Window> {
@@ -74,13 +75,12 @@ impl Display {
 
         let class = {
             let mut class_lock = self.typical_window_class.borrow_mut();
-            match class_lock.upgrade() {
-                Some(class) => class,
-                None => {
-                    let class = Rc::new(self.register_window_class()?);
-                    *class_lock = Rc::downgrade(&class);
-                    class
-                }
+            if let Some(class) = class_lock.upgrade() {
+                class
+            } else {
+                let class = Rc::new(self.register_window_class()?);
+                *class_lock = Rc::downgrade(&class);
+                class
             }
         };
 
@@ -104,12 +104,13 @@ impl Display {
         Ok(Window { class, hwnd })
     }
 
+    #[allow(clippy::unused_self)]
     pub fn main_event_loop(&self) {
         let mut msg = MSG::default();
         unsafe {
-            while GetMessageW(&mut msg, None, 0, 0).into() {
-                let _is_translated = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            while GetMessageW(&raw mut msg, None, 0, 0).into() {
+                let _is_translated = TranslateMessage(&raw const msg);
+                DispatchMessageW(&raw const msg);
             }
         }
     }
@@ -129,7 +130,7 @@ impl Display {
             lpszClassName: windows::core::PCWSTR::from_raw(name.as_ptr()),
         };
 
-        let atom = unsafe { RegisterClassW(&wndclass) };
+        let atom = unsafe { RegisterClassW(&raw const wndclass) };
         if atom == 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -156,7 +157,10 @@ struct WindowClass {
 impl Drop for WindowClass {
     fn drop(&mut self) {
         unsafe {
-            discard_result(UnregisterClassW(windows::core::PCWSTR::from_raw(self.name.as_ptr()), Some(self.hinstance)));
+            result_hole::add(UnregisterClassW(
+                windows::core::PCWSTR::from_raw(self.name.as_ptr()),
+                Some(self.hinstance),
+            ));
         }
     }
 }

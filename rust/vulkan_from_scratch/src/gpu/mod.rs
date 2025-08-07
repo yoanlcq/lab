@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 mod imp_vulkan;
 
+#[allow(clippy::missing_panics_doc)]
 #[allow(clippy::expect_used)]
 pub fn test() {
     let api = ApiArc::create(&ApiParams {}).expect("Failed to create Api");

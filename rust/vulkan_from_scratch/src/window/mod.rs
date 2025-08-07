@@ -35,12 +35,12 @@ impl Display {
         })
     }
     pub fn main_event_loop(&self) {
-        self.imp.main_event_loop()
+        self.imp.main_event_loop();
     }
 }
 
 impl Window {
     pub fn show(&self) {
-        self.imp.show()
+        self.imp.show();
     }
 }

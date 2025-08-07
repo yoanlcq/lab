@@ -3,7 +3,8 @@ use std::fmt::Debug;
 
 use ash::vk;
 
-use crate::{discard_result::discard_result, gpu::{ApiArc, ApiImpl, ApiParams, DeviceImpl, DeviceParams, Result}};
+use crate::gpu::{ApiArc, ApiImpl, ApiParams, DeviceImpl, DeviceParams, Result};
+use crate::result_hole;
 
 extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -64,6 +65,7 @@ impl PhysicalDeviceWrapper {
             }
             if it.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
                 out.push(DesiredQueueItem {
+                    #[allow(clippy::cast_possible_truncation)]
                     family_index: i as _,
                     count: 1,
                 });
@@ -110,7 +112,8 @@ impl VulkanApi {
                 // TODO: GPU API: instance layers + extensions
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layer_names_raw: Vec<_> = layer_names.iter().map(|x| x.as_ptr()).collect();
-                let mut extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?.to_vec();
+                let mut extension_names =
+                    ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?.to_vec();
                 extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 {
@@ -135,7 +138,8 @@ impl VulkanApi {
                     .enabled_extension_names(&extension_names)
                     .enabled_layer_names(&layer_names_raw);
 
-                vk.create_instance(&create_info, allocator.as_ref()).map_err(std::io::Error::other)?
+                vk.create_instance(&create_info, allocator.as_ref())
+                    .map_err(std::io::Error::other)?
             };
 
             let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
@@ -153,8 +157,7 @@ impl VulkanApi {
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
             let debug_utils_loader = ash::ext::debug_utils::Instance::new(&vk, &instance);
-            let debug_utils_messenger = debug_utils_loader
-                .create_debug_utils_messenger(&debug_info, allocator.as_ref())?;
+            let debug_utils_messenger = debug_utils_loader.create_debug_utils_messenger(&debug_info, allocator.as_ref())?;
 
             Ok(Self {
                 vk,
@@ -194,7 +197,10 @@ impl ApiImpl for VulkanApi {
             // features+extensions
         });
 
-        let chosen_physical_device = physical_devices.iter().find(|x| !x.required_queues().is_empty()).ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
+        let chosen_physical_device = physical_devices
+            .iter()
+            .find(|x| !x.required_queues().is_empty())
+            .ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
 
         let device = {
             // TODO: GPU API trade-offs:
@@ -247,7 +253,12 @@ impl Debug for VulkanDevice {
 impl VulkanDevice {
     fn api(&self) -> &VulkanApi {
         #[allow(clippy::expect_used)]
-        self.api.0.imp.as_any().downcast_ref::<VulkanApi>().expect("Getting VulkanApi from VulkanDevice should never fail")
+        self.api
+            .0
+            .imp
+            .as_any()
+            .downcast_ref::<VulkanApi>()
+            .expect("Getting VulkanApi from VulkanDevice should never fail")
     }
 }
 
@@ -255,7 +266,7 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         let allocator = self.api().allocator;
         unsafe {
-            discard_result(self.device.device_wait_idle());
+            result_hole::add(self.device.device_wait_idle());
             self.device.destroy_device(allocator.as_ref());
         }
     }
