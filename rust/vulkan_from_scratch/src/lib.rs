@@ -49,8 +49,8 @@
 #![warn(clippy::self_named_module_files)]
 #![warn(clippy::semicolon_outside_block)]
 #![warn(clippy::separated_literal_suffix)]
-// #![warn(clippy::std_instead_of_alloc)] // TODO
-// #![warn(clippy::std_instead_of_core)] // TODO
+#![warn(clippy::std_instead_of_alloc)]
+#![warn(clippy::std_instead_of_core)]
 #![warn(clippy::str_to_string)]
 #![warn(clippy::suspicious_xor_used_as_pow)]
 #![warn(clippy::tests_outside_test_module)]
@@ -65,6 +65,7 @@
 
 use crate::window::WindowParams;
 
+extern crate alloc;
 extern crate ash;
 extern crate ash_window;
 extern crate raw_window_handle;

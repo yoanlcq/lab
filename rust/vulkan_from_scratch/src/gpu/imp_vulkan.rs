@@ -4,8 +4,8 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
-use std::any::Any;
-use std::fmt::Debug;
+use core::any::Any;
+use core::fmt::Debug;
 
 use ash::vk;
 
@@ -22,15 +22,15 @@ extern "system" fn vulkan_debug_callback(
     let message_id_number = callback_data.message_id_number;
 
     let message_id_name = if callback_data.p_message_id_name.is_null() {
-        std::borrow::Cow::from("")
+        alloc::borrow::Cow::from("")
     } else {
-        unsafe { std::ffi::CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
+        unsafe { core::ffi::CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
     };
 
     let message = if callback_data.p_message.is_null() {
-        std::borrow::Cow::from("")
+        alloc::borrow::Cow::from("")
     } else {
-        unsafe { std::ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
+        unsafe { core::ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
     };
 
     println!("{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : {message}");
@@ -92,7 +92,7 @@ pub struct VulkanApi {
 }
 
 impl Debug for VulkanApi {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VulkanApi")
             .field("instance", &self.instance.handle())
             .finish_non_exhaustive()
@@ -221,7 +221,7 @@ impl ApiImpl for VulkanApi {
                 .map(|x| {
                     vk::DeviceQueueCreateInfo::default()
                         .queue_family_index(x.family_index)
-                        .queue_priorities(&queue_priorities[..std::cmp::min(x.count as _, queue_priorities.len())])
+                        .queue_priorities(&queue_priorities[..core::cmp::min(x.count as _, queue_priorities.len())])
                 })
                 .collect();
             // TODO: GPU API: device extensions + features
@@ -248,7 +248,7 @@ pub struct VulkanDevice {
 }
 
 impl Debug for VulkanDevice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VulkanDevice")
             .field("handle", &self.device.handle())
             .finish_non_exhaustive()

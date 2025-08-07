@@ -5,10 +5,10 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
-use std::cell::RefCell;
+use core::cell::RefCell;
 use std::io::Result;
 use std::os::windows::ffi::OsStrExt;
-use std::rc::Rc;
+use alloc::rc::Rc;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -47,7 +47,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 #[derive(Debug)]
 pub struct Display {
     hinstance: HINSTANCE,
-    typical_window_class: RefCell<std::rc::Weak<WindowClass>>,
+    typical_window_class: RefCell<alloc::rc::Weak<WindowClass>>,
 }
 
 #[derive(Debug)]
@@ -74,7 +74,7 @@ impl Display {
             // - Consider passing None instead to APIs where possible
             // - Consider allowing the caller to override this
             hinstance: unsafe { GetModuleHandleW(None) }?.into(),
-            typical_window_class: RefCell::new(std::rc::Weak::new()),
+            typical_window_class: RefCell::new(alloc::rc::Weak::new()),
         })
     }
     pub fn create_window(&self, params: &WindowParams) -> Result<Window> {

@@ -1,4 +1,4 @@
-use std::error::Error;
+use core::error::Error;
 
 /// A general-purpose function for results that we don't know what to do with.
 ///

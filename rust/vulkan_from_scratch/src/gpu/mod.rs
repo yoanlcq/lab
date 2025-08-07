@@ -1,6 +1,6 @@
-use std::any::Any;
-use std::fmt::Debug;
-use std::sync::Arc;
+use core::any::Any;
+use core::fmt::Debug;
+use alloc::sync::Arc;
 
 mod imp_vulkan;
 
@@ -20,7 +20,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Just a newtype to enhance an Arc<Api> with better methods.
 /// The definition of this type will not ever change, it will always be an Arc<Api>.
