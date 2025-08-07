@@ -55,7 +55,7 @@
 #![warn(clippy::suspicious_xor_used_as_pow)]
 #![warn(clippy::tests_outside_test_module)]
 #![warn(clippy::try_err)]
-// #![warn(clippy::undocumented_unsafe_blocks)] // TODO
+#![warn(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::unnecessary_safety_comment)]
 #![warn(clippy::unnecessary_safety_doc)]
 #![warn(clippy::unnecessary_self_imports)]

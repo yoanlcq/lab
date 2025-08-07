@@ -1,4 +1,9 @@
 #![allow(clippy::wildcard_imports, reason = "Using the Win32 API is really impractical otherwise")]
+#![allow(
+    clippy::undocumented_unsafe_blocks,
+    reason = "Using the Win32 API is necessarily an unsafe fest. Commenting every single one would add too much noise, actually harming \
+              readability. Note that we are still able to re-enable this lint in specific places if we'd like"
+)]
 
 use std::cell::RefCell;
 use std::io::Result;
