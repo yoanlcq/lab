@@ -1,0 +1,4 @@
+edition = "2018"
+style_edition = "2024"
+newline_style = "Windows"
+max_width = 10000

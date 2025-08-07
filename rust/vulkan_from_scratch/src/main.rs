@@ -1,4 +1,4 @@
-// TODO: cargo rustfmt
+// TODO: cargo fmt
 // TODO: typos
 // TODO: cargo deny check
 // TODO: run these automatically
