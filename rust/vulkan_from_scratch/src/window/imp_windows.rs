@@ -21,7 +21,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // TODO: consider asking the user before exit and calling DestroyWindow() only if
                 // confirmed
                 result_hole::add(DestroyWindow(hwnd));
-            }
+            };
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -33,7 +33,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // Then:
                 // - Dispatch a global event on "request exit"
                 PostQuitMessage(0);
-            }
+            };
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },

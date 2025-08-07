@@ -18,6 +18,7 @@ pub struct Window {
     imp: imp_windows::Window,
 }
 
+#[expect(clippy::module_name_repetitions, reason = "WindowParams refers to Window as the software construct, not the module")]
 #[derive(Debug)]
 pub struct WindowParams {}
 
