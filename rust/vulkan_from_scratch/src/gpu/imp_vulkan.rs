@@ -1,10 +1,9 @@
 use std::any::Any;
 use std::fmt::Debug;
-use std::io::Result;
 
 use ash::vk;
 
-use crate::gpu::{ApiArc, ApiImpl, ApiParams, DeviceImpl, DeviceParams};
+use crate::{discard_result::discard_result, gpu::{ApiArc, ApiImpl, ApiParams, DeviceImpl, DeviceParams, Result}};
 
 extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -105,15 +104,13 @@ impl Drop for VulkanApi {
 impl VulkanApi {
     pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
-        let vk = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan API");
+        let vk = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
         unsafe {
             let instance = {
                 // TODO: GPU API: instance layers + extensions
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layer_names_raw: Vec<_> = layer_names.iter().map(|x| x.as_ptr()).collect();
-                let mut extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())
-                    .unwrap()
-                    .to_vec();
+                let mut extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?.to_vec();
                 extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 {
@@ -138,15 +135,14 @@ impl VulkanApi {
                     .enabled_extension_names(&extension_names)
                     .enabled_layer_names(&layer_names_raw);
 
-                vk.create_instance(&create_info, allocator.as_ref())
-                    .expect("Failed to create Vulkan Instance")
+                vk.create_instance(&create_info, allocator.as_ref()).map_err(std::io::Error::other)?
             };
 
             let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
                 .message_severity(
                     vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
                         | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                        // | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE,
+                        // | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE, // TODO
                         | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
                 )
                 .message_type(
@@ -158,8 +154,7 @@ impl VulkanApi {
 
             let debug_utils_loader = ash::ext::debug_utils::Instance::new(&vk, &instance);
             let debug_utils_messenger = debug_utils_loader
-                .create_debug_utils_messenger(&debug_info, allocator.as_ref())
-                .unwrap();
+                .create_debug_utils_messenger(&debug_info, allocator.as_ref())?;
 
             Ok(Self {
                 vk,
@@ -178,8 +173,7 @@ impl ApiImpl for VulkanApi {
     }
     fn create_device(&self, api_arc: &ApiArc, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>> {
         // TODO: GPU API: better device selector + command-line/env options
-        let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }
-            .unwrap()
+        let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }?
             .into_iter()
             .map(|physical_device| PhysicalDeviceWrapper::new(&self.instance, physical_device))
             .collect();
@@ -200,7 +194,7 @@ impl ApiImpl for VulkanApi {
             // features+extensions
         });
 
-        let chosen_physical_device = physical_devices.iter().find(|x| !x.required_queues().is_empty()).unwrap();
+        let chosen_physical_device = physical_devices.iter().find(|x| !x.required_queues().is_empty()).ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
 
         let device = {
             // TODO: GPU API trade-offs:
@@ -226,9 +220,8 @@ impl ApiImpl for VulkanApi {
                 .enabled_features(&chosen_physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
             unsafe {
                 self.instance
-                    .create_device(chosen_physical_device.physical_device, &device_create_info, self.allocator.as_ref())
+                    .create_device(chosen_physical_device.physical_device, &device_create_info, self.allocator.as_ref())?
             }
-            .unwrap()
         };
 
         Ok(Box::new(VulkanDevice {
@@ -253,7 +246,8 @@ impl Debug for VulkanDevice {
 
 impl VulkanDevice {
     fn api(&self) -> &VulkanApi {
-        self.api.0.imp.as_any().downcast_ref::<VulkanApi>().unwrap()
+        #[allow(clippy::expect_used)]
+        self.api.0.imp.as_any().downcast_ref::<VulkanApi>().expect("Getting VulkanApi from VulkanDevice should never fail")
     }
 }
 
@@ -261,7 +255,7 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         let allocator = self.api().allocator;
         unsafe {
-            self.device.device_wait_idle().unwrap();
+            discard_result(self.device.device_wait_idle());
             self.device.destroy_device(allocator.as_ref());
         }
     }

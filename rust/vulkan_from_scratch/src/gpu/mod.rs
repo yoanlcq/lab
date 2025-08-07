@@ -1,15 +1,25 @@
 use std::any::Any;
 use std::fmt::Debug;
-use std::io::Result;
 use std::sync::Arc;
 
 mod imp_vulkan;
 
+#[allow(clippy::expect_used)]
 pub fn test() {
-    let api = ApiArc::create(&ApiParams {}).unwrap();
-    let device = api.create_device(&DeviceParams {}).unwrap();
+    let api = ApiArc::create(&ApiParams {}).expect("Failed to create Api");
+    let device = api.create_device(&DeviceParams {}).expect("Failed to create device");
     device.test();
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Vulkan")]
+    Vulkan(#[from] ash::vk::Result),
+    #[error("IO")]
+    Io(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Just a newtype to enhance an Arc<Api> with better methods.
 /// The definition of this type will not ever change, it will always be an Arc<Api>.
@@ -49,6 +59,7 @@ pub struct DeviceInner {
 
 impl DeviceArc {
     pub fn test(&self) {
+        // TODO: remove this function soon, of course
         _ = self.0.imp;
     }
 }

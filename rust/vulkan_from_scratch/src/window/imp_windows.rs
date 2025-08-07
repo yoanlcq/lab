@@ -9,6 +9,8 @@ use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
 
+use crate::discard_result::discard_result;
+
 use super::{DisplayParams, WindowParams};
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -17,7 +19,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             unsafe {
                 // TODO: consider asking the user before exit and calling DestroyWindow() only if
                 // confirmed
-                DestroyWindow(hwnd).unwrap();
+                discard_result(DestroyWindow(hwnd));
             }
             LRESULT(0)
         }
@@ -52,7 +54,7 @@ pub struct Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        unsafe { _ = DestroyWindow(self.hwnd) }
+        unsafe { discard_result(DestroyWindow(self.hwnd)) }
     }
 }
 
@@ -106,7 +108,7 @@ impl Display {
         let mut msg = MSG::default();
         unsafe {
             while GetMessageW(&mut msg, None, 0, 0).into() {
-                _ = TranslateMessage(&msg);
+                let _is_translated = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
@@ -141,7 +143,7 @@ impl Display {
 
 impl Window {
     pub fn show(&self) {
-        _ = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
+        let _was_previously_visible = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
     }
 }
 
@@ -154,7 +156,7 @@ struct WindowClass {
 impl Drop for WindowClass {
     fn drop(&mut self) {
         unsafe {
-            _ = UnregisterClassW(windows::core::PCWSTR::from_raw(self.name.as_ptr()), Some(self.hinstance));
+            discard_result(UnregisterClassW(windows::core::PCWSTR::from_raw(self.name.as_ptr()), Some(self.hinstance)));
         }
     }
 }

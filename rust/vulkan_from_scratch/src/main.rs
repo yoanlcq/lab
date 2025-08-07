@@ -7,6 +7,8 @@
 )]
 #![allow(clippy::missing_docs_in_private_items)]
 #![allow(clippy::cargo_common_metadata)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::unwrap_used)]
 
 use std::io::Result;
 
