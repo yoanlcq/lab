@@ -65,8 +65,8 @@ impl PhysicalDeviceWrapper {
             }
             if it.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
                 out.push(DesiredQueueItem {
-                    #[allow(clippy::cast_possible_truncation)]
-                    family_index: i as _,
+                    #[expect(clippy::cast_possible_truncation, reason = "This will obviously not overflow u32")]
+                    family_index: i as u32,
                     count: 1,
                 });
                 break;
@@ -77,7 +77,7 @@ impl PhysicalDeviceWrapper {
 }
 
 pub struct VulkanApi {
-    #[allow(dead_code)] // !!! ash::Entry must not be dropped, otherwise further calls will crash
+    #[expect(dead_code, reason = "ash::Entry must not be dropped, otherwise further calls will crash")]
     vk: ash::Entry,
     instance: ash::Instance,
     debug_utils_loader: ash::ext::debug_utils::Instance,
@@ -252,7 +252,7 @@ impl Debug for VulkanDevice {
 
 impl VulkanDevice {
     fn api(&self) -> &VulkanApi {
-        #[allow(clippy::expect_used)]
+        #[expect(clippy::expect_used, reason = "This really cannot fail")]
         self.api
             .0
             .imp

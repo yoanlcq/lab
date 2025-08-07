@@ -1,4 +1,4 @@
-#![allow(clippy::wildcard_imports)]
+#![allow(clippy::wildcard_imports, reason = "Using the Win32 API is really impractical otherwise")]
 
 use std::cell::RefCell;
 use std::io::Result;
@@ -48,7 +48,7 @@ pub struct Display {
 
 #[derive(Debug)]
 pub struct Window {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "The variable is not read but is really needed to manage the lifetime of the window class")]
     class: Rc<WindowClass>,
     hwnd: HWND,
 }
@@ -104,7 +104,7 @@ impl Display {
         Ok(Window { class, hwnd })
     }
 
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self, reason = "On other platforms it may make sense to take self")]
     pub fn main_event_loop(&self) {
         let mut msg = MSG::default();
         unsafe {

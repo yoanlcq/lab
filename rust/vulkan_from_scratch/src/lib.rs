@@ -5,11 +5,16 @@
     clippy::nursery,
     clippy::cargo,
 )]
-#![allow(clippy::missing_docs_in_private_items)]
-#![allow(clippy::cargo_common_metadata)]
-#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_docs_in_private_items, reason = "This is a personal experiment")]
+#![allow(clippy::cargo_common_metadata, reason = "This isn't meant to be published")]
+#![allow(clippy::missing_errors_doc, reason = "This is a personal experiment")]
 #![warn(clippy::expect_used)]
 #![warn(clippy::unwrap_used)]
+
+// restriction
+#![warn(clippy::alloc_instead_of_core)]
+#![warn(clippy::allow_attributes)]
+#![warn(clippy::allow_attributes_without_reason)]
 
 extern crate ash;
 extern crate ash_window;
