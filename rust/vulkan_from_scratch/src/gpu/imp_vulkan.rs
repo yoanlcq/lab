@@ -6,6 +6,7 @@
 
 use core::any::Any;
 use core::fmt::Debug;
+use std::collections::HashMap;
 
 use ash::vk;
 
@@ -38,57 +39,14 @@ extern "system" fn vulkan_debug_callback(
     vk::FALSE
 }
 
-struct DesiredQueueItem {
-    family_index: usize,
-    count: usize,
-}
-struct PhysicalDeviceWrapper {
-    physical_device: vk::PhysicalDevice,
-    props: vk::PhysicalDeviceProperties,
-    features: vk::PhysicalDeviceFeatures,
-    // mem_props: vk::PhysicalDeviceMemoryProperties,
-    queue_family_props: Vec<vk::QueueFamilyProperties>,
-}
-
-const MAX_QUEUES_PER_FAMILY: usize = 64; // Waaaaay way more than we'll ever need
-
-impl PhysicalDeviceWrapper {
-    pub fn new(vk_instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Self {
-        unsafe {
-            Self {
-                physical_device,
-                props: vk_instance.get_physical_device_properties(physical_device),
-                features: vk_instance.get_physical_device_features(physical_device),
-                // mem_props: vk_instance.get_physical_device_memory_properties(physical_device),
-                queue_family_props: vk_instance.get_physical_device_queue_family_properties(physical_device),
-            }
-        }
-    }
-    pub fn required_queues(&self) -> Vec<DesiredQueueItem> {
-        let mut out = Vec::with_capacity(1);
-        for (family_index, it) in self.queue_family_props.iter().enumerate() {
-            if it.queue_count == 0 {
-                // ???
-                continue;
-            }
-            if it.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
-                let count = 1;
-                assert!(count <= MAX_QUEUES_PER_FAMILY, "There is no reason to need that many queues");
-                out.push(DesiredQueueItem {
-                    family_index,
-                    count,
-                });
-                break;
-            }
-        }
-        out
-    }
-}
-
 pub struct VulkanApi {
     #[expect(dead_code, reason = "ash::Entry must not be dropped, otherwise further calls will crash")]
-    vk: ash::Entry,
+    entry: ash::Entry,
     instance: ash::Instance,
+    #[expect(dead_code, reason = "Not yet using it, but soon!")]
+    surface_loader: ash::khr::surface::Instance,
+    #[cfg(windows)]
+    win32_surface_loader: ash::khr::win32_surface::Instance,
     debug_utils_loader: ash::ext::debug_utils::Instance,
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
     allocator: Option<vk::AllocationCallbacks<'static>>,
@@ -115,7 +73,7 @@ impl Drop for VulkanApi {
 impl VulkanApi {
     pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
-        let vk = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
+        let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
         unsafe {
             let instance = {
                 // TODO: GPU API: instance layers + extensions
@@ -147,7 +105,8 @@ impl VulkanApi {
                     .enabled_extension_names(&extension_names)
                     .enabled_layer_names(&layer_names_raw);
 
-                vk.create_instance(&create_info, allocator.as_ref())
+                entry
+                    .create_instance(&create_info, allocator.as_ref())
                     .map_err(std::io::Error::other)?
             };
 
@@ -165,17 +124,120 @@ impl VulkanApi {
                 )
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
-            let debug_utils_loader = ash::ext::debug_utils::Instance::new(&vk, &instance);
+            let debug_utils_loader = ash::ext::debug_utils::Instance::new(&entry, &instance);
             let debug_utils_messenger = debug_utils_loader.create_debug_utils_messenger(&debug_info, allocator.as_ref())?;
 
+            let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+
+            #[cfg(windows)]
+            let win32_surface_loader = ash::khr::win32_surface::Instance::new(&entry, &instance);
+
             Ok(Self {
-                vk,
+                entry,
                 instance,
+                surface_loader,
+                #[cfg(windows)]
+                win32_surface_loader,
                 debug_utils_loader,
                 debug_utils_messenger,
                 allocator,
             })
         }
+    }
+}
+
+#[derive(Default)]
+struct UsefulQueueFamilies {
+    graphics: Vec<usize>,
+    compute: Vec<usize>,
+    present: Vec<usize>,
+    graphics_and_present: Vec<usize>,
+}
+
+impl UsefulQueueFamilies {
+    pub fn new(api: &VulkanApi, physical_device: vk::PhysicalDevice, queue_family_props: &[vk::QueueFamilyProperties]) -> Self {
+        let mut out = Self::default();
+        for (queue_family_index, it) in queue_family_props.iter().enumerate() {
+            if it.queue_count == 0 {
+                // ??? can this ever happen? I'm too afraid this can be legit
+                continue;
+            }
+
+            let supports_presentation;
+
+            #[cfg(windows)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Let's be realistic, there won't be more than 2^32 queue families"
+            )]
+            unsafe {
+                supports_presentation = api
+                    .win32_surface_loader
+                    .get_physical_device_win32_presentation_support(physical_device, queue_family_index as u32);
+            };
+
+            if it.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                out.graphics.push(queue_family_index);
+                if supports_presentation {
+                    out.graphics_and_present.push(queue_family_index);
+                }
+            }
+
+            if it.queue_flags.contains(vk::QueueFlags::COMPUTE) {
+                out.compute.push(queue_family_index);
+            }
+
+            if supports_presentation {
+                out.present.push(queue_family_index);
+            }
+        }
+        out
+    }
+}
+
+struct PhysicalDeviceWrapper {
+    physical_device: vk::PhysicalDevice,
+    props: vk::PhysicalDeviceProperties,
+    features: vk::PhysicalDeviceFeatures,
+    useful_queue_families: UsefulQueueFamilies,
+}
+
+const MAX_QUEUES_PER_FAMILY: usize = 64; // Waaaaay way more than we'll ever need
+
+impl PhysicalDeviceWrapper {
+    pub fn new(api: &VulkanApi, physical_device: vk::PhysicalDevice) -> Self {
+        unsafe {
+            let queue_family_props = api.instance.get_physical_device_queue_family_properties(physical_device);
+            let useful_queue_families = UsefulQueueFamilies::new(api, physical_device, &queue_family_props);
+            Self {
+                physical_device,
+                props: api.instance.get_physical_device_properties(physical_device),
+                features: api.instance.get_physical_device_features(physical_device),
+                useful_queue_families,
+            }
+        }
+    }
+}
+
+struct MinimalQueueCreateInfo {
+    queue_family_index: usize,
+    count: usize,
+}
+
+impl MinimalQueueCreateInfo {
+    // TODO: should take into account caller params. Right now very simple, pick the 1st
+    // graphics_and_present queue
+    pub fn extract(useful_queue_families: &UsefulQueueFamilies) -> Vec<Self> {
+        useful_queue_families
+            .graphics_and_present
+            .first()
+            .copied()
+            .map_or_else(Vec::new, |queue_family_index| {
+                vec![Self {
+                    queue_family_index,
+                    count: 1,
+                }]
+            })
     }
 }
 
@@ -187,7 +249,7 @@ impl ApiImpl for VulkanApi {
         // TODO: GPU API: better device selector + command-line/env options
         let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }?
             .into_iter()
-            .map(|physical_device| PhysicalDeviceWrapper::new(&self.instance, physical_device))
+            .map(|physical_device| PhysicalDeviceWrapper::new(self, physical_device))
             .collect();
 
         let physical_device_types_sorted = [
@@ -206,9 +268,19 @@ impl ApiImpl for VulkanApi {
             // features+extensions
         });
 
+        let required_queues: HashMap<vk::PhysicalDevice, Vec<MinimalQueueCreateInfo>> = physical_devices
+            .iter()
+            .map(|physical_device| {
+                (
+                    physical_device.physical_device,
+                    MinimalQueueCreateInfo::extract(&physical_device.useful_queue_families),
+                )
+            })
+            .collect();
+
         let chosen_physical_device = physical_devices
             .iter()
-            .find(|x| !x.required_queues().is_empty())
+            .find(|x| !required_queues[&x.physical_device].is_empty())
             .ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
 
         let device = {
@@ -218,13 +290,15 @@ impl ApiImpl for VulkanApi {
             // - Multiple devices?
             // - Multiple command buffers?
             let queue_priorities = [1.; MAX_QUEUES_PER_FAMILY];
-            let queue_create_infos: Vec<_> = chosen_physical_device
-                .required_queues()
-                .into_iter()
+            let queue_create_infos: Vec<_> = required_queues[&chosen_physical_device.physical_device]
+                .iter()
                 .map(|x| {
-                    #[expect(clippy::cast_possible_truncation, reason = "Let's be realistic, there won't be more than 2^32 queue families")]
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "Let's be realistic, there won't be more than 2^32 queue families"
+                    )]
                     vk::DeviceQueueCreateInfo::default()
-                        .queue_family_index(x.family_index as u32)
+                        .queue_family_index(x.queue_family_index as u32)
                         .queue_priorities(&queue_priorities[..core::cmp::min(x.count as _, queue_priorities.len())])
                 })
                 .collect();
