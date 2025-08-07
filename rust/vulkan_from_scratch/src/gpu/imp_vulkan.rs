@@ -39,8 +39,8 @@ extern "system" fn vulkan_debug_callback(
 }
 
 struct DesiredQueueItem {
-    family_index: u32,
-    count: u32,
+    family_index: usize,
+    count: usize,
 }
 struct PhysicalDeviceWrapper {
     physical_device: vk::PhysicalDevice,
@@ -49,6 +49,8 @@ struct PhysicalDeviceWrapper {
     // mem_props: vk::PhysicalDeviceMemoryProperties,
     queue_family_props: Vec<vk::QueueFamilyProperties>,
 }
+
+const MAX_QUEUES_PER_FAMILY: usize = 64; // Waaaaay way more than we'll ever need
 
 impl PhysicalDeviceWrapper {
     pub fn new(vk_instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Self {
@@ -64,16 +66,17 @@ impl PhysicalDeviceWrapper {
     }
     pub fn required_queues(&self) -> Vec<DesiredQueueItem> {
         let mut out = Vec::with_capacity(1);
-        for (i, it) in self.queue_family_props.iter().enumerate() {
+        for (family_index, it) in self.queue_family_props.iter().enumerate() {
             if it.queue_count == 0 {
                 // ???
                 continue;
             }
             if it.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
+                let count = 1;
+                assert!(count <= MAX_QUEUES_PER_FAMILY, "There is no reason to need that many queues");
                 out.push(DesiredQueueItem {
-                    #[expect(clippy::cast_possible_truncation, reason = "This will obviously not overflow u32")]
-                    family_index: i as u32,
-                    count: 1,
+                    family_index,
+                    count,
                 });
                 break;
             }
@@ -214,13 +217,14 @@ impl ApiImpl for VulkanApi {
             // - Priority per queue?
             // - Multiple devices?
             // - Multiple command buffers?
-            let queue_priorities = [1.; 64];
+            let queue_priorities = [1.; MAX_QUEUES_PER_FAMILY];
             let queue_create_infos: Vec<_> = chosen_physical_device
                 .required_queues()
                 .into_iter()
                 .map(|x| {
+                    #[expect(clippy::cast_possible_truncation, reason = "Let's be realistic, there won't be more than 2^32 queue families")]
                     vk::DeviceQueueCreateInfo::default()
-                        .queue_family_index(x.family_index)
+                        .queue_family_index(x.family_index as u32)
                         .queue_priorities(&queue_priorities[..core::cmp::min(x.count as _, queue_priorities.len())])
                 })
                 .collect();
