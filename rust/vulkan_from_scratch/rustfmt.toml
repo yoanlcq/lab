@@ -1,5 +1,6 @@
 edition = "2018"
 style_edition = "2024"
+max_width = 140
 
 # https://users.rust-lang.org/t/does-anyone-use-a-customized-configuration-for-rustfmt/66420/31
 

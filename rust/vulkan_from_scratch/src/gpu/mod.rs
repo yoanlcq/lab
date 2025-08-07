@@ -25,8 +25,7 @@ pub struct ApiParams {}
 
 trait ApiImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
-    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams)
-    -> Result<Box<dyn DeviceImpl>>;
+    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>>;
 }
 
 impl ApiArc {

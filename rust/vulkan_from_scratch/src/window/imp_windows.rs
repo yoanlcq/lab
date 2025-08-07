@@ -23,8 +23,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_DESTROY => {
             unsafe {
-                // TODO: PostQuitMessage only if there are no more windows OR the app is willing to
-                // exit Several situations:
+                // TODO: PostQuitMessage only if there are no more windows OR the app is willing to exit.
+                // Several situations:
                 // - Closing one of the windows is enough to close the app
                 // - Closing all of the windows is enough to close the app
                 // Then:
@@ -113,9 +113,7 @@ impl Display {
     }
 
     fn register_window_class(&self) -> Result<WindowClass> {
-        let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0")
-            .encode_wide()
-            .collect();
+        let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0").encode_wide().collect();
         let wndclass = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
@@ -156,10 +154,7 @@ struct WindowClass {
 impl Drop for WindowClass {
     fn drop(&mut self) {
         unsafe {
-            _ = UnregisterClassW(
-                windows::core::PCWSTR::from_raw(self.name.as_ptr()),
-                Some(self.hinstance),
-            );
+            _ = UnregisterClassW(windows::core::PCWSTR::from_raw(self.name.as_ptr()), Some(self.hinstance));
         }
     }
 }

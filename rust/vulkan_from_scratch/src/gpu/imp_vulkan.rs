@@ -27,10 +27,7 @@ extern "system" fn vulkan_debug_callback(
         unsafe { std::ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
     };
 
-    println!(
-        "{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : \
-         {message}"
-    );
+    println!("{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : {message}");
 
     vk::FALSE
 }
@@ -55,8 +52,7 @@ impl PhysicalDeviceWrapper {
                 props: vk_instance.get_physical_device_properties(physical_device),
                 features: vk_instance.get_physical_device_features(physical_device),
                 // mem_props: vk_instance.get_physical_device_memory_properties(physical_device),
-                queue_family_props: vk_instance
-                    .get_physical_device_queue_family_properties(physical_device),
+                queue_family_props: vk_instance.get_physical_device_queue_family_properties(physical_device),
             }
         }
     }
@@ -67,10 +63,7 @@ impl PhysicalDeviceWrapper {
                 // ???
                 continue;
             }
-            if it
-                .queue_flags
-                .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
-            {
+            if it.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
                 out.push(DesiredQueueItem {
                     family_index: i as _,
                     count: 1,
@@ -118,11 +111,9 @@ impl VulkanApi {
                 // TODO: GPU API: instance layers + extensions
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layer_names_raw: Vec<_> = layer_names.iter().map(|x| x.as_ptr()).collect();
-                let mut extension_names = ash_window::enumerate_required_extensions(
-                    raw_window_handle::WindowsDisplayHandle::new().into(),
-                )
-                .unwrap()
-                .to_vec();
+                let mut extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())
+                    .unwrap()
+                    .to_vec();
                 extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 {
@@ -185,18 +176,13 @@ impl ApiImpl for VulkanApi {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn create_device(
-        &self,
-        api_arc: &ApiArc,
-        _params: &DeviceParams,
-    ) -> Result<Box<dyn DeviceImpl>> {
+    fn create_device(&self, api_arc: &ApiArc, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>> {
         // TODO: GPU API: better device selector + command-line/env options
-        let mut physical_devices: Vec<PhysicalDeviceWrapper> =
-            unsafe { self.instance.enumerate_physical_devices() }
-                .unwrap()
-                .into_iter()
-                .map(|physical_device| PhysicalDeviceWrapper::new(&self.instance, physical_device))
-                .collect();
+        let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }
+            .unwrap()
+            .into_iter()
+            .map(|physical_device| PhysicalDeviceWrapper::new(&self.instance, physical_device))
+            .collect();
 
         let physical_device_types_sorted = [
             vk::PhysicalDeviceType::DISCRETE_GPU,
@@ -207,21 +193,14 @@ impl ApiImpl for VulkanApi {
         ];
 
         physical_devices.sort_by(|a, b| {
-            let a_type_score = physical_device_types_sorted
-                .iter()
-                .position(|x| *x == a.props.device_type);
-            let b_type_score = physical_device_types_sorted
-                .iter()
-                .position(|x| *x == b.props.device_type);
+            let a_type_score = physical_device_types_sorted.iter().position(|x| *x == a.props.device_type);
+            let b_type_score = physical_device_types_sorted.iter().position(|x| *x == b.props.device_type);
             a_type_score.cmp(&b_type_score)
             // TODO: among these, try to find the best GPU. taking into account required+desired
             // features+extensions
         });
 
-        let chosen_physical_device = physical_devices
-            .iter()
-            .find(|x| !x.required_queues().is_empty())
-            .unwrap();
+        let chosen_physical_device = physical_devices.iter().find(|x| !x.required_queues().is_empty()).unwrap();
 
         let device = {
             // TODO: GPU API trade-offs:
@@ -246,11 +225,8 @@ impl ApiImpl for VulkanApi {
                 .enabled_extension_names(&[])
                 .enabled_features(&chosen_physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
             unsafe {
-                self.instance.create_device(
-                    chosen_physical_device.physical_device,
-                    &device_create_info,
-                    self.allocator.as_ref(),
-                )
+                self.instance
+                    .create_device(chosen_physical_device.physical_device, &device_create_info, self.allocator.as_ref())
             }
             .unwrap()
         };
