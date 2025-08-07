@@ -1,3 +1,5 @@
+use std::io::Result;
+
 #[cfg(windows)]
 mod imp_windows;
 
@@ -20,13 +22,13 @@ pub struct Window {
 pub struct WindowParams {}
 
 impl Display {
-    pub fn open(params: &DisplayParams) -> Result<Self, std::io::Error> {
+    pub fn open(params: &DisplayParams) -> Result<Self> {
         Ok(Self {
             #[cfg(windows)]
             imp: imp_windows::Display::open(params)?,
         })
     }
-    pub fn create_window(&self, params: &WindowParams) -> Result<Window, std::io::Error> {
+    pub fn create_window(&self, params: &WindowParams) -> Result<Window> {
         Ok(Window {
             #[cfg(windows)]
             imp: self.imp.create_window(params)?,

@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::fmt::Debug;
+use std::io::Result;
 use std::sync::Arc;
 
 mod imp_vulkan;
@@ -24,19 +25,16 @@ pub struct ApiParams {}
 
 trait ApiImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
-    fn create_device(
-        &self,
-        api_arc: &ApiArc,
-        params: &DeviceParams,
-    ) -> Result<Box<dyn DeviceImpl>, std::io::Error>;
+    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams)
+    -> Result<Box<dyn DeviceImpl>>;
 }
 
 impl ApiArc {
-    pub fn create(params: &ApiParams) -> Result<Self, std::io::Error> {
+    pub fn create(params: &ApiParams) -> Result<Self> {
         let imp = Box::new(imp_vulkan::VulkanApi::create(params)?);
         Ok(Self(Arc::new(ApiInner { imp })))
     }
-    pub fn create_device(&self, params: &DeviceParams) -> Result<DeviceArc, std::io::Error> {
+    pub fn create_device(&self, params: &DeviceParams) -> Result<DeviceArc> {
         let imp = self.0.imp.create_device(self, params)?;
         Ok(DeviceArc(Arc::new(DeviceInner { imp })))
     }

@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::fmt::Debug;
+use std::io::Result;
 
 use ash::vk;
 
@@ -109,7 +110,7 @@ impl Drop for VulkanApi {
 }
 
 impl VulkanApi {
-    pub fn create(_params: &ApiParams) -> Result<Self, std::io::Error> {
+    pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
         let vk = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan API");
         unsafe {
@@ -188,7 +189,7 @@ impl ApiImpl for VulkanApi {
         &self,
         api_arc: &ApiArc,
         _params: &DeviceParams,
-    ) -> Result<Box<dyn DeviceImpl>, std::io::Error> {
+    ) -> Result<Box<dyn DeviceImpl>> {
         // TODO: GPU API: better device selector + command-line/env options
         let mut physical_devices: Vec<PhysicalDeviceWrapper> =
             unsafe { self.instance.enumerate_physical_devices() }

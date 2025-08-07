@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::io::Result;
 use std::os::windows::ffi::OsStrExt;
 use std::rc::Rc;
 
@@ -56,7 +57,7 @@ impl Drop for Window {
 }
 
 impl Display {
-    pub fn open(_params: &DisplayParams) -> Result<Self, std::io::Error> {
+    pub fn open(_params: &DisplayParams) -> Result<Self> {
         Ok(Self {
             // Question: maybe not as simple as this? https://stackoverflow.com/a/78906765
             // Options:
@@ -66,7 +67,7 @@ impl Display {
             typical_window_class: Default::default(),
         })
     }
-    pub fn create_window(&self, _params: &WindowParams) -> Result<Window, std::io::Error> {
+    pub fn create_window(&self, _params: &WindowParams) -> Result<Window> {
         let window_title = w!("Window Title");
 
         let class = {
@@ -111,7 +112,7 @@ impl Display {
         }
     }
 
-    fn register_window_class(&self) -> Result<WindowClass, std::io::Error> {
+    fn register_window_class(&self) -> Result<WindowClass> {
         let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0")
             .encode_wide()
             .collect();

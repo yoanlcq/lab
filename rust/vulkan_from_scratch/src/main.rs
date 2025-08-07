@@ -8,9 +8,11 @@
 #![allow(clippy::missing_docs_in_private_items)]
 #![allow(clippy::cargo_common_metadata)]
 
+use std::io::Result;
+
 use vulkan_from_scratch_lib::{gpu, window};
 
-fn main() -> Result<(), std::io::Error> {
+fn main() -> Result<()> {
     gpu::test();
 
     let display = window::Display::open(&window::DisplayParams {})?;
