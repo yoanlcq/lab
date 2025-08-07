@@ -1,25 +1,29 @@
-use std::{cell::RefCell, os::windows::ffi::OsStrExt, rc::Rc};
+use std::cell::RefCell;
+use std::os::windows::ffi::OsStrExt;
+use std::rc::Rc;
+
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::LibraryLoader::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::w;
 
 use super::{DisplayParams, WindowParams};
-
-use windows::{
-    Win32::Foundation::*, Win32::Graphics::Gdi::*, Win32::System::LibraryLoader::*,
-    Win32::UI::WindowsAndMessaging::*, core::w,
-};
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CLOSE => {
             unsafe {
-                // TODO: consider asking the user before exit and calling DestroyWindow() only if confirmed
+                // TODO: consider asking the user before exit and calling DestroyWindow() only if
+                // confirmed
                 DestroyWindow(hwnd).unwrap();
             }
             LRESULT(0)
         }
         WM_DESTROY => {
             unsafe {
-                // TODO: PostQuitMessage only if there are no more windows OR the app is willing to exit
-                // Several situations:
+                // TODO: PostQuitMessage only if there are no more windows OR the app is willing to
+                // exit Several situations:
                 // - Closing one of the windows is enough to close the app
                 // - Closing all of the windows is enough to close the app
                 // Then:

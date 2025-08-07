@@ -1,4 +1,5 @@
-use std::{any::Any, fmt::Debug};
+use std::any::Any;
+use std::fmt::Debug;
 
 use ash::vk;
 
@@ -26,7 +27,8 @@ extern "system" fn vulkan_debug_callback(
     };
 
     println!(
-        "{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : {message}"
+        "{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : \
+         {message}"
     );
 
     vk::FALSE
@@ -124,7 +126,8 @@ impl VulkanApi {
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 {
                     extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
-                    // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
+                    // Enabling this extension is a requirement when using
+                    // `VK_KHR_portability_subset`
                     extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
                 }
                 let application_info = vk::ApplicationInfo::default()
@@ -210,7 +213,8 @@ impl ApiImpl for VulkanApi {
                 .iter()
                 .position(|x| *x == b.props.device_type);
             a_type_score.cmp(&b_type_score)
-            // TODO: among these, try to find the best GPU. taking into account required+desired features+extensions
+            // TODO: among these, try to find the best GPU. taking into account required+desired
+            // features+extensions
         });
 
         let chosen_physical_device = physical_devices
