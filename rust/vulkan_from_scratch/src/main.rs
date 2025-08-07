@@ -1,8 +1,3 @@
-// TODO: cargo fmt
-// TODO: typos
-// TODO: cargo deny check
-// TODO: run these automatically
-
 #![warn(
     clippy::all,
     // clippy::restriction,
