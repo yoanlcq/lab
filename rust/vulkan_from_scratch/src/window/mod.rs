@@ -8,8 +8,7 @@ pub struct Display {
 }
 
 #[derive(Debug)]
-pub struct DisplayParams {
-}
+pub struct DisplayParams {}
 
 #[derive(Debug)]
 pub struct Window {
@@ -18,8 +17,7 @@ pub struct Window {
 }
 
 #[derive(Debug)]
-pub struct WindowParams {
-}
+pub struct WindowParams {}
 
 impl Display {
     pub fn open(params: &DisplayParams) -> Result<Self, std::io::Error> {

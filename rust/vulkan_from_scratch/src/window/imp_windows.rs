@@ -3,11 +3,8 @@ use std::{cell::RefCell, os::windows::ffi::OsStrExt, rc::Rc};
 use super::{DisplayParams, WindowParams};
 
 use windows::{
-    core::{w},
-    Win32::Foundation::*,
-    Win32::Graphics::Gdi::*,
-    Win32::System::LibraryLoader::*,
-    Win32::UI::WindowsAndMessaging::*,
+    Win32::Foundation::*, Win32::Graphics::Gdi::*, Win32::System::LibraryLoader::*,
+    Win32::UI::WindowsAndMessaging::*, core::w,
 };
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -31,16 +28,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
-        _ => unsafe {
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
 #[derive(Debug)]
 pub struct Display {
     hinstance: HINSTANCE,
-    typical_window_class: RefCell<std::rc::Weak<WindowClass>>
+    typical_window_class: RefCell<std::rc::Weak<WindowClass>>,
 }
 
 #[derive(Debug)]
@@ -78,7 +73,7 @@ impl Display {
                     let class = Rc::new(self.register_window_class()?);
                     *class_lock = Rc::downgrade(&class);
                     class
-                },
+                }
             }
         };
 
@@ -88,19 +83,18 @@ impl Display {
                 windows::core::PCWSTR::from_raw(class.name.as_ptr()),
                 window_title,
                 WS_OVERLAPPEDWINDOW, // style flags
-                CW_USEDEFAULT, CW_USEDEFAULT, // x, y
-                CW_USEDEFAULT, CW_USEDEFAULT, // width, height
-                None, // parent window
-                None, // menu
+                CW_USEDEFAULT,
+                CW_USEDEFAULT, // x, y
+                CW_USEDEFAULT,
+                CW_USEDEFAULT, // width, height
+                None,          // parent window
+                None,          // menu
                 Some(self.hinstance),
-                None // optional payload passed to WM_CREATE
+                None, // optional payload passed to WM_CREATE
             )
         }?;
 
-        Ok(Window {
-            class,
-            hwnd
-        })
+        Ok(Window { class, hwnd })
     }
 
     pub fn main_event_loop(&self) {
@@ -114,7 +108,9 @@ impl Display {
     }
 
     fn register_window_class(&self) -> Result<WindowClass, std::io::Error> {
-        let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0").encode_wide().collect();
+        let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0")
+            .encode_wide()
+            .collect();
         let wndclass = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
@@ -155,7 +151,10 @@ struct WindowClass {
 impl Drop for WindowClass {
     fn drop(&mut self) {
         unsafe {
-            _ = UnregisterClassW(windows::core::PCWSTR::from_raw(self.name.as_ptr()), Some(self.hinstance));
+            _ = UnregisterClassW(
+                windows::core::PCWSTR::from_raw(self.name.as_ptr()),
+                Some(self.hinstance),
+            );
         }
     }
 }

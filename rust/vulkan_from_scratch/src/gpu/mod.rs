@@ -3,8 +3,8 @@ use std::{any::Any, fmt::Debug, sync::Arc};
 mod imp_vulkan;
 
 pub fn test() {
-    let api = ApiArc::create(&ApiParams {  }).unwrap();
-    let device = api.create_device(&DeviceParams {  }).unwrap();
+    let api = ApiArc::create(&ApiParams {}).unwrap();
+    let device = api.create_device(&DeviceParams {}).unwrap();
     device.test();
 }
 
@@ -13,19 +13,20 @@ pub fn test() {
 #[derive(Debug, Clone)]
 pub struct ApiArc(Arc<ApiInner>);
 
-
 #[derive(Debug)]
 struct ApiInner {
     imp: Box<dyn ApiImpl>,
 }
 
-pub struct ApiParams {
-
-}
+pub struct ApiParams {}
 
 trait ApiImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
-    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>, std::io::Error>;
+    fn create_device(
+        &self,
+        api_arc: &ApiArc,
+        params: &DeviceParams,
+    ) -> Result<Box<dyn DeviceImpl>, std::io::Error>;
 }
 
 impl ApiArc {
@@ -53,11 +54,8 @@ impl DeviceArc {
     }
 }
 
-pub struct DeviceParams {
-
-}
+pub struct DeviceParams {}
 
 pub trait DeviceImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
-
