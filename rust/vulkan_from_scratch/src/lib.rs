@@ -74,6 +74,7 @@ extern crate windows;
 pub mod gpu;
 pub mod result_hole;
 pub mod window;
+pub mod debugger;
 
 pub fn main() -> std::io::Result<()> {
     gpu::test();

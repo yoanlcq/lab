@@ -5,9 +5,9 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
-use alloc::rc::Rc;
-use core::cell::RefCell;
-use std::io::Result;
+use core::ptr::NonNull;
+use alloc::sync::{Arc, Weak};
+use std::{io::Result, sync::Mutex};
 use std::os::windows::ffi::OsStrExt;
 
 use windows::Win32::Foundation::*;
@@ -17,6 +17,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{DisplayParams, WindowParams};
 use crate::result_hole;
+
+struct WindowUserdata {
+    window: alloc::sync::Weak<Mutex<WindowInner>>,
+}
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
@@ -30,6 +34,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_DESTROY => {
             unsafe {
+                let userdata_ptr: *mut WindowUserdata = core::ptr::without_provenance_mut(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
+                if let Some(userdata_ptr) = NonNull::new(userdata_ptr) {
+                    let userdata = Box::from_raw(userdata_ptr.as_ptr());
+                    if let Some(window) = userdata.window.upgrade() {
+                        if let Ok(mut window_lock) = window.lock() {
+                            window_lock.hwnd_is_destroyed = true;
+                        }
+                    }
+
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                }
+
                 // TODO: PostQuitMessage only if there are no more windows OR the app is willing to exit.
                 // Several situations:
                 // - Closing one of the windows is enough to close the app
@@ -46,23 +62,29 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
 #[derive(Debug)]
 pub struct Display {
-    hinstance: HINSTANCE,
-    typical_window_class: RefCell<alloc::rc::Weak<WindowClass>>,
+    hinstance: Win32Handle<HINSTANCE>,
+    typical_window_class: Mutex<Weak<WindowClass>>,
 }
 
 #[derive(Debug)]
-pub struct Window {
+pub struct Window(Arc<Mutex<WindowInner>>);
+
+#[derive(Debug)]
+pub struct WindowInner {
     #[expect(
         dead_code,
         reason = "The variable is not read but is really needed to manage the lifetime of the window class"
     )]
-    class: Rc<WindowClass>,
-    hwnd: HWND,
+    class: Arc<WindowClass>,
+    hwnd: Win32Handle<HWND>,
+    hwnd_is_destroyed: bool,
 }
 
-impl Drop for Window {
+impl Drop for WindowInner {
     fn drop(&mut self) {
-        unsafe { result_hole::add(DestroyWindow(self.hwnd)) }
+        if !self.hwnd_is_destroyed {
+            unsafe { result_hole::add(DestroyWindow(self.hwnd.0)) }
+        }
     }
 }
 
@@ -73,8 +95,8 @@ impl Display {
             // Options:
             // - Consider passing None instead to APIs where possible
             // - Consider allowing the caller to override this
-            hinstance: unsafe { GetModuleHandleW(None) }?.into(),
-            typical_window_class: RefCell::new(alloc::rc::Weak::new()),
+            hinstance: Win32Handle(unsafe { GetModuleHandleW(None) }?.into()),
+            typical_window_class: Mutex::new(Weak::new()),
         })
     }
     pub fn create_window(&self, params: &WindowParams) -> Result<Window> {
@@ -83,12 +105,12 @@ impl Display {
         title_w.push(0);
 
         let class = {
-            let mut class_lock = self.typical_window_class.borrow_mut();
+            let mut class_lock = self.typical_window_class.lock().map_err(|_poisoned| std::io::Error::other("typical_window_class mutex poisoned"))?;
             if let Some(class) = class_lock.upgrade() {
                 class
             } else {
-                let class = Rc::new(self.register_window_class()?);
-                *class_lock = Rc::downgrade(&class);
+                let class = Arc::new(self.register_window_class()?);
+                *class_lock = Arc::downgrade(&class);
                 class
             }
         };
@@ -110,12 +132,16 @@ impl Display {
                 size.map_or(CW_USEDEFAULT, |p| p.h.ceil() as _),
                 None, // parent window
                 None, // menu
-                Some(self.hinstance),
+                Some(self.hinstance.0),
                 None, // optional payload passed to WM_CREATE
             )
         }?;
 
-        Ok(Window { class, hwnd })
+        let inner = Arc::new(Mutex::new(WindowInner { class, hwnd: Win32Handle(hwnd), hwnd_is_destroyed: false }));
+        let userdata_box = Box::new(WindowUserdata { window: Arc::downgrade(&inner) });
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, core::ptr::from_ref(Box::leak(userdata_box)).addr().cast_signed()); };
+
+        Ok(Window(inner))
     }
 
     #[expect(clippy::unused_self, reason = "On other platforms it may make sense to take self")]
@@ -130,13 +156,13 @@ impl Display {
     }
 
     fn register_window_class(&self) -> Result<WindowClass> {
-        let name: Vec<u16> = std::ffi::OsStr::new("TODO_WindowClassName\0").encode_wide().collect();
+        let name: Vec<u16> = std::ffi::OsStr::new("VulkanExperimentWindowClass\0").encode_wide().collect();
         let wndclass = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: self.hinstance,
+            hInstance: self.hinstance.0,
             hIcon: HICON::default(),
             hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }?,
             hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
@@ -158,22 +184,36 @@ impl Display {
 
 impl Window {
     pub fn show(&self) {
-        let _was_previously_visible = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
+        let window = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _was_previously_visible = unsafe { ShowWindow(window.hwnd.0, SW_SHOW) };
     }
 }
 
 #[derive(Debug)]
 struct WindowClass {
     name: Vec<u16>,
-    hinstance: HINSTANCE,
+    hinstance: Win32Handle<HINSTANCE>,
 }
+
+trait ThreadSafeWin32Handle {}
+
+impl ThreadSafeWin32Handle for HINSTANCE {}
+impl ThreadSafeWin32Handle for HWND {}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct Win32Handle<T: ThreadSafeWin32Handle>(pub T);
+
+// TODO: I'm not certain about that. We should probably fix this another way
+#[expect(clippy::non_send_fields_in_send_ty, reason = "Generated Win32 handle types use a *mut void, but we know the related APIs are thread-safe")]
+unsafe impl<T: ThreadSafeWin32Handle> Send for Win32Handle<T> {}
+unsafe impl<T: ThreadSafeWin32Handle> Sync for Win32Handle<T> {}
 
 impl Drop for WindowClass {
     fn drop(&mut self) {
         unsafe {
             result_hole::add(UnregisterClassW(
                 windows::core::PCWSTR::from_raw(self.name.as_ptr()),
-                Some(self.hinstance),
+                Some(self.hinstance.0),
             ));
         }
     }
