@@ -2,9 +2,7 @@ use std::{any::Any, fmt::Debug};
 
 use ash::vk;
 
-use crate::gpu::{ApiArc, DeviceImpl, DeviceParams};
-
-use super::{ApiParams, ApiImpl};
+use crate::gpu::{ApiArc, ApiImpl, ApiParams, DeviceImpl, DeviceParams};
 
 extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -98,11 +96,12 @@ impl Drop for VulkanApi {
 }
 
 impl VulkanApi {
-    pub fn create(params: &ApiParams) -> Result<Self, std::io::Error> {
+    pub fn create(_params: &ApiParams) -> Result<Self, std::io::Error> {
         let allocator = None;
         let vk = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan API");
         unsafe {
             let instance = {
+                // TODO: GPU API: instance layers + extensions
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layer_names_raw: Vec<_> = layer_names.iter().map(|x| x.as_ptr()).collect();
                 let mut extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into()).unwrap().to_vec();
@@ -136,6 +135,7 @@ impl VulkanApi {
                 .message_severity(
                     vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
                         | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                        // | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE,
                         | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
                 )
                 .message_type(
@@ -163,7 +163,8 @@ impl ApiImpl for VulkanApi {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>, std::io::Error> {
+    fn create_device(&self, api_arc: &ApiArc, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>, std::io::Error> {
+        // TODO: GPU API: better device selector + command-line/env options
         let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }.unwrap().into_iter().map(|physical_device| PhysicalDeviceWrapper::new(&self.instance, physical_device)).collect();
 
         let physical_device_types_sorted = [
@@ -186,11 +187,17 @@ impl ApiImpl for VulkanApi {
         }).unwrap();
 
         let device = {
+            // TODO: GPU API trade-offs:
+            // - Multiple queues?
+            // - Priority per queue?
+            // - Multiple devices?
+            // - Multiple command buffers?
             let queue_priorities = [1.; 64];
             let queue_create_infos: Vec<_> = chosen_physical_device.required_queues().into_iter().map(|x| {
                 assert!(queue_priorities.len() >= x.count as _);
                 vk::DeviceQueueCreateInfo::default().queue_family_index(x.family_index).queue_priorities(&queue_priorities[.. x.count as _])
             }).collect();
+            // TODO: GPU API: device extensions + features
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_create_infos)
                 .enabled_extension_names(&[])

@@ -3,7 +3,9 @@ use std::{any::Any, fmt::Debug, sync::Arc};
 mod imp_vulkan;
 
 pub fn test() {
-    ApiArc::create(&ApiParams {  }).unwrap().create_device(&DeviceParams {  }).unwrap();
+    let api = ApiArc::create(&ApiParams {  }).unwrap();
+    let device = api.create_device(&DeviceParams {  }).unwrap();
+    device.test();
 }
 
 /// Just a newtype to enhance an Arc<Api> with better methods.
@@ -21,7 +23,7 @@ pub struct ApiParams {
 
 }
 
-trait ApiImpl: Debug {
+trait ApiImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>, std::io::Error>;
 }
@@ -45,11 +47,17 @@ pub struct DeviceInner {
     imp: Box<dyn DeviceImpl>,
 }
 
+impl DeviceArc {
+    pub fn test(&self) {
+        _ = self.0.imp;
+    }
+}
+
 pub struct DeviceParams {
 
 }
 
-pub trait DeviceImpl: Debug {
+pub trait DeviceImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
 
