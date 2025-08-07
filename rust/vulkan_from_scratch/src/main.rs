@@ -1,6 +1,7 @@
 // TODO: cargo rustfmt
-// TODO: cargo typos
-// TODO: cargo deny?
+// TODO: typos
+// TODO: cargo deny check
+// TODO: run these automatically
 
 #![warn(
     clippy::all,
