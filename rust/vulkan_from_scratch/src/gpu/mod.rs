@@ -7,7 +7,7 @@ mod imp_vulkan;
 #[expect(clippy::missing_panics_doc, reason = "This is a temporary test function")]
 #[expect(clippy::expect_used, reason = "This is a temporary test function")]
 pub fn test() {
-    let api = ApiArc::create(&ApiParams {}).expect("Failed to create Api");
+    let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan }).expect("Failed to create Api");
     let device = api.create_device(&DeviceParams {}).expect("Failed to create device");
     device.test();
 }
@@ -32,7 +32,15 @@ struct ApiInner {
     imp: Box<dyn ApiImpl>,
 }
 
-pub struct ApiParams {}
+#[derive(Debug)]
+pub enum ApiSpec {
+    Vulkan, // TODO: add related params: version, extensions, features, etc?
+}
+
+#[derive(Debug)]
+pub struct ApiParams {
+    spec: ApiSpec,
+}
 
 trait ApiImpl: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
@@ -41,7 +49,9 @@ trait ApiImpl: Debug + Send + Sync {
 
 impl ApiArc {
     pub fn create(params: &ApiParams) -> Result<Self> {
-        let imp = Box::new(imp_vulkan::VulkanApi::create(params)?);
+        let imp = Box::new(match params.spec {
+            ApiSpec::Vulkan => imp_vulkan::VulkanApi::create(params),
+        }?);
         Ok(Self(Arc::new(ApiInner { imp })))
     }
     pub fn create_device(&self, params: &DeviceParams) -> Result<DeviceArc> {
@@ -65,6 +75,10 @@ impl DeviceArc {
     }
 }
 
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "This will surely have fields later but it's too early"
+)]
 pub struct DeviceParams {}
 
 pub trait DeviceImpl: Debug + Send + Sync {

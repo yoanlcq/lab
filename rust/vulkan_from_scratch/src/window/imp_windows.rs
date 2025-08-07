@@ -9,7 +9,6 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::w;
 
 use super::{DisplayParams, WindowParams};
 use crate::result_hole;
@@ -48,7 +47,10 @@ pub struct Display {
 
 #[derive(Debug)]
 pub struct Window {
-    #[expect(dead_code, reason = "The variable is not read but is really needed to manage the lifetime of the window class")]
+    #[expect(
+        dead_code,
+        reason = "The variable is not read but is really needed to manage the lifetime of the window class"
+    )]
     class: Rc<WindowClass>,
     hwnd: HWND,
 }
@@ -70,8 +72,10 @@ impl Display {
             typical_window_class: RefCell::new(std::rc::Weak::new()),
         })
     }
-    pub fn create_window(&self, _params: &WindowParams) -> Result<Window> {
-        let window_title = w!("Window Title");
+    pub fn create_window(&self, params: &WindowParams) -> Result<Window> {
+        let &WindowParams { ref title, position, size } = params;
+        let mut title_w: Vec<u16> = std::ffi::OsStr::new(title).encode_wide().collect();
+        title_w.push(0);
 
         let class = {
             let mut class_lock = self.typical_window_class.borrow_mut();
@@ -85,17 +89,22 @@ impl Display {
         };
 
         let hwnd = unsafe {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Virtual desktop coordinates are still within float integer range, so casts are lossless. This will be fine \
+                          until 2084 when we have 512k resolution screens"
+            )]
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(), // extended style flags
                 windows::core::PCWSTR::from_raw(class.name.as_ptr()),
-                window_title,
+                windows::core::PCWSTR::from_raw(title_w.as_ptr()),
                 WS_OVERLAPPEDWINDOW, // style flags
-                CW_USEDEFAULT,
-                CW_USEDEFAULT, // x, y
-                CW_USEDEFAULT,
-                CW_USEDEFAULT, // width, height
-                None,          // parent window
-                None,          // menu
+                position.map_or(CW_USEDEFAULT, |p| p.x.floor() as _),
+                position.map_or(CW_USEDEFAULT, |p| p.y.floor() as _),
+                size.map_or(CW_USEDEFAULT, |p| p.w.ceil() as _),
+                size.map_or(CW_USEDEFAULT, |p| p.h.ceil() as _),
+                None, // parent window
+                None, // menu
                 Some(self.hinstance),
                 None, // optional payload passed to WM_CREATE
             )

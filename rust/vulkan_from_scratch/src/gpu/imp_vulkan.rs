@@ -215,7 +215,7 @@ impl ApiImpl for VulkanApi {
                 .map(|x| {
                     vk::DeviceQueueCreateInfo::default()
                         .queue_family_index(x.family_index)
-                        .queue_priorities(&queue_priorities[.. std::cmp::min(x.count as _, queue_priorities.len())])
+                        .queue_priorities(&queue_priorities[..std::cmp::min(x.count as _, queue_priorities.len())])
                 })
                 .collect();
             // TODO: GPU API: device extensions + features

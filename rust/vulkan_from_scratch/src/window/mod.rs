@@ -1,5 +1,7 @@
 use std::io::Result;
 
+use vek::{Extent2, Vec2};
+
 #[cfg(windows)]
 mod imp_windows;
 
@@ -9,6 +11,10 @@ pub struct Display {
     imp: imp_windows::Display,
 }
 
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "This will have fields for other platforms; It just so happens that Windows doesn't need any"
+)]
 #[derive(Debug)]
 pub struct DisplayParams {}
 
@@ -18,9 +24,16 @@ pub struct Window {
     imp: imp_windows::Window,
 }
 
-#[expect(clippy::module_name_repetitions, reason = "WindowParams refers to Window as the software construct, not the module")]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "WindowParams refers to Window as the software construct, not the module"
+)]
 #[derive(Debug)]
-pub struct WindowParams {}
+pub struct WindowParams {
+    pub title: String,
+    pub position: Option<Vec2<f64>>,
+    pub size: Option<Extent2<f64>>,
+}
 
 impl Display {
     pub fn open(params: &DisplayParams) -> Result<Self> {

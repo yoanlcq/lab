@@ -10,7 +10,6 @@
 #![allow(clippy::missing_errors_doc, reason = "This is a personal experiment")]
 #![warn(clippy::expect_used)]
 #![warn(clippy::unwrap_used)]
-
 // Clippy "restriction" lints
 #![warn(clippy::alloc_instead_of_core)]
 #![warn(clippy::allow_attributes)]
@@ -44,7 +43,6 @@
 #![warn(clippy::rc_mutex)]
 #![warn(clippy::redundant_test_prefix)]
 #![warn(clippy::redundant_type_annotations)]
-#![warn(clippy::ref_patterns)]
 #![warn(clippy::renamed_function_params)]
 #![warn(clippy::rest_pat_in_fully_bound_structs)]
 #![warn(clippy::return_and_then)]
@@ -65,6 +63,8 @@
 #![warn(clippy::unwrap_in_result)]
 #![warn(clippy::verbose_file_reads)]
 
+use crate::window::WindowParams;
+
 extern crate ash;
 extern crate ash_window;
 extern crate raw_window_handle;
@@ -77,9 +77,15 @@ pub mod window;
 pub fn main() -> std::io::Result<()> {
     gpu::test();
 
+    let window_params = WindowParams {
+        title: "Vulkan experiment".to_owned(),
+        position: None,
+        size: None,
+    };
+
     let display = window::Display::open(&window::DisplayParams {})?;
-    let window0 = display.create_window(&window::WindowParams {})?;
-    let window1 = display.create_window(&window::WindowParams {})?;
+    let window0 = display.create_window(&window_params)?;
+    let window1 = display.create_window(&window_params)?;
     window0.show();
     window1.show();
     display.main_event_loop();
