@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::any::Any;
 use core::fmt::Debug;
-use alloc::sync::Arc;
 
 mod imp_vulkan;
 

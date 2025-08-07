@@ -5,10 +5,10 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
+use alloc::rc::Rc;
 use core::cell::RefCell;
 use std::io::Result;
 use std::os::windows::ffi::OsStrExt;
-use alloc::rc::Rc;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
