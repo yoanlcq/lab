@@ -1,16 +1,10 @@
 use alloc::sync::Arc;
-use core::any::Any;
 use core::fmt::Debug;
+use alloc::sync::Weak;
+
+use crate::{as_any::AsAny, windowing::WindowArc};
 
 mod imp_vulkan;
-
-#[expect(clippy::missing_panics_doc, reason = "This is a temporary test function")]
-#[expect(clippy::expect_used, reason = "This is a temporary test function")]
-pub fn test() {
-    let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan }).expect("Failed to create Api");
-    let device = api.create_device(&DeviceParams {}).expect("Failed to create device");
-    device.test();
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -39,12 +33,12 @@ pub enum ApiSpec {
 
 #[derive(Debug)]
 pub struct ApiParams {
-    spec: ApiSpec,
+    pub spec: ApiSpec,
 }
 
-trait ApiImpl: Debug + Send + Sync {
-    fn as_any(&self) -> &dyn Any;
-    fn create_device(&self, api_arc: &ApiArc, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>>;
+trait ApiImpl: Debug + Send + Sync + AsAny {
+    fn post_create(&mut self, weak_self: Weak<ApiInner>);
+    fn create_device(&self, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>>;
 }
 
 impl ApiArc {
@@ -52,10 +46,14 @@ impl ApiArc {
         let imp = Box::new(match params.spec {
             ApiSpec::Vulkan => imp_vulkan::VulkanApi::create(params),
         }?);
-        Ok(Self(Arc::new(ApiInner { imp })))
+        let mut arc = Arc::new(ApiInner { imp });
+        let weak = Arc::downgrade(&arc);
+        // SAFETY: We are obviously the only owner
+        unsafe { Arc::get_mut(&mut arc).unwrap_unchecked() }.imp.post_create(weak);
+        Ok(Self(arc))
     }
     pub fn create_device(&self, params: &DeviceParams) -> Result<DeviceArc> {
-        let imp = self.0.imp.create_device(self, params)?;
+        let imp = self.0.imp.create_device(params)?;
         Ok(DeviceArc(Arc::new(DeviceInner { imp })))
     }
 }
@@ -64,14 +62,14 @@ impl ApiArc {
 pub struct DeviceArc(Arc<DeviceInner>);
 
 #[derive(Debug)]
-pub struct DeviceInner {
+struct DeviceInner {
     imp: Box<dyn DeviceImpl>,
 }
 
 impl DeviceArc {
-    pub fn test(&self) {
-        // TODO: remove this function soon, of course
-        _ = self.0.imp;
+    pub fn create_swap_chain(&self, params: &SwapChainParams) -> Result<SwapChainArc> {
+        let imp = self.0.imp.create_swap_chain(params)?;
+        Ok(SwapChainArc(Arc::new(SwapChainInner { imp })))
     }
 }
 
@@ -81,6 +79,24 @@ impl DeviceArc {
 )]
 pub struct DeviceParams {}
 
-pub trait DeviceImpl: Debug + Send + Sync {
-    fn as_any(&self) -> &dyn Any;
+trait DeviceImpl: Debug + Send + Sync + AsAny {
+    fn create_swap_chain(&self, params: &SwapChainParams) -> Result<Box<dyn SwapChainImpl>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct SwapChainParams<'a> {
+    pub window: &'a WindowArc,
+}
+
+#[expect(dead_code, reason="WIP")]
+#[derive(Debug, Clone)]
+pub struct SwapChainArc(Arc<SwapChainInner>);
+
+#[expect(dead_code, reason="WIP")]
+#[derive(Debug)]
+struct SwapChainInner {
+    imp: Box<dyn SwapChainImpl>,
+}
+
+trait SwapChainImpl: Debug + Send + Sync + AsAny {
 }

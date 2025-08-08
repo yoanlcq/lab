@@ -4,14 +4,17 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
-use core::any::Any;
 use core::fmt::Debug;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use alloc::sync::Weak;
 
 use ash::vk;
 
-use crate::gpu::{ApiArc, ApiImpl, ApiParams, DeviceImpl, DeviceParams, Result};
+use crate::delegates::MulticastDelegateResult;
+use crate::gpu::{ApiArc, ApiImpl, ApiInner, ApiParams, DeviceImpl, DeviceParams, Result, SwapChainImpl, SwapChainParams};
 use crate::result_hole;
+use crate::windowing::WindowArc;
 
 extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -40,13 +43,14 @@ extern "system" fn vulkan_debug_callback(
 }
 
 pub struct VulkanApi {
+    api_weak: Weak<ApiInner>,
     #[expect(dead_code, reason = "ash::Entry must not be dropped, otherwise further calls will crash")]
     entry: ash::Entry,
     instance: ash::Instance,
-    #[expect(dead_code, reason = "Not yet using it, but soon!")]
     surface_loader: ash::khr::surface::Instance,
     #[cfg(windows)]
     win32_surface_loader: ash::khr::win32_surface::Instance,
+    surfaces: Mutex<HashSet<vk::SurfaceKHR>>,
     debug_utils_loader: ash::ext::debug_utils::Instance,
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
     allocator: Option<vk::AllocationCallbacks<'static>>,
@@ -63,6 +67,9 @@ impl Debug for VulkanApi {
 impl Drop for VulkanApi {
     fn drop(&mut self) {
         unsafe {
+            for surface in self.surfaces.lock().unwrap().iter() {
+                self.surface_loader.destroy_surface(*surface, self.allocator.as_ref());
+            }
             self.debug_utils_loader
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, self.allocator.as_ref());
             self.instance.destroy_instance(self.allocator.as_ref());
@@ -71,6 +78,9 @@ impl Drop for VulkanApi {
 }
 
 impl VulkanApi {
+    fn api_arc(&self) -> ApiArc {
+        self.api_weak.upgrade().map(ApiArc).expect("We only exist within an ApiArc, so upgrading our reference to self should always work")
+    }
     pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
         let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
@@ -133,6 +143,7 @@ impl VulkanApi {
             let win32_surface_loader = ash::khr::win32_surface::Instance::new(&entry, &instance);
 
             Ok(Self {
+                api_weak: Weak::new(),
                 entry,
                 instance,
                 surface_loader,
@@ -141,7 +152,42 @@ impl VulkanApi {
                 debug_utils_loader,
                 debug_utils_messenger,
                 allocator,
+                surfaces: Mutex::new(HashSet::new()),
             })
+        }
+    }
+    #[expect(dead_code, reason = "This is a draft")]
+    #[expect(clippy::panic, reason = "The behavior when creating a surface twice on the same window is not well-defined")]
+    fn test_create_surface(&self, window: &WindowArc) {
+        let surface = self.create_surface(window).unwrap();
+        if self.surfaces.lock().unwrap().insert(surface) {
+            let api_weak = self.api_weak.clone();
+            window.0.post_destroy_confirmed.lock().unwrap().push(Box::new(move |()| {
+                if let Some(api) = api_weak.upgrade() {
+                    let this = api.imp.as_any().downcast_ref::<Self>().unwrap();
+                    // TODO: should also wait for in-flight work to be idle??
+                    // In fact any call to DestroyWindow() is unsafe when there is work in-flight for it...
+                    // We should have our own delegate for the "1st chance destroy", and for the "last chance destroy" (WM_DESTROY)
+                    unsafe {
+                        this.surface_loader.destroy_surface(surface, this.allocator.as_ref());
+                    };
+                    this.surfaces.lock().unwrap().remove(&surface);
+                }
+                MulticastDelegateResult::Remove
+            }));
+        } else {
+            panic!("Surface was already existing??");
+        }
+    }
+    fn create_surface(&self, window: &WindowArc) -> Result<vk::SurfaceKHR> {
+        #[cfg(windows)]
+        unsafe {
+            let surface_create_info = vk::Win32SurfaceCreateInfoKHR {
+                hinstance: window.display().hinstance().0.addr().cast_signed(),
+                hwnd: window.hwnd().0.addr().cast_signed(),
+                .. Default::default()
+            };
+            Ok(self.win32_surface_loader.create_win32_surface(&surface_create_info, self.allocator.as_ref())?)
         }
     }
 }
@@ -242,10 +288,10 @@ impl MinimalQueueCreateInfo {
 }
 
 impl ApiImpl for VulkanApi {
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn post_create(&mut self, weak_self: Weak<ApiInner>) {
+        self.api_weak = weak_self;
     }
-    fn create_device(&self, api_arc: &ApiArc, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>> {
+    fn create_device(&self, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>> {
         // TODO: GPU API: better device selector + command-line/env options
         let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }?
             .into_iter()
@@ -314,7 +360,7 @@ impl ApiImpl for VulkanApi {
         };
 
         Ok(Box::new(VulkanDevice {
-            api: api_arc.clone(),
+            api: self.api_arc(),
             device,
         }))
     }
@@ -356,7 +402,8 @@ impl Drop for VulkanDevice {
 }
 
 impl DeviceImpl for VulkanDevice {
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn create_swap_chain(&self, _params: &SwapChainParams) -> Result<Box<dyn SwapChainImpl>> {
+        // TODO
+        todo!()
     }
 }

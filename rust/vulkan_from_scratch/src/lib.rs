@@ -8,8 +8,9 @@
 #![allow(clippy::missing_docs_in_private_items, reason = "This is a personal experiment")]
 #![allow(clippy::cargo_common_metadata, reason = "This isn't meant to be published")]
 #![allow(clippy::missing_errors_doc, reason = "This is a personal experiment")]
-#![warn(clippy::expect_used)]
-#![warn(clippy::unwrap_used)]
+// #![warn(clippy::expect_used)]
+// #![warn(clippy::unwrap_used)] // TMP
+
 // Clippy "restriction" lints
 #![warn(clippy::alloc_instead_of_core)]
 #![warn(clippy::allow_attributes)]
@@ -63,7 +64,7 @@
 #![warn(clippy::unwrap_in_result)]
 #![warn(clippy::verbose_file_reads)]
 
-use crate::window::WindowParams;
+use crate::{gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams, SwapChainParams}, windowing::WindowParams};
 
 extern crate alloc;
 extern crate ash;
@@ -73,23 +74,29 @@ extern crate windows;
 
 pub mod gpu;
 pub mod result_hole;
-pub mod window;
+pub mod windowing;
 pub mod debugger;
+pub mod delegates;
+pub mod as_any;
 
-pub fn main() -> std::io::Result<()> {
-    gpu::test();
-
+pub fn main() -> gpu::Result<()> {
     let window_params = WindowParams {
         title: "Vulkan experiment".to_owned(),
         position: None,
         size: None,
     };
 
-    let display = window::Display::open(&window::DisplayParams {})?;
+    let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
     let window0 = display.create_window(&window_params)?;
     let window1 = display.create_window(&window_params)?;
-    window0.show();
-    window1.show();
+    window0.show()?;
+    window1.show()?;
+
+    let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
+    let device = api.create_device(&DeviceParams {})?;
+    let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
+    let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
+
     display.main_event_loop();
 
     Ok(())
