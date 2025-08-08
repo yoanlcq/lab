@@ -28,6 +28,7 @@ pub mod sync {
         pub fn weak(&self) -> &Weak<T> {
             self.0.get().expect("init() should have been called first")
         }
+        /// Caveat: be wary of using this within `Drop`, it will most likely panic.
         #[must_use]
         pub fn upgrade_unwrap(&self) -> Arc<T> {
             self.weak().upgrade().expect("Upgrading WeakSelf cannot fail if it is already within a struct wrapped in Arc as intended")
@@ -66,12 +67,13 @@ pub mod rc {
             Self(OnceCell::new())
         }
         pub fn init(&self, weak: Weak<T>) {
-            self.0.set(weak).expect("init() should be called right after owner creation on the same thread... Not more than once and certainly not concurrently!");
+            self.0.set(weak).expect("init() should be called right after owner creation and not more than once");
         }
         #[must_use]
         pub fn weak(&self) -> &Weak<T> {
             self.0.get().expect("init() should have been called first")
         }
+        /// Caveat: be wary of using this within `Drop`, it will most likely panic.
         #[must_use]
         pub fn upgrade_unwrap(&self) -> Rc<T> {
             self.weak().upgrade().expect("Upgrading WeakSelf cannot fail if it is already within a struct wrapped in Rc as intended")

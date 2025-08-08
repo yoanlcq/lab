@@ -231,18 +231,11 @@ impl Drop for Win32Window {
 }
 
 impl Win32Window {
-    #[expect(clippy::unwrap_in_result, reason = "Both cases really don't happen")]
     fn destroy(&self) -> Result<bool> {
         if self.hwnd_is_destroyed.load(core::sync::atomic::Ordering::Relaxed) {
             return Ok(false);
         }
 
-        self.weak_window
-            .upgrade_unwrap()
-            .pre_destroy_requested
-            .lock()
-            .unwrap()
-            .broadcast(());
         unsafe { DestroyWindow(self.hwnd.0) }?;
         Ok(true)
     }

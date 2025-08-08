@@ -115,6 +115,15 @@ impl WindowArc {
     }
 }
 
+impl Drop for WindowInner {
+    fn drop(&mut self) {
+        self.pre_destroy_requested
+            .lock()
+            .unwrap()
+            .broadcast(());
+    }
+}
+
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WindowID(u32);
 

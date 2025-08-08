@@ -17,6 +17,7 @@ use crate::result_hole;
 use crate::weak_self::sync::WeakSelf;
 use crate::windowing::WindowArc;
 
+// https://registry.khronos.org/vulkan/specs/latest/man/html/PFN_vkDebugReportCallbackEXT.html
 extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
@@ -37,6 +38,10 @@ extern "system" fn vulkan_debug_callback(
     } else {
         unsafe { core::ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
     };
+
+    if message_id_name == "Loader Message" && message_id_number == 0 {
+        return vk::FALSE;
+    }
 
     println!("{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : {message}");
 
