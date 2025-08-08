@@ -5,10 +5,11 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
-use core::sync::atomic::AtomicBool;
 use alloc::sync::{Arc, Weak};
-use std::{io::Result, sync::Mutex};
+use core::sync::atomic::AtomicBool;
+use std::io::Result;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::Mutex;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -28,7 +29,10 @@ impl Win32HandleType for HWND {}
 struct Win32HandleWrapper<T: Win32HandleType>(pub T);
 
 // TODO: I'm not certain about that. We should probably fix this another way
-#[expect(clippy::non_send_fields_in_send_ty, reason = "Generated Win32 handle types use a *mut void, but we know the related APIs are thread-safe")]
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "Generated Win32 handle types use a *mut void, but we know the related APIs are thread-safe"
+)]
 unsafe impl<T: Win32HandleType> Send for Win32HandleWrapper<T> {}
 unsafe impl<T: Win32HandleType> Sync for Win32HandleWrapper<T> {}
 
@@ -39,7 +43,11 @@ struct Win32HwndUserdata {
 impl Win32HwndUserdata {
     fn set(hwnd: HWND, this: Option<Box<Self>>) {
         unsafe {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, this.map_or(0, |b| core::ptr::from_ref(Box::leak(b)).addr().cast_signed()));
+            SetWindowLongPtrW(
+                hwnd,
+                GWLP_USERDATA,
+                this.map_or(0, |b| core::ptr::from_ref(Box::leak(b)).addr().cast_signed()),
+            );
         }
     }
     fn get(hwnd: HWND) -> Option<Weak<WindowInner>> {
@@ -48,11 +56,7 @@ impl Win32HwndUserdata {
     fn get_box(hwnd: HWND) -> Option<Box<Self>> {
         unsafe {
             let ptr: *mut Self = core::ptr::without_provenance_mut(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
-            if ptr.is_null() {
-                None
-            } else {
-                Some(Box::from_raw(ptr))
-            }
+            if ptr.is_null() { None } else { Some(Box::from_raw(ptr)) }
         }
     }
 }
@@ -116,7 +120,10 @@ impl DisplayImpl for Win32Display {
         title_w.push(0);
 
         let class = {
-            let mut class_lock = self.typical_window_class.lock().map_err(|_poisoned| std::io::Error::other("typical_window_class mutex poisoned"))?;
+            let mut class_lock = self
+                .typical_window_class
+                .lock()
+                .map_err(|_poisoned| std::io::Error::other("typical_window_class mutex poisoned"))?;
             if let Some(class) = class_lock.upgrade() {
                 class
             } else {
@@ -229,7 +236,13 @@ impl Win32Window {
             return Ok(false);
         }
 
-        self.weak_window.upgrade().unwrap().pre_destroy_requested.lock().unwrap().broadcast(());
+        self.weak_window
+            .upgrade()
+            .unwrap()
+            .pre_destroy_requested
+            .lock()
+            .unwrap()
+            .broadcast(());
         unsafe { DestroyWindow(self.hwnd.0) }?;
         Ok(true)
     }

@@ -4,10 +4,10 @@
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
 
+use alloc::sync::Weak;
 use core::fmt::Debug;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use alloc::sync::Weak;
 
 use ash::vk;
 
@@ -79,7 +79,10 @@ impl Drop for VulkanApi {
 
 impl VulkanApi {
     fn api_arc(&self) -> ApiArc {
-        self.api_weak.upgrade().map(ApiArc).expect("We only exist within an ApiArc, so upgrading our reference to self should always work")
+        self.api_weak
+            .upgrade()
+            .map(ApiArc)
+            .expect("We only exist within an ApiArc, so upgrading our reference to self should always work")
     }
     pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
@@ -157,7 +160,10 @@ impl VulkanApi {
         }
     }
     #[expect(dead_code, reason = "This is a draft")]
-    #[expect(clippy::panic, reason = "The behavior when creating a surface twice on the same window is not well-defined")]
+    #[expect(
+        clippy::panic,
+        reason = "The behavior when creating a surface twice on the same window is not well-defined"
+    )]
     fn test_create_surface(&self, window: &WindowArc) {
         let surface = self.create_surface(window).unwrap();
         if self.surfaces.lock().unwrap().insert(surface) {
@@ -167,7 +173,8 @@ impl VulkanApi {
                     let this = api.imp.as_any().downcast_ref::<Self>().unwrap();
                     // TODO: should also wait for in-flight work to be idle??
                     // In fact any call to DestroyWindow() is unsafe when there is work in-flight for it...
-                    // We should have our own delegate for the "1st chance destroy", and for the "last chance destroy" (WM_DESTROY)
+                    // We should have our own delegate for the "1st chance destroy", and for the "last chance destroy"
+                    // (WM_DESTROY)
                     unsafe {
                         this.surface_loader.destroy_surface(surface, this.allocator.as_ref());
                     };
@@ -185,9 +192,11 @@ impl VulkanApi {
             let surface_create_info = vk::Win32SurfaceCreateInfoKHR {
                 hinstance: window.display().hinstance().0.addr().cast_signed(),
                 hwnd: window.hwnd().0.addr().cast_signed(),
-                .. Default::default()
+                ..Default::default()
             };
-            Ok(self.win32_surface_loader.create_win32_surface(&surface_create_info, self.allocator.as_ref())?)
+            Ok(self
+                .win32_surface_loader
+                .create_win32_surface(&surface_create_info, self.allocator.as_ref())?)
         }
     }
 }

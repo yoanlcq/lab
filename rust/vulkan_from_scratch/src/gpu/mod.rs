@@ -1,8 +1,8 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
-use alloc::sync::Weak;
 
-use crate::{as_any::AsAny, windowing::WindowArc};
+use crate::as_any::AsAny;
+use crate::windowing::WindowArc;
 
 mod imp_vulkan;
 
@@ -88,15 +88,14 @@ pub struct SwapChainParams<'a> {
     pub window: &'a WindowArc,
 }
 
-#[expect(dead_code, reason="WIP")]
+#[expect(dead_code, reason = "WIP")]
 #[derive(Debug, Clone)]
 pub struct SwapChainArc(Arc<SwapChainInner>);
 
-#[expect(dead_code, reason="WIP")]
+#[expect(dead_code, reason = "WIP")]
 #[derive(Debug)]
 struct SwapChainInner {
     imp: Box<dyn SwapChainImpl>,
 }
 
-trait SwapChainImpl: Debug + Send + Sync + AsAny {
-}
+trait SwapChainImpl: Debug + Send + Sync + AsAny {}

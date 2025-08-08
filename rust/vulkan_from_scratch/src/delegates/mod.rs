@@ -1,4 +1,5 @@
-use core::{marker::PhantomData, sync::atomic::{AtomicUsize}};
+use core::marker::PhantomData;
+use core::sync::atomic::AtomicUsize;
 
 #[must_use = "The delegate uses this to know if the listener hasn't expired"]
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,9 +15,7 @@ struct Listener<T> {
 
 impl<T> core::fmt::Debug for Listener<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Listener")
-            .field("salt", &self.salt)
-            .finish_non_exhaustive()
+        f.debug_struct("Listener").field("salt", &self.salt).finish_non_exhaustive()
     }
 }
 
@@ -43,9 +42,7 @@ static LAST_LISTENER_SALT: AtomicUsize = AtomicUsize::new(0);
 impl<T> MulticastDelegate<T> {
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            listeners: vec![],
-        }
+        Self { listeners: vec![] }
     }
     pub fn remove(&mut self, listener_handle: &ListenerHandle<Self>) -> Option<Box<dyn FnMut(T) -> MulticastDelegateResult>> {
         {
@@ -66,10 +63,16 @@ impl<T> MulticastDelegate<T> {
             phantom: PhantomData,
         }
     }
-    pub fn broadcast(&mut self, payload: T) where T: Copy {
+    pub fn broadcast(&mut self, payload: T)
+    where
+        T: Copy,
+    {
         self.broadcast_cloning(&payload);
     }
-    pub fn broadcast_cloning(&mut self, payload: &T) where T: Clone {
+    pub fn broadcast_cloning(&mut self, payload: &T)
+    where
+        T: Clone,
+    {
         let mut i = 0;
         while i < self.listeners.len() {
             match (self.listeners[i].func)(payload.clone()) {

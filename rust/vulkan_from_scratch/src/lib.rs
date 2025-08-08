@@ -8,13 +8,17 @@
 #![allow(clippy::missing_docs_in_private_items, reason = "This is a personal experiment")]
 #![allow(clippy::cargo_common_metadata, reason = "This isn't meant to be published")]
 #![allow(clippy::missing_errors_doc, reason = "This is a personal experiment")]
-
 // Clippy "restriction" lints
 #![allow(clippy::absolute_paths, reason = "These may not be idiomatic but are fine")]
 #![warn(clippy::alloc_instead_of_core)]
 #![warn(clippy::allow_attributes)]
 #![warn(clippy::allow_attributes_without_reason)]
-#![allow(clippy::arbitrary_source_item_ordering, reason = "This one is way too far-reaching, but most importantly, alphabetical order of declarations is almost never the best one for readers. For instance you generally want the new() method to appear first. You also generally want to keep related functions close together and alphabetical order should have no say in that")]
+#![allow(
+    clippy::arbitrary_source_item_ordering,
+    reason = "This one is way too far-reaching, but most importantly, alphabetical order of declarations is almost never the best one for \
+              readers. For instance you generally want the new() method to appear first. You also generally want to keep related \
+              functions close together and alphabetical order should have no say in that"
+)]
 #![allow(clippy::arithmetic_side_effects, reason = "TODO")]
 #![allow(clippy::as_conversions, reason = "TODO")]
 #![allow(clippy::as_pointer_underscore, reason = "TODO")]
@@ -40,7 +44,10 @@
 #![allow(clippy::exhaustive_enums, reason = "TODO")]
 #![allow(clippy::exhaustive_structs, reason = "TODO")]
 #![warn(clippy::exit)]
-#![allow(clippy::expect_used, reason = "Sometimes the only alternative is unsafe code. See also clippy::unwrap_used")]
+#![allow(
+    clippy::expect_used,
+    reason = "Sometimes the only alternative is unsafe code. See also clippy::unwrap_used"
+)]
 #![allow(clippy::field_scoped_visibility_modifiers, reason = "TODO")]
 #![warn(clippy::filetype_is_file)]
 #![allow(clippy::float_arithmetic, reason = "TODO")]
@@ -73,7 +80,11 @@
 #![allow(clippy::missing_inline_in_public_items, reason = "TODO")]
 #![allow(clippy::missing_trait_methods, reason = "TODO")]
 #![allow(clippy::mixed_read_write_in_expression, reason = "TODO")]
-#![allow(clippy::mod_module_files, reason = "This is the opposite of the clippy::self_named_module_files lint that we prefer because it avoids having one file and one folder with the same name that must be kept in sync. Even though having multiple mod.rs tabs opened can be confusing")]
+#![allow(
+    clippy::mod_module_files,
+    reason = "This is the opposite of the clippy::self_named_module_files lint that we prefer because it avoids having one file and one \
+              folder with the same name that must be kept in sync. Even though having multiple mod.rs tabs opened can be confusing"
+)]
 #![warn(clippy::module_name_repetitions)]
 #![allow(clippy::modulo_arithmetic, reason = "TODO")]
 #![allow(clippy::multiple_inherent_impl, reason = "TODO")]
@@ -100,7 +111,10 @@
 #![warn(clippy::rc_mutex)]
 #![warn(clippy::redundant_test_prefix)]
 #![warn(clippy::redundant_type_annotations)]
-#![allow(clippy::ref_patterns, reason = "You literally have no other choice when destructuring a non-Copy member out of a struct ref")]
+#![allow(
+    clippy::ref_patterns,
+    reason = "You literally have no other choice when destructuring a non-Copy member out of a struct ref"
+)]
 #![warn(clippy::renamed_function_params)]
 #![warn(clippy::rest_pat_in_fully_bound_structs)]
 #![warn(clippy::return_and_then)]
@@ -135,12 +149,17 @@
 #![warn(clippy::unused_result_ok)]
 #![allow(clippy::unused_trait_names, reason = "TODO")]
 #![warn(clippy::unwrap_in_result)]
-#![allow(clippy::unwrap_used, reason = "I want this, but it gets really annoying for specific frequent cases such as Mutex::lock(), Weak::upgrade(), and downcast_ref. See also clippy::expect_used")]
+#![allow(
+    clippy::unwrap_used,
+    reason = "I want this, but it gets really annoying for specific frequent cases such as Mutex::lock(), Weak::upgrade(), and \
+              downcast_ref. See also clippy::expect_used"
+)]
 #![allow(clippy::use_debug, reason = "TODO")]
 #![warn(clippy::verbose_file_reads)]
 #![allow(clippy::wildcard_enum_match_arm, reason = "TODO")]
 
-use crate::{gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams, SwapChainParams}, windowing::WindowParams};
+use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams, SwapChainParams};
+use crate::windowing::WindowParams;
 
 extern crate alloc;
 extern crate ash;
@@ -148,12 +167,12 @@ extern crate ash_window;
 extern crate raw_window_handle;
 extern crate windows;
 
+pub mod as_any;
+pub mod debugger;
+pub mod delegates;
 pub mod gpu;
 pub mod result_hole;
 pub mod windowing;
-pub mod debugger;
-pub mod delegates;
-pub mod as_any;
 
 pub fn main() -> gpu::Result<()> {
     let window_params = WindowParams {

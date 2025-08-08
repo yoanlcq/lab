@@ -1,9 +1,8 @@
+use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
 use core::sync::atomic::AtomicU32;
 use std::io::Result;
 use std::sync::Mutex;
-use alloc::sync::Weak;
-use alloc::sync::Arc;
 
 use vek::{Extent2, Vec2};
 
