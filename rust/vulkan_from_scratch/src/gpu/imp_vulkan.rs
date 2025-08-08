@@ -14,6 +14,7 @@ use ash::vk;
 use crate::delegates::MulticastDelegateResult;
 use crate::gpu::{ApiArc, ApiImpl, ApiInner, ApiParams, DeviceImpl, DeviceParams, Result, SwapChainImpl, SwapChainParams};
 use crate::result_hole;
+use crate::weak_self::sync::WeakSelf;
 use crate::windowing::WindowArc;
 
 extern "system" fn vulkan_debug_callback(
@@ -43,7 +44,7 @@ extern "system" fn vulkan_debug_callback(
 }
 
 pub struct VulkanApi {
-    api_weak: Weak<ApiInner>,
+    api_weak: WeakSelf<ApiInner>,
     #[expect(dead_code, reason = "ash::Entry must not be dropped, otherwise further calls will crash")]
     entry: ash::Entry,
     instance: ash::Instance,
@@ -79,10 +80,7 @@ impl Drop for VulkanApi {
 
 impl VulkanApi {
     fn api_arc(&self) -> ApiArc {
-        self.api_weak
-            .upgrade()
-            .map(ApiArc)
-            .expect("We only exist within an ApiArc, so upgrading our reference to self should always work")
+        ApiArc(self.api_weak.upgrade_unwrap())
     }
     pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
@@ -146,7 +144,7 @@ impl VulkanApi {
             let win32_surface_loader = ash::khr::win32_surface::Instance::new(&entry, &instance);
 
             Ok(Self {
-                api_weak: Weak::new(),
+                api_weak: WeakSelf::new(),
                 entry,
                 instance,
                 surface_loader,
@@ -167,7 +165,7 @@ impl VulkanApi {
     fn test_create_surface(&self, window: &WindowArc) {
         let surface = self.create_surface(window).unwrap();
         if self.surfaces.lock().unwrap().insert(surface) {
-            let api_weak = self.api_weak.clone();
+            let api_weak = self.api_weak.weak().clone();
             window.0.post_destroy_confirmed.lock().unwrap().push(Box::new(move |()| {
                 if let Some(api) = api_weak.upgrade() {
                     let this = api.imp.as_any().downcast_ref::<Self>().unwrap();
@@ -297,8 +295,8 @@ impl MinimalQueueCreateInfo {
 }
 
 impl ApiImpl for VulkanApi {
-    fn post_create(&mut self, weak_self: Weak<ApiInner>) {
-        self.api_weak = weak_self;
+    fn set_weak_api(&self, weak_api: Weak<ApiInner>) {
+        self.api_weak.init(weak_api);
     }
     fn create_device(&self, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>> {
         // TODO: GPU API: better device selector + command-line/env options

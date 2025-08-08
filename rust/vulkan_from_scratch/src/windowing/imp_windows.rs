@@ -18,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{DisplayParams, WindowParams};
 use crate::result_hole;
+use crate::weak_self::sync::WeakSelf;
 use crate::windowing::{DisplayImpl, DisplayInner, WindowImpl, WindowInner};
 
 trait Win32HandleType {}
@@ -96,14 +97,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
 #[derive(Debug)]
 pub struct Win32Display {
-    weak_display: Weak<DisplayInner>,
+    weak_display: WeakSelf<DisplayInner>,
     hinstance: Win32HandleWrapper<HINSTANCE>,
     typical_window_class: Mutex<Weak<Win32WindowClass>>,
 }
 
 impl DisplayImpl for Win32Display {
-    fn set_weak_display(&mut self, weak_display: Weak<DisplayInner>) {
-        self.weak_display = weak_display;
+    fn set_weak_display(&self, weak_display: Weak<DisplayInner>) {
+        self.weak_display.init(weak_display);
     }
     fn main_event_loop(&self) {
         let mut msg = MSG::default();
@@ -158,7 +159,7 @@ impl DisplayImpl for Win32Display {
         Win32HwndUserdata::set(hwnd, None);
 
         let window = Win32Window {
-            weak_window: Weak::new(),
+            weak_window: WeakSelf::new(),
             class,
             hwnd: Win32HandleWrapper(hwnd),
             hwnd_is_destroyed: AtomicBool::new(false),
@@ -180,7 +181,7 @@ impl Win32Display {
             // - Consider allowing the caller to override this
             hinstance: Win32HandleWrapper(unsafe { GetModuleHandleW(None) }?.into()),
             typical_window_class: Mutex::new(Weak::new()),
-            weak_display: Weak::new(),
+            weak_display: WeakSelf::new(),
         })
     }
 
@@ -220,7 +221,7 @@ pub struct Win32Window {
     class: Arc<Win32WindowClass>,
     hwnd: Win32HandleWrapper<HWND>,
     hwnd_is_destroyed: AtomicBool,
-    weak_window: Weak<WindowInner>,
+    weak_window: WeakSelf<WindowInner>,
 }
 
 impl Drop for Win32Window {
@@ -237,8 +238,7 @@ impl Win32Window {
         }
 
         self.weak_window
-            .upgrade()
-            .unwrap()
+            .upgrade_unwrap()
             .pre_destroy_requested
             .lock()
             .unwrap()
@@ -249,8 +249,8 @@ impl Win32Window {
 }
 
 impl WindowImpl for Win32Window {
-    fn set_weak_window(&mut self, weak_window: Weak<WindowInner>) {
-        self.weak_window = weak_window.clone();
+    fn set_weak_window(&self, weak_window: Weak<WindowInner>) {
+        self.weak_window.init(weak_window.clone());
         Win32HwndUserdata::set(self.hwnd.0, Some(Box::new(Win32HwndUserdata { weak_window })));
     }
     fn hwnd(&self) -> windows::Win32::Foundation::HWND {

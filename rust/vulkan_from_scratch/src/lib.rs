@@ -158,7 +158,7 @@
 #![warn(clippy::verbose_file_reads)]
 #![allow(clippy::wildcard_enum_match_arm, reason = "TODO")]
 
-use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams, SwapChainParams};
+use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams};
 use crate::windowing::WindowParams;
 
 extern crate alloc;
@@ -172,6 +172,7 @@ pub mod debugger;
 pub mod delegates;
 pub mod gpu;
 pub mod result_hole;
+pub mod weak_self;
 pub mod windowing;
 
 pub fn main() -> gpu::Result<()> {
@@ -188,9 +189,9 @@ pub fn main() -> gpu::Result<()> {
     window1.show()?;
 
     let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
-    let device = api.create_device(&DeviceParams {})?;
-    let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
-    let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
+    let _device = api.create_device(&DeviceParams {})?;
+    // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
+    // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
 
     display.main_event_loop();
 

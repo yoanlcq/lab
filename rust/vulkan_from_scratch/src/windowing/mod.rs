@@ -28,7 +28,7 @@ pub struct DisplayInner {
 pub struct DisplayParams {}
 
 trait DisplayImpl: Debug + Send + Sync + AsAny {
-    fn set_weak_display(&mut self, weak_display: Weak<DisplayInner>);
+    fn set_weak_display(&self, weak_display: Weak<DisplayInner>);
 
     fn create_window(&self, params: &WindowParams) -> Result<Box<dyn WindowImpl>>;
 
@@ -40,26 +40,22 @@ trait DisplayImpl: Debug + Send + Sync + AsAny {
 
 impl DisplayArc {
     pub fn open(params: &DisplayParams) -> Result<Self> {
-        let mut arc = Arc::new(DisplayInner {
+        let arc = Arc::new(DisplayInner {
             #[cfg(windows)]
             imp: Box::new(imp_windows::Win32Display::open(params)?),
         });
-        let weak = Arc::downgrade(&arc);
-        // SAFETY: We are obviously the only owner
-        unsafe { Arc::get_mut(&mut arc).unwrap_unchecked() }.imp.set_weak_display(weak);
+        arc.imp.set_weak_display(Arc::downgrade(&arc));
         Ok(Self(arc))
     }
     pub fn create_window(&self, params: &WindowParams) -> Result<WindowArc> {
-        let mut arc = Arc::new(WindowInner {
+        let arc = Arc::new(WindowInner {
             imp: self.0.imp.create_window(params)?,
             display: self.clone(),
             id: WindowID::new(),
             pre_destroy_requested: Mutex::new(MulticastDelegate::new()),
             post_destroy_confirmed: Mutex::new(MulticastDelegate::new()),
         });
-        let weak = Arc::downgrade(&arc);
-        // SAFETY: We are obviously the only owner
-        unsafe { Arc::get_mut(&mut arc).unwrap_unchecked() }.imp.set_weak_window(weak);
+        arc.imp.set_weak_window(Arc::downgrade(&arc));
         Ok(WindowArc(arc))
     }
     pub fn main_event_loop(&self) {
@@ -92,7 +88,7 @@ pub struct WindowParams {
 }
 
 trait WindowImpl: Debug + Send + Sync + AsAny {
-    fn set_weak_window(&mut self, weak_window: Weak<WindowInner>);
+    fn set_weak_window(&self, weak_window: Weak<WindowInner>);
 
     fn show(&self) -> Result<()>;
 

@@ -37,7 +37,7 @@ pub struct ApiParams {
 }
 
 trait ApiImpl: Debug + Send + Sync + AsAny {
-    fn post_create(&mut self, weak_self: Weak<ApiInner>);
+    fn set_weak_api(&self, weak_api: Weak<ApiInner>);
     fn create_device(&self, params: &DeviceParams) -> Result<Box<dyn DeviceImpl>>;
 }
 
@@ -46,10 +46,8 @@ impl ApiArc {
         let imp = Box::new(match params.spec {
             ApiSpec::Vulkan => imp_vulkan::VulkanApi::create(params),
         }?);
-        let mut arc = Arc::new(ApiInner { imp });
-        let weak = Arc::downgrade(&arc);
-        // SAFETY: We are obviously the only owner
-        unsafe { Arc::get_mut(&mut arc).unwrap_unchecked() }.imp.post_create(weak);
+        let arc = Arc::new(ApiInner { imp });
+        arc.imp.set_weak_api(Arc::downgrade(&arc));
         Ok(Self(arc))
     }
     pub fn create_device(&self, params: &DeviceParams) -> Result<DeviceArc> {
