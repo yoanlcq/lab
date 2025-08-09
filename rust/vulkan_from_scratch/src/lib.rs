@@ -8,6 +8,10 @@
 #![allow(clippy::missing_docs_in_private_items, reason = "This is a personal experiment")]
 #![allow(clippy::cargo_common_metadata, reason = "This isn't meant to be published")]
 #![allow(clippy::missing_errors_doc, reason = "This is a personal experiment")]
+
+// Clippy "nursery" lints
+#![allow(clippy::option_if_let_else, reason = "Sorry, but map_or_else is really less readable...")]
+
 // Clippy "restriction" lints
 #![allow(clippy::absolute_paths, reason = "These may not be idiomatic but are fine")]
 #![warn(clippy::alloc_instead_of_core)]
