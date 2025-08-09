@@ -250,9 +250,9 @@ pub fn main() -> gpu::Result<()> {
 
     let gpu_thread = {
         let startup_profiler = startup_profiler.clone();
-        std::thread::spawn(move || {
+        std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work");
-        })
+        })?
     };
 
     let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
