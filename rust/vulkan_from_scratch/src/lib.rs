@@ -162,7 +162,9 @@
 #![warn(clippy::verbose_file_reads)]
 #![allow(clippy::wildcard_enum_match_arm, reason = "TODO")]
 
+use alloc::sync::Arc;
 use std::time::Instant;
+use vek::{Extent2, Vec2};
 
 use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams};
 use crate::windowing::WindowParams;
@@ -222,31 +224,48 @@ impl StartupProfiler {
     }
 }
 
-pub fn main() -> gpu::Result<()> {
-    let startup_profiler = StartupProfiler::new();
-
-    let window_params = WindowParams {
-        title: "Vulkan experiment".to_owned(),
-        position: None,
-        size: None,
-    };
-
-    let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
-    let window0 = display.create_window(&window_params)?;
-    let window1 = display.create_window(&window_params)?;
-    window0.show()?;
-    window1.show()?;
-    startup_profiler.log_step("Window showed");
-
+fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<()> {
     let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
     startup_profiler.log_step("GPU API created");
     let _device = api.create_device(&DeviceParams {})?;
     startup_profiler.log_step("GPU Device created");
     // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
     // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
+    Ok(())
+}
+
+fn make_window_params(index: u32) -> WindowParams {
+    let w = 512.;
+    let h = 256.;
+    WindowParams {
+        title: "Vulkan experiment".to_owned(),
+        position: Some(Vec2::new(f64::from(index).mul_add(w, 16.), 16.)),
+        size: Some(Extent2::new(w, h)),
+    }
+}
+
+#[expect(clippy::missing_panics_doc, reason = "This function is for experimenting quickly")]
+pub fn main() -> gpu::Result<()> {
+    let startup_profiler = Arc::new(StartupProfiler::new());
+
+    let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
+    let window0 = display.create_window(&make_window_params(0))?;
+    let window1 = display.create_window(&make_window_params(1))?;
+    window0.show()?;
+    window1.show()?;
+    startup_profiler.log_step("Window showed");
+
+    let gpu_thread = {
+        let startup_profiler = startup_profiler.clone();
+        std::thread::spawn(move || {
+            gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work");
+        })
+    };
 
     startup_profiler.log_step("Main event loop starting");
     display.main_event_loop();
+
+    gpu_thread.join().expect("Joining GPU thread failed");
 
     Ok(())
 }
