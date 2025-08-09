@@ -52,14 +52,21 @@ impl Win32HwndUserdata {
                     p.addr().cast_signed()
                 }),
             );
-            core::mem::forget(this);
-        }
+        };
+        core::mem::forget(this);
     }
     fn get(hwnd: HWND) -> Option<Weak<WindowInner>> {
-        let b = Self::get_box(hwnd)?;
-        let weak = b.weak_window.clone();
-        core::mem::forget(b);
-        Some(weak)
+        unsafe {
+            let ptr: *const Self = core::ptr::without_provenance(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
+            if ptr.is_null() {
+                None
+            } else {
+                let this = core::ptr::read(ptr);
+                let weak = this.weak_window.clone();
+                core::mem::forget(this);
+                Some(weak)
+            }
+        }
     }
     fn get_box(hwnd: HWND) -> Option<Box<Self>> {
         unsafe {
