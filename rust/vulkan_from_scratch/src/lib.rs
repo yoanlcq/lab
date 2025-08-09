@@ -248,19 +248,19 @@ fn make_window_params(index: u32) -> WindowParams {
 pub fn main() -> gpu::Result<()> {
     let startup_profiler = Arc::new(StartupProfiler::new());
 
-    let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
-    let window0 = display.create_window(&make_window_params(0))?;
-    let window1 = display.create_window(&make_window_params(1))?;
-    window0.show()?;
-    window1.show()?;
-    startup_profiler.log_step("Window showed");
-
     let gpu_thread = {
         let startup_profiler = startup_profiler.clone();
         std::thread::spawn(move || {
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work");
         })
     };
+
+    let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
+    let window0 = display.create_window(&make_window_params(0))?;
+    let window1 = display.create_window(&make_window_params(1))?;
+    window0.show()?;
+    window1.show()?;
+    startup_profiler.log_step("Window showed");
 
     startup_profiler.log_step("Main event loop starting");
     display.main_event_loop();
