@@ -58,7 +58,7 @@ impl Win32HwndUserdata {
     }
     fn get(hwnd: HWND) -> Option<Weak<WindowInner>> {
         unsafe {
-            let ptr: *const Self = core::ptr::without_provenance(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
+            let ptr: *const Self = core::ptr::with_exposed_provenance(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
             if ptr.is_null() {
                 None
             } else {
@@ -71,7 +71,7 @@ impl Win32HwndUserdata {
     }
     fn get_box(hwnd: HWND) -> Option<Box<Self>> {
         unsafe {
-            let ptr: *mut Self = core::ptr::without_provenance_mut(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
+            let ptr: *mut Self = core::ptr::with_exposed_provenance_mut(GetWindowLongPtrW(hwnd, GWLP_USERDATA).cast_unsigned());
             if ptr.is_null() { None } else { Some(Box::from_raw(ptr)) }
         }
     }
@@ -86,7 +86,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 result_hole::add(win32_window.destroy());
                 LRESULT(0)
             } else {
-                eprintln!("HWND {hwnd:?} received WM_CLOSE but we couldn't get its userdata");
+                eprintln!("{hwnd:?} received WM_CLOSE but we couldn't get its userdata");
                 // By default, DefWindowProcW calls DestroyWindow() in response to WM_CLOSE
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
