@@ -12,3 +12,9 @@ impl<T: FnMut()> Drop for ScopeGuard<T> {
         (self.0)();
     }
 }
+
+impl<T: FnMut()> From<T> for ScopeGuard<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
