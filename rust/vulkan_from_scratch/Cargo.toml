@@ -6,6 +6,9 @@ publish = false
 
 [profile.release]
 debug = true
+# Enabling LTO results in MUCK longer link time even for a simple program.
+# When I tested it, it resulted in a 25% decrease of the PDB size, and a barely-noticeable decrease in the exe file.
+lto = false
 
 [lib]
 name = "vulkan_from_scratch_lib"
