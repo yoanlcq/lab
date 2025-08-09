@@ -12,11 +12,13 @@ use std::sync::Mutex;
 
 use ash::vk;
 
+use crate::debugger::breakpoint;
 use crate::delegates::MulticastDelegateResult;
 use crate::gpu::{ApiArc, ApiImpl, ApiInner, ApiParams, DeviceImpl, DeviceParams, Result, SwapChainImpl, SwapChainParams};
 use crate::result_hole;
 use crate::weak_self::sync::WeakSelf;
 use crate::windowing::WindowArc;
+use crate::scope_guard::ScopeGuard;
 
 // https://registry.khronos.org/vulkan/specs/latest/man/html/PFN_vkDebugReportCallbackEXT.html
 extern "system" fn vulkan_debug_callback(
@@ -44,7 +46,14 @@ extern "system" fn vulkan_debug_callback(
         return vk::FALSE;
     }
 
-    println!("{message_severity:?}: {message_type:?} [{message_id_name} ({message_id_number})] : {message}");
+    if message_severity.intersects(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+        eprintln!("{message_severity:?}: {message_type:?} [{message_id_name} (0x{message_id_number:08x})] : {message}");
+        if message_severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+            breakpoint!();
+        }
+    } else {
+        println!("{message_severity:?}: {message_type:?} [{message_id_name} (0x{message_id_number:08x})] : {message}");
+    }
 
     vk::FALSE
 }
@@ -419,6 +428,11 @@ impl DeviceImpl for VulkanDevice {
     fn test_upload_large_buffer(&self) -> Result<()> {
         // TODO: consider integrating VulkanMemoryAllocator?
         let api = self.api();
+        /*
+        TODO:
+        ERROR: VALIDATION [VUID-vkAllocateMemory-pAllocateInfo-01713 (-375211665)] : vkAllocateMemory(): pAllocateInfo->allocationSize is 3221225472 bytes from heap 2,but size of that heap is only 224395264 bytes.
+        The Vulkan spec states: pAllocateInfo->allocationSize must be less than or equal to VkPhysicalDeviceMemoryProperties::memoryHeaps[memindex].size where memindex = VkPhysicalDeviceMemoryProperties::memoryTypes[pAllocateInfo->memoryTypeIndex].heapIndex as returned by vkGetPhysicalDeviceMemoryProperties for the VkPhysicalDevice that device was created from (https://vulkan.lunarg.com/doc/view/1.4.321.1/windows/antora/spec/latest/chapters/memory.html#VUID-vkAllocateMemory-pAllocateInfo-01713)
+        */
         let size = 3 * 1024 * 1024 * 1024_usize; // TODO: read maxStorageBufferRange
         unsafe {
             let mut queue_family_indices = Vec::with_capacity(self.physical_device.requested_queues.len());
@@ -435,11 +449,12 @@ impl DeviceImpl for VulkanDevice {
             let buffer_create_info = vk::BufferCreateInfo::default()
                 .flags(vk::BufferCreateFlags::empty())
                 .queue_family_indices(&queue_family_indices) // Only if we set sharing mode to CONCURRENT
-                .sharing_mode(vk::SharingMode::CONCURRENT)
+                .sharing_mode(if queue_family_indices.len() > 1 { vk::SharingMode::CONCURRENT } else { vk::SharingMode::EXCLUSIVE })
                 .size(size as u64)
                 .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER);
 
             let buffer = self.device.create_buffer(&buffer_create_info, api.allocator.as_ref())?;
+            let _buffer_guard = ScopeGuard::new(|| self.device.destroy_buffer(buffer, api.allocator.as_ref()));
 
             let memory_requirements = self.device.get_buffer_memory_requirements(buffer);
 
@@ -457,29 +472,24 @@ impl DeviceImpl for VulkanDevice {
                 .memory_type_index(memory_type_index as u32);
 
             let memory = self.device.allocate_memory(&allocate_info, api.allocator.as_ref())?;
+            let _memory_guard = ScopeGuard::new(|| self.device.free_memory(memory, api.allocator.as_ref()));
 
             let buffer_offset_within_memory = 0;
 
             let map_flags = vk::MemoryMapFlags::empty();
-            let ptr = self.device.map_memory(memory, buffer_offset_within_memory, size as u64, map_flags)?;
+            {
+                let ptr = self.device.map_memory(memory, buffer_offset_within_memory, size as u64, map_flags)?;
+                let _ptr_guard = ScopeGuard::new(|| self.device.unmap_memory(memory));
 
-            #[expect(clippy::cast_possible_truncation, reason = "What do you wanna do")]
-            let ptr = ptr.add(ptr.align_offset(memory_requirements.alignment as _));
-
-            // TODO: do this on multiple threads?
-            core::ptr::write_bytes(ptr, 0xbe, size);
-
-            self.device.unmap_memory(memory);
+                // TODO: do this on multiple threads?
+                core::ptr::write_bytes(ptr, 0xbe, size);
+            };
 
             if !memory_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
                 self.device.flush_mapped_memory_ranges(&[vk::MappedMemoryRange::default().memory(memory).offset(buffer_offset_within_memory).size(size as u64)])?;
             }
 
             self.device.bind_buffer_memory(buffer, memory, buffer_offset_within_memory)?;
-
-            self.device.destroy_buffer(buffer, api.allocator.as_ref());
-
-            self.device.free_memory(memory, api.allocator.as_ref());
         };
         Ok(())
     }
