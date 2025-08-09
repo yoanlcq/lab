@@ -69,6 +69,9 @@ impl DeviceArc {
         let imp = self.0.imp.create_swap_chain(params)?;
         Ok(SwapChainArc(Arc::new(SwapChainInner { imp })))
     }
+    pub fn test_upload_large_buffer(&self) -> Result<()> {
+        self.0.imp.test_upload_large_buffer()
+    }
 }
 
 #[expect(
@@ -78,6 +81,7 @@ impl DeviceArc {
 pub struct DeviceParams {}
 
 trait DeviceImpl: Debug + Send + Sync + AsAny {
+    fn test_upload_large_buffer(&self) -> Result<()>;
     fn create_swap_chain(&self, params: &SwapChainParams) -> Result<Box<dyn SwapChainImpl>>;
 }
 

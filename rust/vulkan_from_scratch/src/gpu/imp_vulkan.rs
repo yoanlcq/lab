@@ -6,7 +6,8 @@
 
 use alloc::sync::Weak;
 use core::fmt::Debug;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
+use core::num::{NonZeroU32};
 use std::sync::Mutex;
 
 use ash::vk;
@@ -206,10 +207,10 @@ impl VulkanApi {
 
 #[derive(Default)]
 struct UsefulQueueFamilies {
-    graphics: Vec<usize>,
-    compute: Vec<usize>,
-    present: Vec<usize>,
-    graphics_and_present: Vec<usize>,
+    graphics: Vec<u32>,
+    compute: Vec<u32>,
+    present: Vec<u32>,
+    graphics_and_present: Vec<u32>,
 }
 
 impl UsefulQueueFamilies {
@@ -221,17 +222,16 @@ impl UsefulQueueFamilies {
                 continue;
             }
 
+            #[expect(clippy::cast_possible_truncation, reason = "Safe")]
+            let queue_family_index = queue_family_index as u32;
+
             let supports_presentation;
 
             #[cfg(windows)]
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "Let's be realistic, there won't be more than 2^32 queue families"
-            )]
             unsafe {
                 supports_presentation = api
                     .win32_surface_loader
-                    .get_physical_device_win32_presentation_support(physical_device, queue_family_index as u32);
+                    .get_physical_device_win32_presentation_support(physical_device, queue_family_index);
             };
 
             if it.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
@@ -255,9 +255,11 @@ impl UsefulQueueFamilies {
 
 struct PhysicalDeviceWrapper {
     physical_device: vk::PhysicalDevice,
-    props: vk::PhysicalDeviceProperties,
+    properties: vk::PhysicalDeviceProperties,
+    memory_properties: vk::PhysicalDeviceMemoryProperties,
     features: vk::PhysicalDeviceFeatures,
     useful_queue_families: UsefulQueueFamilies,
+    requested_queues: Vec<MinimalQueueCreateInfo>,
 }
 
 const MAX_QUEUES_PER_FAMILY: usize = 64; // Waaaaay way more than we'll ever need
@@ -269,17 +271,19 @@ impl PhysicalDeviceWrapper {
             let useful_queue_families = UsefulQueueFamilies::new(api, physical_device, &queue_family_props);
             Self {
                 physical_device,
-                props: api.instance.get_physical_device_properties(physical_device),
+                properties: api.instance.get_physical_device_properties(physical_device),
                 features: api.instance.get_physical_device_features(physical_device),
+                memory_properties: api.instance.get_physical_device_memory_properties(physical_device),
                 useful_queue_families,
+                requested_queues: vec![],
             }
         }
     }
 }
 
 struct MinimalQueueCreateInfo {
-    queue_family_index: usize,
-    count: usize,
+    queue_family_index: u32,
+    count: NonZeroU32,
 }
 
 impl MinimalQueueCreateInfo {
@@ -293,7 +297,7 @@ impl MinimalQueueCreateInfo {
             .map_or_else(Vec::new, |queue_family_index| {
                 vec![Self {
                     queue_family_index,
-                    count: 1,
+                    count: NonZeroU32::new(1).unwrap(),
                 }]
             })
     }
@@ -307,7 +311,12 @@ impl ApiImpl for VulkanApi {
         // TODO: GPU API: better device selector + command-line/env options
         let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }?
             .into_iter()
-            .map(|physical_device| PhysicalDeviceWrapper::new(self, physical_device))
+            .map(|physical_device| {
+                let mut wrapper = PhysicalDeviceWrapper::new(self, physical_device);
+                // TODO: This should depend on params. This is why I'm keeping it seaparate for now
+                wrapper.requested_queues = MinimalQueueCreateInfo::extract(&wrapper.useful_queue_families);
+                wrapper
+            })
             .collect();
 
         let physical_device_types_sorted = [
@@ -319,26 +328,16 @@ impl ApiImpl for VulkanApi {
         ];
 
         physical_devices.sort_by(|a, b| {
-            let a_type_score = physical_device_types_sorted.iter().position(|x| *x == a.props.device_type);
-            let b_type_score = physical_device_types_sorted.iter().position(|x| *x == b.props.device_type);
+            let a_type_score = physical_device_types_sorted.iter().position(|x| *x == a.properties.device_type);
+            let b_type_score = physical_device_types_sorted.iter().position(|x| *x == b.properties.device_type);
             a_type_score.cmp(&b_type_score)
             // TODO: among these, try to find the best GPU. taking into account required+desired
             // features+extensions
         });
 
-        let required_queues: HashMap<vk::PhysicalDevice, Vec<MinimalQueueCreateInfo>> = physical_devices
-            .iter()
-            .map(|physical_device| {
-                (
-                    physical_device.physical_device,
-                    MinimalQueueCreateInfo::extract(&physical_device.useful_queue_families),
-                )
-            })
-            .collect();
-
-        let chosen_physical_device = physical_devices
-            .iter()
-            .find(|x| !required_queues[&x.physical_device].is_empty())
+        let physical_device = physical_devices
+            .into_iter()
+            .find(|x| !x.requested_queues.is_empty())
             .ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
 
         let device = {
@@ -348,32 +347,30 @@ impl ApiImpl for VulkanApi {
             // - Multiple devices?
             // - Multiple command buffers?
             let queue_priorities = [1.; MAX_QUEUES_PER_FAMILY];
-            let queue_create_infos: Vec<_> = required_queues[&chosen_physical_device.physical_device]
+            let queue_create_infos: Vec<_> = physical_device.requested_queues
                 .iter()
                 .map(|x| {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "Let's be realistic, there won't be more than 2^32 queue families"
-                    )]
                     vk::DeviceQueueCreateInfo::default()
-                        .queue_family_index(x.queue_family_index as u32)
-                        .queue_priorities(&queue_priorities[..core::cmp::min(x.count as _, queue_priorities.len())])
+                        .queue_family_index(x.queue_family_index)
+                        .queue_priorities(&queue_priorities[..core::cmp::min(x.count.get() as _, queue_priorities.len())])
                 })
                 .collect();
             // TODO: GPU API: device extensions + features
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_create_infos)
                 .enabled_extension_names(&[])
-                .enabled_features(&chosen_physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
+                .enabled_features(&physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
+
             unsafe {
                 self.instance
-                    .create_device(chosen_physical_device.physical_device, &device_create_info, self.allocator.as_ref())?
+                    .create_device(physical_device.physical_device, &device_create_info, self.allocator.as_ref())?
             }
         };
 
         Ok(Box::new(VulkanDevice {
             api: self.api_arc(),
             device,
+            physical_device,
         }))
     }
 }
@@ -381,6 +378,7 @@ impl ApiImpl for VulkanApi {
 pub struct VulkanDevice {
     api: ApiArc,
     device: ash::Device,
+    physical_device: PhysicalDeviceWrapper,
 }
 
 impl Debug for VulkanDevice {
@@ -417,5 +415,72 @@ impl DeviceImpl for VulkanDevice {
     fn create_swap_chain(&self, _params: &SwapChainParams) -> Result<Box<dyn SwapChainImpl>> {
         // TODO
         todo!()
+    }
+    fn test_upload_large_buffer(&self) -> Result<()> {
+        // TODO: consider integrating VulkanMemoryAllocator?
+        let api = self.api();
+        let size = 3 * 1024 * 1024 * 1024_usize; // TODO: read maxStorageBufferRange
+        unsafe {
+            let mut queue_family_indices = Vec::with_capacity(self.physical_device.requested_queues.len());
+            for it in &self.physical_device.requested_queues {
+                if self.physical_device.useful_queue_families.graphics.contains(&it.queue_family_index) || self.physical_device.useful_queue_families.compute.contains(&it.queue_family_index) {
+                    queue_family_indices.push(it.queue_family_index);
+                }
+            }
+
+            if queue_family_indices.is_empty() {
+                return Err(std::io::Error::other("No queue family can access the buffer").into());
+            }
+
+            let buffer_create_info = vk::BufferCreateInfo::default()
+                .flags(vk::BufferCreateFlags::empty())
+                .queue_family_indices(&queue_family_indices) // Only if we set sharing mode to CONCURRENT
+                .sharing_mode(vk::SharingMode::CONCURRENT)
+                .size(size as u64)
+                .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER);
+
+            let buffer = self.device.create_buffer(&buffer_create_info, api.allocator.as_ref())?;
+
+            let memory_requirements = self.device.get_buffer_memory_requirements(buffer);
+
+            let (memory_type_index, memory_type) = self.physical_device.memory_properties.memory_types_as_slice().iter().enumerate().find(|&(i, memory_type)| {
+                // TODO: better check. Steal from VMA.
+                (memory_requirements.memory_type_bits & (1 << i)) != 0 && memory_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE)
+            }).ok_or_else(|| std::io::Error::other("Couldn't find a matching memory type"))?;
+
+            // NOTE: vkAllocateMemory() always returns a memory region aligned to the highest alignment requirement of the implementation.
+            // So, `memory_requirements.alignment` is only useful for doing suballocations.
+            // https://registry.khronos.org/vulkan/specs/latest/man/html/vkAllocateMemory.html
+            #[expect(clippy::cast_possible_truncation, reason = "Safe")]
+            let allocate_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(memory_requirements.size)
+                .memory_type_index(memory_type_index as u32);
+
+            let memory = self.device.allocate_memory(&allocate_info, api.allocator.as_ref())?;
+
+            let buffer_offset_within_memory = 0;
+
+            let map_flags = vk::MemoryMapFlags::empty();
+            let ptr = self.device.map_memory(memory, buffer_offset_within_memory, size as u64, map_flags)?;
+
+            #[expect(clippy::cast_possible_truncation, reason = "What do you wanna do")]
+            let ptr = ptr.add(ptr.align_offset(memory_requirements.alignment as _));
+
+            // TODO: do this on multiple threads?
+            core::ptr::write_bytes(ptr, 0xbe, size);
+
+            self.device.unmap_memory(memory);
+
+            if !memory_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+                self.device.flush_mapped_memory_ranges(&[vk::MappedMemoryRange::default().memory(memory).offset(buffer_offset_within_memory).size(size as u64)])?;
+            }
+
+            self.device.bind_buffer_memory(buffer, memory, buffer_offset_within_memory)?;
+
+            self.device.destroy_buffer(buffer, api.allocator.as_ref());
+
+            self.device.free_memory(memory, api.allocator.as_ref());
+        };
+        Ok(())
     }
 }

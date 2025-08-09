@@ -126,7 +126,7 @@
 #![warn(clippy::self_named_module_files)] // NOTE: Opposite of clippy::mod_module_files
 #![allow(clippy::semicolon_inside_block, reason = "TODO")]
 #![warn(clippy::semicolon_outside_block)]
-#![warn(clippy::separated_literal_suffix)]
+#![allow(clippy::separated_literal_suffix, reason = "TODO")]
 #![allow(clippy::shadow_reuse, reason = "TODO")]
 #![allow(clippy::shadow_same, reason = "TODO")]
 #![allow(clippy::shadow_unrelated, reason = "TODO")]
@@ -149,7 +149,7 @@
 #![warn(clippy::unnecessary_self_imports)]
 #![allow(clippy::unneeded_field_pattern, reason = "TODO")]
 #![allow(clippy::unreachable, reason = "TODO")]
-#![allow(clippy::unseparated_literal_suffix, reason = "TODO")]
+#![warn(clippy::unseparated_literal_suffix)] // Opposite of clippy::separated_literal_suffix
 #![warn(clippy::unused_result_ok)]
 #![allow(clippy::unused_trait_names, reason = "TODO")]
 #![warn(clippy::unwrap_in_result)]
@@ -227,8 +227,9 @@ impl StartupProfiler {
 fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<()> {
     let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
     startup_profiler.log_step("GPU API created");
-    let _device = api.create_device(&DeviceParams {})?;
+    let device = api.create_device(&DeviceParams {})?;
     startup_profiler.log_step("GPU Device created");
+    device.test_upload_large_buffer()?;
     // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
     // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
     Ok(())
