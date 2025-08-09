@@ -105,7 +105,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // - Dispatch a global event on "request exit"
                 PostQuitMessage(0);
             };
-            drop(Win32HwndUserdata::get_box(hwnd)); // Free the memory
+
+            // Free the memory
+            // FIXME: But what if another thread is also calling Win32HwndUserdata::get at that exact time?
+            // Should we just completely rework Win32HwndUserdata to replace it with a Rust-side HashMap lookup ?
+            // We could still use GWLP_USERDATA to store an ID unique for the entire session
+            drop(Win32HwndUserdata::get_box(hwnd));
+
             Win32HwndUserdata::set(hwnd, None);
             LRESULT(0)
         }
