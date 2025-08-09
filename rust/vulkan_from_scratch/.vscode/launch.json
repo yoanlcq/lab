@@ -1,0 +1,42 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "[vulkan_from_scratch][Debug] Launch",
+            "cargo": {
+                "args": ["build", "--bin=vulkan_from_scratch_bin"],
+                // Optional fields:
+                "env": {  }, // Extra environment variables
+                "cwd": "${workspaceFolder}",                // Cargo working directory
+                "problemMatcher": "$rustc",                 // Problem matcher(s) for Cargo output
+                "filter": {                                 // Filter applied to compilation artifacts:
+                    "name": "vulkan_from_scratch_bin",          // In some cases, Cargo produces multiple executable artifacts;
+                    "kind": "bin"                           // this helps disambiguate which one you'd like to debug.
+                }
+            },
+            "args": [],
+            "targetCreateCommands": [
+                "target create ${workspaceFolder}/target/debug/vulkan_from_scratch_bin.exe"
+            ],
+            "processCreateCommands": [
+                "settings set target.preload-symbols false",
+                "settings set plugin.jit-loader.gdb.enable off",
+                "settings set target.run-args value1 value2 value3",
+                "process launch"
+            ]
+        },
+        {
+            "type": "lldb",
+            "request": "attach",
+            "name": "[vulkan_from_scratch][Debug] Attach",
+            "program": "${workspaceFolder}/target/debug/vulkan_from_scratch_bin.exe",
+        },
+        {
+            "type": "lldb",
+            "request": "attach",
+            "name": "[vulkan_from_scratch][Release] Attach",
+            "program": "${workspaceFolder}/target/release/vulkan_from_scratch_bin.exe",
+        }
+    ],
+}

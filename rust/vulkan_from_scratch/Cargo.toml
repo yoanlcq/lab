@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[profile.release]
+debug = true
+
 [lib]
 name = "vulkan_from_scratch_lib"
 path = "src/lib.rs"
