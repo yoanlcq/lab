@@ -158,6 +158,8 @@
 #![warn(clippy::verbose_file_reads)]
 #![allow(clippy::wildcard_enum_match_arm, reason = "TODO")]
 
+use std::time::Instant;
+
 use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams};
 use crate::windowing::WindowParams;
 
@@ -175,7 +177,50 @@ pub mod result_hole;
 pub mod weak_self;
 pub mod windowing;
 
+struct StartupProfiler {
+    startup_instant: Instant,
+}
+
+impl StartupProfiler {
+    pub fn new() -> Self {
+        let this = Self {
+            startup_instant: Instant::now(),
+        };
+        Self::log_exe_startup_time();
+        this
+    }
+
+    fn log_exe_startup_time() {
+        match std::env::current_exe() {
+            Err(e) => eprintln!("Getting current exe path failed: {e}"),
+            Ok(exe_path) => {
+                match std::fs::metadata(exe_path) {
+                    Err(e) => eprintln!("Getting current exe metadata failed: {e}"),
+                    Ok(metadata) => {
+                        match metadata.accessed() {
+                            Err(e) => eprintln!("Last access time is not available on this file system: {e}"),
+                            Ok(last_access_time) => {
+                                match std::time::SystemTime::now().duration_since(last_access_time) {
+                                    Err(e) => eprintln!("Failed to get elapsed time between exe last access and current time: {e}"),
+                                    Ok(duration) => println!("[Startup] Time since exe last access: {:.3} seconds", duration.as_secs_f32()),
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+    pub fn log_step(&self, description: &str) {
+        let elapsed = Instant::now().duration_since(self.startup_instant).as_secs_f32();
+        println!("[Startup][{elapsed:.3}] {description}");
+    }
+}
+
 pub fn main() -> gpu::Result<()> {
+    let startup_profiler = StartupProfiler::new();
+
     let window_params = WindowParams {
         title: "Vulkan experiment".to_owned(),
         position: None,
@@ -187,12 +232,16 @@ pub fn main() -> gpu::Result<()> {
     let window1 = display.create_window(&window_params)?;
     window0.show()?;
     window1.show()?;
+    startup_profiler.log_step("Window showed");
 
     let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
+    startup_profiler.log_step("GPU API created");
     let _device = api.create_device(&DeviceParams {})?;
+    startup_profiler.log_step("GPU Device created");
     // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
     // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
 
+    startup_profiler.log_step("Main event loop starting");
     display.main_event_loop();
 
     Ok(())
