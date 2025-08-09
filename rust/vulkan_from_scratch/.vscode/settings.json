@@ -1,3 +1,11 @@
 {
     "rust-analyzer.check.command": "clippy",
+    "lldb.adapterEnv": {
+        "LLDB_USE_NATIVE_PDB_READER": "1"
+    },
+    // This doesn't seem to be taken into account, but I took this from https://youtrack.jetbrains.com/issue/RIDER-115658/Rider-C-LLDB-Disable-preloading-symbol-tables
+    "lldb.launch.initCommands": [
+        "settings set target.preload-symbols false",
+        "settings set plugin.jit-loader.gdb.enable off"
+    ],
 }
