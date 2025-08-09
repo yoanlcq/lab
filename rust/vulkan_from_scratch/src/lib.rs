@@ -164,10 +164,11 @@
 
 use alloc::sync::Arc;
 use std::time::Instant;
+use core::time::Duration;
 use vek::{Extent2, Vec2};
 
 use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams};
-use crate::windowing::WindowParams;
+use crate::windowing::{PumpEventParams, WindowParams};
 
 extern crate alloc;
 extern crate ash;
@@ -249,12 +250,12 @@ fn make_window_params(index: u32) -> WindowParams {
 pub fn main() -> gpu::Result<()> {
     let startup_profiler = Arc::new(StartupProfiler::new());
 
-    let gpu_thread = {
+    let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
         std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work");
         })?
-    };
+    });
 
     let display = windowing::DisplayArc::open(&windowing::DisplayParams {})?;
     let window0 = display.create_window(&make_window_params(0))?;
@@ -264,9 +265,24 @@ pub fn main() -> gpu::Result<()> {
     startup_profiler.log_step("Window showed");
 
     startup_profiler.log_step("Main event loop starting");
-    display.main_event_loop();
 
-    gpu_thread.join().expect("Joining GPU thread failed");
+    loop {
+        if let Some(t) = gpu_thread.take() {
+            if t.is_finished() {
+                t.join().map_err(|e| std::io::Error::other(format!("GPU thread panicked: {e:?}")))?;
+            } else {
+                gpu_thread = Some(t);
+            }
+        }
+
+        let params = PumpEventParams {
+            timeout: gpu_thread.is_some().then_some(Duration::from_secs_f32(1. / 144.)),
+            max_events: None,
+        };
+        if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
+            break;
+        }
+    }
 
     Ok(())
 }

@@ -3,6 +3,7 @@ use core::fmt::Debug;
 use core::sync::atomic::AtomicU32;
 use std::io::Result;
 use std::sync::Mutex;
+use core::time::Duration;
 
 use vek::{Extent2, Vec2};
 
@@ -32,7 +33,7 @@ trait DisplayImpl: Debug + Send + Sync + AsAny {
 
     fn create_window(&self, params: &WindowParams) -> Result<Box<dyn WindowImpl>>;
 
-    fn main_event_loop(&self);
+    fn pump_events(&self, params: &PumpEventParams) -> Option<PumpEventResult>;
 
     #[cfg(windows)]
     fn hinstance(&self) -> windows::Win32::Foundation::HINSTANCE;
@@ -58,14 +59,27 @@ impl DisplayArc {
         arc.imp.set_weak_window(Arc::downgrade(&arc));
         Ok(WindowArc(arc))
     }
-    pub fn main_event_loop(&self) {
-        self.0.imp.main_event_loop();
+    #[must_use]
+    pub fn pump_events(&self, params: &PumpEventParams) -> Option<PumpEventResult> {
+        self.0.imp.pump_events(params)
     }
     #[cfg(windows)]
     #[must_use]
     pub fn hinstance(&self) -> windows::Win32::Foundation::HINSTANCE {
         self.0.imp.hinstance()
     }
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct PumpEventParams {
+    pub timeout: Option<Duration>,
+    pub max_events: Option<usize>,
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct PumpEventResult {
+    pub nb_received_events: usize,
+    pub exit_requested: bool,
 }
 
 #[derive(Debug)]

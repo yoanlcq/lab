@@ -14,12 +14,13 @@ use std::sync::Mutex;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
+use windows::Win32::System::Threading::INFINITE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{DisplayParams, WindowParams};
 use crate::result_hole;
 use crate::weak_self::sync::WeakSelf;
-use crate::windowing::{DisplayImpl, DisplayInner, WindowImpl, WindowInner};
+use crate::windowing::{DisplayImpl, DisplayInner, PumpEventParams, PumpEventResult, WindowImpl, WindowInner};
 
 trait Win32HandleType {}
 
@@ -130,13 +131,32 @@ impl DisplayImpl for Win32Display {
     fn set_weak_display(&self, weak_display: Weak<DisplayInner>) {
         self.weak_display.init(weak_display);
     }
-    fn main_event_loop(&self) {
-        let mut msg = MSG::default();
+    fn pump_events(&self, params: &PumpEventParams) -> Option<PumpEventResult> {
+        #[expect(clippy::cast_possible_truncation, reason = "Safe because we ensure the cast is within range")]
+        #[expect(clippy::cast_sign_loss, reason = "Safe because Duration is always positive")]
+        // Additional tricky note: INFINITE == u32::MAX, so make sure that even a high duration is clamped to the value just below that.
+        let milliseconds = params.timeout.map_or(INFINITE, |d| f64::min(d.as_secs_f64() * 1000., f64::from(u32::MAX - 1)) as u32);
         unsafe {
-            while GetMessageW(&raw mut msg, None, 0, 0).into() {
-                let _is_translated = TranslateMessage(&raw const msg);
-                DispatchMessageW(&raw const msg);
-            }
+            // https://stackoverflow.com/a/10866466/7972165
+            // https://learn.microsoft.com/fr-fr/archive/blogs/larryosterman/things-you-shouldnt-do-part-4-msgwaitformultipleobjects-is-a-very-tricky-api
+            (MsgWaitForMultipleObjects(None, false, milliseconds, QS_ALLINPUT) == WAIT_OBJECT_0).then(|| {
+                let mut result = PumpEventResult::default();
+                let mut msg = MSG::default();
+                while params.max_events.is_none_or(|max_events| result.nb_received_events < max_events) {
+                    if !bool::from(PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE)) {
+                        break;
+                    }
+
+                    let _is_translated = TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+
+                    result.nb_received_events += 1;
+                    if msg.message == WM_QUIT {
+                        result.exit_requested = true;
+                    }
+                }
+                result
+            })
         }
     }
     fn create_window(&self, params: &WindowParams) -> Result<Box<dyn super::WindowImpl>> {
