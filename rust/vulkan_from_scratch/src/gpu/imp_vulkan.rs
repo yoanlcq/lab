@@ -8,6 +8,7 @@ use alloc::sync::Weak;
 use core::fmt::Debug;
 use std::collections::{HashSet};
 use core::num::{NonZeroU32};
+use core::mem::ManuallyDrop;
 use std::sync::Mutex;
 
 use ash::vk;
@@ -376,10 +377,16 @@ impl ApiImpl for VulkanApi {
             }
         };
 
+        let vma_allocator = unsafe {
+            let create_info = vk_mem::AllocatorCreateInfo::new(&self.instance, &device, physical_device.physical_device);
+            ManuallyDrop::new(vk_mem::Allocator::new(create_info)?)
+        };
+
         Ok(Box::new(VulkanDevice {
             api: self.api_arc(),
             device,
             physical_device,
+            vma_allocator,
         }))
     }
 }
@@ -388,6 +395,7 @@ pub struct VulkanDevice {
     api: ApiArc,
     device: ash::Device,
     physical_device: PhysicalDeviceWrapper,
+    vma_allocator: ManuallyDrop<vk_mem::Allocator>,
 }
 
 impl Debug for VulkanDevice {
@@ -415,6 +423,7 @@ impl Drop for VulkanDevice {
         let allocator = self.api().allocator;
         unsafe {
             result_hole::add(self.device.device_wait_idle());
+            ManuallyDrop::drop(&mut self.vma_allocator);
             self.device.destroy_device(allocator.as_ref());
         }
     }

@@ -24,6 +24,7 @@ ash-window = "0.13.0"
 raw-window-handle = "0.6.2"
 thiserror = "2.0.12"
 vek = "0.17.1"
+vk-mem = "0.4.0"
 
 [dependencies.windows]
 version = "0.61"
