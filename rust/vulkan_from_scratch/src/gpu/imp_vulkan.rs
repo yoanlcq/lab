@@ -93,6 +93,7 @@ pub struct VulkanApi {
     allocator: Option<vk::AllocationCallbacks<'static>>,
     api_version: u32,
     supports_get_physical_device_properties2: bool,
+    has_debug_utils: bool,
 }
 
 impl Debug for VulkanApi {
@@ -126,6 +127,7 @@ impl VulkanApi {
         let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
         unsafe {
             let supports_get_physical_device_properties2;
+            let has_debug_utils;
             let instance = {
                 // TODO: GPU API: instance layers + extensions
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
@@ -156,6 +158,7 @@ impl VulkanApi {
                 let enabled_extension_names: HashSet<&CStr> = enabled_extension_names.into_iter().chain(desired_extension_names.intersection(&supported_extension_names).copied()).collect();
 
                 supports_get_physical_device_properties2 = enabled_extension_names.contains(ash::khr::get_physical_device_properties2::NAME);
+                has_debug_utils = enabled_extension_names.contains(ash::ext::debug_utils::NAME);
 
                 let enabled_extension_names: Vec<*const _> = enabled_extension_names.into_iter().map(CStr::as_ptr).collect();
 
@@ -215,6 +218,7 @@ impl VulkanApi {
                 surfaces: Mutex::new(HashSet::new()),
                 api_version,
                 supports_get_physical_device_properties2,
+                has_debug_utils,
             })
         }
     }
@@ -442,6 +446,8 @@ impl ApiImpl for VulkanApi {
             }
         };
 
+        let debug_utils_loader = self.has_debug_utils.then(|| ash::ext::debug_utils::Device::new(&self.instance, &device));
+
         let vma_allocator = {
             let mut create_info = vk_mem::AllocatorCreateInfo::new(&self.instance, &device, physical_device.physical_device);
             create_info.allocation_callbacks = self.allocator.as_ref();
@@ -465,6 +471,7 @@ impl ApiImpl for VulkanApi {
             device,
             physical_device,
             vma_allocator,
+            debug_utils_loader,
         }))
     }
 }
@@ -475,6 +482,7 @@ pub struct VulkanDevice {
     #[expect(dead_code, reason = "This will certainly be useful later")]
     physical_device: PhysicalDeviceWrapper,
     vma_allocator: ManuallyDrop<vk_mem::Allocator>,
+    debug_utils_loader: Option<ash::ext::debug_utils::Device>,
 }
 
 impl Debug for VulkanDevice {
@@ -524,9 +532,24 @@ impl DeviceImpl for VulkanDevice {
                 &vk_mem::AllocationCreateInfo {
                     usage: vk_mem::MemoryUsage::Auto,
                     flags: vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+                    user_data: 0_usize, // TODO
                     ..Default::default()
                 }
             )?;
+
+            self.debug_utils_loader.as_ref().inspect(|debug_utils_loader| {
+                let name_info = vk::DebugUtilsObjectNameInfoEXT {
+                    object_type: vk::ObjectType::BUFFER,
+                    ..Default::default()
+                }
+                    .object_handle(buffer)
+                    .object_name(c"Test buffer");
+
+                result_hole::add(debug_utils_loader.set_debug_utils_object_name(&name_info));
+            });
+
+            // TODO: vk_mem doesn't expose this function supported by VMA. Consider adding it?
+            // self.vma_allocator.set_allocation_name(allocation, c"TODO");
 
             let ptr = self.vma_allocator.map_memory(&mut allocation).inspect_err(|_| {
                 self.vma_allocator.destroy_buffer(buffer, &mut allocation);
