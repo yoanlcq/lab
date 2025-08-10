@@ -48,6 +48,25 @@ extern "system" fn vulkan_debug_callback(
         return vk::FALSE;
     }
 
+    if message_severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+        // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/general_considerations.html#general_considerations_validation_layer_warnings
+
+        // It happens when VK_KHR_dedicated_allocation extension is enabled. vkGetBufferMemoryRequirements2KHR function is used instead, while validation layer seems to be unaware of it.
+        if message.contains("vkBindBufferMemory(): Binding memory to buffer ") && message.contains(" but vkGetBufferMemoryRequirements() has not been called on that buffer") {
+            return vk::FALSE;
+        }
+
+        // It happens when you map a buffer or image, because the library maps entire VkDeviceMemory block, where different types of images and buffers may end up together, especially on GPUs with unified memory like Intel.
+        if message.contains("Mapping an image with layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL can result in undefined behavior if this memory is used by the device. Only GENERAL or PREINITIALIZED should be used") {
+            return vk::FALSE;
+        }
+
+        // It may happen when you use defragmentation.
+        if message.contains("Non-linear image ") && message.contains(" is aliased with linear buffer ") && message.contains(" which may indicate a bug") {
+            return vk::FALSE;
+        }
+    }
+
     if message_severity.intersects(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
         eprintln!("{message_severity:?}: {message_type:?} [{message_id_name} (0x{message_id_number:08x})] : {message}");
         if message_severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
@@ -73,6 +92,7 @@ pub struct VulkanApi {
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
     allocator: Option<vk::AllocationCallbacks<'static>>,
     api_version: u32,
+    supports_get_physical_device_properties2: bool,
 }
 
 impl Debug for VulkanApi {
@@ -105,21 +125,39 @@ impl VulkanApi {
         let api_version = vk::make_api_version(0, 1, 0, 0);
         let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
         unsafe {
+            let supports_get_physical_device_properties2;
             let instance = {
                 // TODO: GPU API: instance layers + extensions
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layer_names_raw: Vec<_> = layer_names.iter().map(|x| x.as_ptr()).collect();
-                let mut extension_names =
-                    ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?.to_vec();
-                extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+
+                let ash_window_required_extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?;
+                let required_extension_names: HashSet<&CStr> = ash_window_required_extension_names.iter().map(|x| CStr::from_ptr(*x)).collect();
+                let desired_extension_names: HashSet<&CStr> = [
+                    ash::ext::debug_utils::NAME,
+                    ash::khr::get_physical_device_properties2::NAME,
+                ].into_iter().collect();
 
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 {
-                    extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
-                    // Enabling this extension is a requirement when using
-                    // `VK_KHR_portability_subset`
-                    extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
+                    required_extension_names.insert(ash::khr::portability_enumeration::NAME.as_ptr());
+                    // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
+                    required_extension_names.insert(ash::khr::get_physical_device_properties2::NAME.as_ptr());
                 }
+
+                let extension_properties = entry.enumerate_instance_extension_properties(None)?;
+                let supported_extension_names: HashSet<&CStr> = extension_properties.iter().filter_map(|x| x.extension_name_as_c_str().ok()).collect();
+
+                let enabled_extension_names: HashSet<&CStr> = required_extension_names.intersection(&supported_extension_names).copied().collect();
+                if enabled_extension_names.len() < required_extension_names.len() {
+                    return Err(std::io::Error::other("Some required instance extensions are not supported").into());
+                }
+
+                let enabled_extension_names: HashSet<&CStr> = enabled_extension_names.into_iter().chain(desired_extension_names.intersection(&supported_extension_names).copied()).collect();
+
+                supports_get_physical_device_properties2 = enabled_extension_names.contains(ash::khr::get_physical_device_properties2::NAME);
+
+                let enabled_extension_names: Vec<*const _> = enabled_extension_names.into_iter().map(CStr::as_ptr).collect();
 
                 let application_info = vk::ApplicationInfo::default()
                     .api_version(api_version)
@@ -134,7 +172,7 @@ impl VulkanApi {
                         vk::InstanceCreateFlags::default()
                     })
                     .application_info(&application_info)
-                    .enabled_extension_names(&extension_names)
+                    .enabled_extension_names(&enabled_extension_names)
                     .enabled_layer_names(&layer_names_raw);
 
                 entry
@@ -176,6 +214,7 @@ impl VulkanApi {
                 allocator,
                 surfaces: Mutex::new(HashSet::new()),
                 api_version,
+                supports_get_physical_device_properties2,
             })
         }
     }
@@ -358,6 +397,7 @@ impl ApiImpl for VulkanApi {
             .ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
 
         let supports_dedicated_allocation;
+        let supports_ext_memory_budget;
         let device = {
             // TODO: GPU API trade-offs:
             // - Multiple queues?
@@ -374,10 +414,12 @@ impl ApiImpl for VulkanApi {
                 })
                 .collect();
 
-            // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/vk_khr_dedicated_allocation.html
             let desired_extension_names: HashSet<&CStr> = [
+                // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/vk_khr_dedicated_allocation.html
                 c"VK_KHR_get_memory_requirements2",
                 c"VK_KHR_dedicated_allocation",
+                // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/staying_within_budget.html
+                c"VK_EXT_memory_budget",
             ].into_iter().collect();
 
             let extension_properties = unsafe { self.instance.enumerate_device_extension_properties(physical_device.physical_device) }?;
@@ -386,6 +428,7 @@ impl ApiImpl for VulkanApi {
             let enabled_extension_names_pointers: Vec<*const _> = enabled_extension_names.iter().map(|x| x.as_ptr()).collect();
 
             supports_dedicated_allocation = enabled_extension_names.contains(c"VK_KHR_get_memory_requirements2") && enabled_extension_names.contains(c"VK_KHR_dedicated_allocation");
+            supports_ext_memory_budget = self.supports_get_physical_device_properties2 && enabled_extension_names.contains(c"VK_EXT_memory_budget");
 
             // TODO: GPU API: device extensions + features
             let device_create_info = vk::DeviceCreateInfo::default()
@@ -404,6 +447,9 @@ impl ApiImpl for VulkanApi {
             create_info.allocation_callbacks = self.allocator.as_ref();
             if supports_dedicated_allocation {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::KHR_DEDICATED_ALLOCATION;
+            }
+            if supports_ext_memory_budget {
+                create_info.flags |= vk_mem::AllocatorCreateFlags::EXT_MEMORY_BUDGET;
             }
             create_info.vulkan_api_version = self.api_version;
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(create_info) }?)
@@ -486,7 +532,11 @@ impl DeviceImpl for VulkanDevice {
 
             self.vma_allocator.unmap_memory(&mut allocation);
 
+            result_hole::add(self.vma_allocator.flush_allocation(&allocation, 0, size as u64));
+
             self.vma_allocator.destroy_buffer(buffer, &mut allocation);
+
+            // self.vma_allocator.set_current_frame_index(frame_index); // TODO
         };
         Ok(())
     }
