@@ -10,6 +10,7 @@ use core::fmt::Debug;
 use std::collections::{HashSet};
 use core::num::{NonZeroU32};
 use core::mem::ManuallyDrop;
+use core::ffi::CStr;
 use std::sync::Mutex;
 
 use ash::vk;
@@ -71,6 +72,7 @@ pub struct VulkanApi {
     debug_utils_loader: ash::ext::debug_utils::Instance,
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
     allocator: Option<vk::AllocationCallbacks<'static>>,
+    api_version: u32,
 }
 
 impl Debug for VulkanApi {
@@ -100,6 +102,7 @@ impl VulkanApi {
     }
     pub fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
+        let api_version = vk::make_api_version(0, 1, 0, 0);
         let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
         unsafe {
             let instance = {
@@ -109,6 +112,7 @@ impl VulkanApi {
                 let mut extension_names =
                     ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?.to_vec();
                 extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 {
                     extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
@@ -116,8 +120,9 @@ impl VulkanApi {
                     // `VK_KHR_portability_subset`
                     extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
                 }
+
                 let application_info = vk::ApplicationInfo::default()
-                    .api_version(vk::make_api_version(0, 1, 0, 0))
+                    .api_version(api_version)
                     .application_name(c"VulkanFromScratch")
                     .application_version(0)
                     .engine_name(c"NoEngine")
@@ -170,6 +175,7 @@ impl VulkanApi {
                 debug_utils_messenger,
                 allocator,
                 surfaces: Mutex::new(HashSet::new()),
+                api_version,
             })
         }
     }
@@ -351,6 +357,7 @@ impl ApiImpl for VulkanApi {
             .find(|x| !x.requested_queues.is_empty())
             .ok_or_else(|| std::io::Error::other("No physical device matching requirements"))?;
 
+        let supports_dedicated_allocation;
         let device = {
             // TODO: GPU API trade-offs:
             // - Multiple queues?
@@ -366,10 +373,24 @@ impl ApiImpl for VulkanApi {
                         .queue_priorities(&queue_priorities[..core::cmp::min(x.count.get() as _, queue_priorities.len())])
                 })
                 .collect();
+
+            // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/vk_khr_dedicated_allocation.html
+            let desired_extension_names: HashSet<&CStr> = [
+                c"VK_KHR_get_memory_requirements2",
+                c"VK_KHR_dedicated_allocation",
+            ].into_iter().collect();
+
+            let extension_properties = unsafe { self.instance.enumerate_device_extension_properties(physical_device.physical_device) }?;
+            let supported_extension_names: HashSet<&CStr> = extension_properties.iter().map(|x| x.extension_name_as_c_str().unwrap_or_default()).collect();
+            let enabled_extension_names: HashSet<&CStr> = desired_extension_names.intersection(&supported_extension_names).copied().collect();
+            let enabled_extension_names_pointers: Vec<*const _> = enabled_extension_names.iter().map(|x| x.as_ptr()).collect();
+
+            supports_dedicated_allocation = enabled_extension_names.contains(c"VK_KHR_get_memory_requirements2") && enabled_extension_names.contains(c"VK_KHR_dedicated_allocation");
+
             // TODO: GPU API: device extensions + features
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_create_infos)
-                .enabled_extension_names(&[])
+                .enabled_extension_names(&enabled_extension_names_pointers)
                 .enabled_features(&physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
 
             unsafe {
@@ -378,9 +399,14 @@ impl ApiImpl for VulkanApi {
             }
         };
 
-        let vma_allocator = unsafe {
-            let create_info = vk_mem::AllocatorCreateInfo::new(&self.instance, &device, physical_device.physical_device);
-            ManuallyDrop::new(vk_mem::Allocator::new(create_info)?)
+        let vma_allocator = {
+            let mut create_info = vk_mem::AllocatorCreateInfo::new(&self.instance, &device, physical_device.physical_device);
+            create_info.allocation_callbacks = self.allocator.as_ref();
+            if supports_dedicated_allocation {
+                create_info.flags |= vk_mem::AllocatorCreateFlags::KHR_DEDICATED_ALLOCATION;
+            }
+            create_info.vulkan_api_version = self.api_version;
+            ManuallyDrop::new(unsafe { vk_mem::Allocator::new(create_info) }?)
         };
 
         Ok(Box::new(VulkanDevice {
@@ -445,7 +471,7 @@ impl DeviceImpl for VulkanDevice {
                     .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER)
                 ,
                 &vk_mem::AllocationCreateInfo {
-                    usage: vk_mem::MemoryUsage::AutoPreferDevice,
+                    usage: vk_mem::MemoryUsage::Auto,
                     flags: vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
                     ..Default::default()
                 }
