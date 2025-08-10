@@ -368,7 +368,12 @@ impl ApiImpl for VulkanApi {
     fn set_weak_api(&self, weak_api: Weak<ApiInner>) {
         self.api_weak.init(weak_api);
     }
+    #[expect(clippy::too_many_lines, reason = "I'll figure it out later")]
     fn create_device(&self, _params: &DeviceParams) -> Result<Box<dyn DeviceImpl>> {
+        let has_1_1 = vk::api_version_major(self.api_version) > 1 || (vk::api_version_major(self.api_version) == 1 && vk::api_version_minor(self.api_version) >= 1);
+        let has_1_2 = vk::api_version_major(self.api_version) > 1 || (vk::api_version_major(self.api_version) == 1 && vk::api_version_minor(self.api_version) >= 2);
+        let has_1_3 = vk::api_version_major(self.api_version) > 1 || (vk::api_version_major(self.api_version) == 1 && vk::api_version_minor(self.api_version) >= 3);
+
         // TODO: GPU API: better device selector + command-line/env options
         let mut physical_devices: Vec<PhysicalDeviceWrapper> = unsafe { self.instance.enumerate_physical_devices() }?
             .into_iter()
@@ -435,11 +440,62 @@ impl ApiImpl for VulkanApi {
             supports_dedicated_allocation = enabled_extension_names.contains(c"VK_KHR_get_memory_requirements2") && enabled_extension_names.contains(c"VK_KHR_dedicated_allocation");
             supports_ext_memory_budget = self.supports_get_physical_device_properties2 && enabled_extension_names.contains(c"VK_EXT_memory_budget");
 
+            // TODO: Just have to fill these in as soon as we need them; the rest of the logic is mostly ready
+            let required_features = vk::PhysicalDeviceFeatures::default();
+            let required_v11_features = vk::PhysicalDeviceVulkan11Features::default();
+            let required_v12_features = vk::PhysicalDeviceVulkan12Features::default();
+            let required_v13_features = vk::PhysicalDeviceVulkan13Features::default();
+
+            let mut enabled_v11_features;
+            let mut enabled_v12_features;
+            let mut enabled_v13_features;
+
+            let mut enabled_features2 = if has_1_1 {
+                let mut supported_v11_features = vk::PhysicalDeviceVulkan11Features::default();
+                let mut supported_v12_features = vk::PhysicalDeviceVulkan12Features::default();
+                let mut supported_v13_features = vk::PhysicalDeviceVulkan13Features::default();
+                let mut supported_features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut supported_v11_features);
+                if has_1_2 {
+                    supported_features2 = supported_features2.push_next(&mut supported_v12_features);
+                }
+                if has_1_3 {
+                    supported_features2 = supported_features2.push_next(&mut supported_v13_features);
+                }
+
+                unsafe { self.instance.get_physical_device_features2(physical_device.physical_device, &mut supported_features2); };
+
+                enabled_v11_features = supported_v11_features;
+                enabled_v12_features = supported_v12_features;
+                enabled_v13_features = supported_v13_features;
+
+                filter_v11_features(&mut enabled_v11_features, &required_v11_features);
+                filter_v12_features(&mut enabled_v12_features, &required_v12_features);
+                filter_v13_features(&mut enabled_v13_features, &required_v13_features);
+
+                let mut enabled_features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut enabled_v11_features);
+                if has_1_2 {
+                    enabled_features2 = enabled_features2.push_next(&mut enabled_v12_features);
+                }
+                if has_1_3 {
+                    enabled_features2 = enabled_features2.push_next(&mut enabled_v13_features);
+                }
+                enabled_features2
+            } else {
+                vk::PhysicalDeviceFeatures2::default().features(physical_device.features)
+            };
+
+            filter_features(&mut enabled_features2.features, &required_features);
+            let features = enabled_features2.features;
+
             // TODO: GPU API: device extensions + features
-            let device_create_info = vk::DeviceCreateInfo::default()
+            let mut device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_create_infos)
                 .enabled_extension_names(&enabled_extension_names_pointers)
-                .enabled_features(&physical_device.features); // PERF: Vulkan book recommends not enable all features blindly because that may cause unnecessary allocations
+                .enabled_features(&features);
+
+            if has_1_1 {
+                device_create_info = device_create_info.push_next(&mut enabled_features2);
+            }
 
             unsafe {
                 self.instance
@@ -453,14 +509,12 @@ impl ApiImpl for VulkanApi {
             let mut create_info = vk_mem::AllocatorCreateInfo::new(&self.instance, &device, physical_device.physical_device);
             create_info.allocation_callbacks = self.allocator.as_ref();
 
-            // HACK due to vk_mem looking for the device's 1_1 function table instead of allowing us to provide the extension function loader.
+            // Checking is_1_1 is a HACK due to vk_mem looking for the device's 1_1 function table instead of allowing us to provide the extension function loader.
             // Loading "vkGetBufferMemoryRequirements2KHR" (from the extension) is not the same as "vkGetBufferMemoryRequirements2" (core 1.1), and vk_mem is not aware of that. I should perhaps fork it or submit a PR.
-            let is_1_1 = vk::api_version_major(self.api_version) > 1 || (vk::api_version_major(self.api_version) == 1 && vk::api_version_minor(self.api_version) >= 1);
-
-            if supports_dedicated_allocation && is_1_1 {
+            if supports_dedicated_allocation && has_1_1 {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::KHR_DEDICATED_ALLOCATION;
             }
-            if supports_ext_memory_budget && is_1_1 {
+            if supports_ext_memory_budget && has_1_1 {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::EXT_MEMORY_BUDGET;
             }
             create_info.vulkan_api_version = self.api_version;
@@ -474,6 +528,43 @@ impl ApiImpl for VulkanApi {
             vma_allocator,
             debug_utils_loader,
         }))
+    }
+}
+
+unsafe fn and_vkbool32_structs<T>(out: &mut T, input: &T, offset: usize) {
+    let size = core::mem::size_of::<T>();
+    debug_assert_eq!(offset % 4, 0, "size must be a multiple of vkBool32. Don't just pass any struct to this function!");
+    debug_assert_eq!((size - offset) % 4, 0, "offset must be aligned to vkBool32.");
+    unsafe {
+        let a_slice = core::slice::from_raw_parts_mut(core::ptr::from_mut(out).byte_add(offset).cast::<vk::Bool32>(), (size - offset) / 4);
+        let b_slice = core::slice::from_raw_parts(core::ptr::from_ref(input).byte_add(offset).cast::<vk::Bool32>(), (size - offset) / 4);
+        for (a, b) in a_slice.iter_mut().zip(b_slice) {
+            *a &= b;
+        }
+    }
+}
+
+fn filter_features(supported: &mut vk::PhysicalDeviceFeatures, required: &vk::PhysicalDeviceFeatures) {
+    unsafe {
+        and_vkbool32_structs(supported, required, 0);
+    }
+}
+
+fn filter_v11_features<'a>(supported: &mut vk::PhysicalDeviceVulkan11Features<'a>, required: &vk::PhysicalDeviceVulkan11Features<'a>) {
+    unsafe {
+        and_vkbool32_structs(supported, required, core::mem::offset_of!(vk::PhysicalDeviceVulkan11Features<'a>, storage_buffer16_bit_access));
+    }
+}
+
+fn filter_v12_features<'a>(supported: &mut vk::PhysicalDeviceVulkan12Features<'a>, required: &vk::PhysicalDeviceVulkan12Features<'a>) {
+    unsafe {
+        and_vkbool32_structs(supported, required, core::mem::offset_of!(vk::PhysicalDeviceVulkan12Features<'a>, sampler_mirror_clamp_to_edge));
+    }
+}
+
+fn filter_v13_features<'a>(supported: &mut vk::PhysicalDeviceVulkan13Features<'a>, required: &vk::PhysicalDeviceVulkan13Features<'a>) {
+    unsafe {
+        and_vkbool32_structs(supported, required, core::mem::offset_of!(vk::PhysicalDeviceVulkan13Features<'a>, robust_image_access));
     }
 }
 
