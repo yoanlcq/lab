@@ -88,8 +88,8 @@ pub struct VulkanApi {
     #[cfg(windows)]
     win32_surface_loader: ash::khr::win32_surface::Instance,
     surfaces: Mutex<HashSet<vk::SurfaceKHR>>,
-    debug_utils_loader: ash::ext::debug_utils::Instance,
-    debug_utils_messenger: vk::DebugUtilsMessengerEXT,
+    debug_utils_loader: Option<ash::ext::debug_utils::Instance>,
+    debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
     allocator: Option<vk::AllocationCallbacks<'static>>,
     api_version: u32,
     supports_get_physical_device_properties2: bool,
@@ -110,8 +110,9 @@ impl Drop for VulkanApi {
             for surface in self.surfaces.lock().unwrap().iter() {
                 self.surface_loader.destroy_surface(*surface, self.allocator.as_ref());
             }
-            self.debug_utils_loader
-                .destroy_debug_utils_messenger(self.debug_utils_messenger, self.allocator.as_ref());
+            if let (Some(loader), Some(messenger)) = (self.debug_utils_loader.as_ref(), self.debug_utils_messenger.take()) {
+                loader.destroy_debug_utils_messenger(messenger, self.allocator.as_ref());
+            }
             self.instance.destroy_instance(self.allocator.as_ref());
         }
     }
@@ -197,8 +198,8 @@ impl VulkanApi {
                 )
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
-            let debug_utils_loader = ash::ext::debug_utils::Instance::new(&entry, &instance);
-            let debug_utils_messenger = debug_utils_loader.create_debug_utils_messenger(&debug_info, allocator.as_ref())?;
+            let debug_utils_loader = has_debug_utils.then(|| ash::ext::debug_utils::Instance::new(&entry, &instance));
+            let debug_utils_messenger = debug_utils_loader.as_ref().and_then(|x| x.create_debug_utils_messenger(&debug_info, allocator.as_ref()).ok());
 
             let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
