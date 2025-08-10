@@ -445,10 +445,15 @@ impl ApiImpl for VulkanApi {
         let vma_allocator = {
             let mut create_info = vk_mem::AllocatorCreateInfo::new(&self.instance, &device, physical_device.physical_device);
             create_info.allocation_callbacks = self.allocator.as_ref();
-            if supports_dedicated_allocation {
+
+            // HACK due to vk_mem looking for the device's 1_1 function table instead of allowing us to provide the extension function loader.
+            // Loading "vkGetBufferMemoryRequirements2KHR" (from the extension) is not the same as "vkGetBufferMemoryRequirements2" (core 1.1), and vk_mem is not aware of that. I should perhaps fork it or submit a PR.
+            let is_1_1 = vk::api_version_major(self.api_version) > 1 || (vk::api_version_major(self.api_version) == 1 && vk::api_version_minor(self.api_version) >= 1);
+
+            if supports_dedicated_allocation && is_1_1 {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::KHR_DEDICATED_ALLOCATION;
             }
-            if supports_ext_memory_budget {
+            if supports_ext_memory_budget && is_1_1 {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::EXT_MEMORY_BUDGET;
             }
             create_info.vulkan_api_version = self.api_version;
