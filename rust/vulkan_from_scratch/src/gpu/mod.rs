@@ -72,6 +72,10 @@ impl DeviceArc {
     pub fn test_upload_large_buffer(&self) -> Result<()> {
         self.0.imp.test_upload_large_buffer()
     }
+    pub fn set_frame_index(&self, frame_index: u64) -> Result<()> {
+        self.0.imp.set_frame_index(frame_index)
+    }
+
 }
 
 #[expect(
@@ -83,6 +87,7 @@ pub struct DeviceParams {}
 trait DeviceImpl: Debug + Send + Sync + AsAny {
     fn test_upload_large_buffer(&self) -> Result<()>;
     fn create_swap_chain(&self, params: &SwapChainParams) -> Result<Box<dyn SwapChainImpl>>;
+    fn set_frame_index(&self, frame_index: u64) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]

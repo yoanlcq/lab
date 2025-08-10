@@ -536,8 +536,12 @@ impl DeviceImpl for VulkanDevice {
 
             self.vma_allocator.destroy_buffer(buffer, &mut allocation);
 
-            // self.vma_allocator.set_current_frame_index(frame_index); // TODO
         };
+        Ok(())
+    }
+    fn set_frame_index(&self, frame_index: u64) -> Result<()> {
+        #[expect(clippy::cast_possible_truncation, reason = "This is unfortunate, but we're not about to change VMA's API")]
+        unsafe { self.vma_allocator.set_current_frame_index(frame_index as u32); };
         Ok(())
     }
 }

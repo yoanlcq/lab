@@ -226,7 +226,11 @@ impl StartupProfiler {
     }
 }
 
-fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<()> {
+struct GpuThreadResult {
+    device: gpu::DeviceArc,
+}
+
+fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<GpuThreadResult> {
     let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
     startup_profiler.log_step("GPU API created");
     let device = api.create_device(&DeviceParams {})?;
@@ -234,7 +238,7 @@ fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<()> {
     device.test_upload_large_buffer()?;
     // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
     // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
-    Ok(())
+    Ok(GpuThreadResult { device })
 }
 
 fn make_window_params(index: u32) -> WindowParams {
@@ -254,7 +258,7 @@ pub fn main() -> gpu::Result<()> {
     let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
         std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
-            gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work");
+            gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work")
         })?
     });
 
@@ -267,10 +271,13 @@ pub fn main() -> gpu::Result<()> {
 
     startup_profiler.log_step("Main event loop starting");
 
+    // At 300FPS, we have ((2^64) / (300 * 60 * 60 * 24 * 365)) = 2e9 years of runtime. So don't even think about std::num::Wrapping
+    let mut frame_index = 0_u64;
+    let mut gpu_thread_result = None;
     loop {
         if let Some(t) = gpu_thread.take() {
             if t.is_finished() {
-                t.join().map_err(|e| std::io::Error::other(format!("GPU thread panicked: {e:?}")))?;
+                gpu_thread_result = Some(t.join().map_err(|e| std::io::Error::other(format!("GPU thread panicked: {e:?}")))?);
             } else {
                 gpu_thread = Some(t);
             }
@@ -283,6 +290,10 @@ pub fn main() -> gpu::Result<()> {
         if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
             break;
         }
+
+        gpu_thread_result.as_ref().inspect(|x| result_hole::add(x.device.set_frame_index(frame_index)));
+
+        frame_index += 1;
     }
 
     Ok(())
