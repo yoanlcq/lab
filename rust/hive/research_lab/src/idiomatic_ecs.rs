@@ -127,7 +127,7 @@ impl Velocities {
                         positions.remove(&eid);
                     });
                 }
-            })
+            });
         };
         for command in pending_adds.into_inner().unwrap() {
             command(positions, self, entities);

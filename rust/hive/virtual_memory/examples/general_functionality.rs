@@ -66,7 +66,7 @@ fn main() {
 
     // SAFETY: Nobody is currently using the memory within the committed range
     unsafe {
-        virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range")
+        virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range");
     };
 
     // SAFETY: We're passing a virtual address range returned by reserve()

@@ -199,7 +199,7 @@ impl Allocator {
     /// This function is designed for working with a `size` equal to 0 or power of two.
     /// It is still safe to call if the condition is not met, but the resulting pointer will not be unique for the given index.
     #[must_use]
-    pub fn allocate_from_index(range: AddrRange, mut index: usize) -> AddrRange {
+    pub const fn allocate_from_index(range: AddrRange, mut index: usize) -> AddrRange {
         let (mut start, mut size) = (range.addr().get(), range.size());
         loop {
             size /= 2;
@@ -311,7 +311,7 @@ impl Allocation {
     pub const fn new(allocator: Arc<Allocator>, drop_result_handler: DropResultHandler) -> Self {
         Self { allocator, storage: None, drop_result_handler }
     }
-    /// The implementation _may_ avoid the Arc::clone(), hence it takes a reference
+    /// The implementation _may_ avoid the `Arc::clone()`, hence it takes a reference
     pub fn with_committed_size(allocator: &Arc<Allocator>, drop_result_handler: DropResultHandler, committed_size: usize, protection_flags: ProtectionFlags) -> Result<Self> {
         let mut s = Self::new(allocator.clone(), drop_result_handler);
         s.set_committed_size(committed_size, protection_flags)?;
@@ -332,42 +332,42 @@ impl Allocation {
     pub const fn allocator(&self) -> &Arc<Allocator> {
         &self.allocator
     }
-    pub fn page_size(&self) -> NonZeroUsize {
+    #[must_use] pub fn page_size(&self) -> NonZeroUsize {
         self.allocator.virtual_memory_system.page_size()
     }
-    pub fn allocation_addr(&self) -> Option<Addr> {
+    #[must_use] pub fn allocation_addr(&self) -> Option<Addr> {
         self.storage.as_ref().map(|s| s.addr)
     }
     /// NOTE: The returned pointer is only guaranteed to have an addr equal to `allocation_addr()` as long as `committed_size() >= 1`.
-    pub fn committed_memory_start(&self) -> NonNull<u8> {
-        self.storage.as_ref().map(|s| s.ptr.as_ref().map(Unique::get).unwrap_or(NonNull::dangling())).unwrap_or(NonNull::dangling())
+    #[must_use] pub fn committed_memory_start(&self) -> NonNull<u8> {
+        self.storage.as_ref().map_or(NonNull::dangling(), |s| s.ptr.as_ref().map_or(NonNull::dangling(), Unique::get))
     }
-    pub fn committed_size(&self) -> usize {
-        self.storage.as_ref().map(|s| s.size).unwrap_or(0)
+    #[must_use] pub fn committed_size(&self) -> usize {
+        self.storage.as_ref().map_or(0, |s| s.size)
     }
-    pub fn actual_committed_size(&self) -> usize {
+    #[must_use] pub fn actual_committed_size(&self) -> usize {
         self.committed_size().next_multiple_of(self.page_size().get())
     }
-    pub fn committed_memory_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.committed_size()) }
+    #[must_use] pub fn committed_memory_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
-    pub fn actual_committed_memory_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
+    #[must_use] pub fn actual_committed_memory_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
     pub fn committed_memory_slice_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.committed_size()) }
+        unsafe { core::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     pub fn actual_committed_memory_slice_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
+        unsafe { core::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
-    pub fn committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
+    #[must_use] pub fn committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
         NonNull::slice_from_raw_parts(self.committed_memory_start(), self.committed_size())
     }
-    pub fn actual_committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
+    #[must_use] pub fn actual_committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
         NonNull::slice_from_raw_parts(self.committed_memory_start(), self.actual_committed_size())
     }
     /// This is suffixed `_racy` because the returned value may change from one call to the next depending on what the background threads are doing.
-    pub fn actual_available_size_racy(&self) -> usize {
+    #[must_use] pub fn actual_available_size_racy(&self) -> usize {
         self.allocator.actual_available_size_for_any_allocation_racy()
     }
     /// This is called `set_committed_size` because it can either grow or shrink the allocation
@@ -477,11 +477,13 @@ pub struct LinearAllocator {
 static_assertions::assert_impl_all!(LinearAllocator: Send, Sync);
 
 mod linear_allocator {
-    use std::{alloc::{handle_alloc_error, AllocError, Layout}, ptr::NonNull};
+    use core::ptr::NonNull;
+    use core::alloc::{AllocError, Layout};
+    use alloc::alloc::handle_alloc_error;
 
     use super::LinearAllocator;
 
-    unsafe impl std::alloc::Allocator for LinearAllocator {
+    unsafe impl core::alloc::Allocator for LinearAllocator {
         fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
             if layout.size() == 0 {
                 return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
@@ -503,7 +505,7 @@ mod linear_allocator {
                 return;
             }
             // If we reach here, then we must be the one non-zero allocation
-            self.allocation.lock().decommit_all().unwrap_or_else(|_| handle_alloc_error(layout))
+            self.allocation.lock().decommit_all().unwrap_or_else(|_| handle_alloc_error(layout));
         }
 
         fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -534,7 +536,7 @@ mod linear_allocator {
                 return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
             }
             if new_layout.size() == 0 {
-                return self.allocation.lock().decommit_all().map(|_| NonNull::slice_from_raw_parts(NonNull::dangling(), 0)).map_err(|_| AllocError);
+                return self.allocation.lock().decommit_all().map(|()| NonNull::slice_from_raw_parts(NonNull::dangling(), 0)).map_err(|_| AllocError);
             }
             // If we reach here, then we must be the one non-zero allocation
             self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
@@ -544,7 +546,8 @@ mod linear_allocator {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, sync::Arc};
+    use core::num::NonZeroUsize;
+    use alloc::sync::Arc;
 
     use virtual_memory::ProtectionFlags;
 
