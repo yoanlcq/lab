@@ -1,5 +1,8 @@
+#![allow(unused_crate_dependencies, reason = "This is an example")]
+
 use virtual_memory::{Addr, PageRangeInfo, PageState, ProtectionFlags, VirtualMemorySystem};
 
+#[expect(clippy::unwrap_used, reason = "This is fine, being an example")]
 fn print_page_range_info(r: &PageRangeInfo) {
     print!("{{ ");
     print!("addr: {:#018x}", r.addr().get());

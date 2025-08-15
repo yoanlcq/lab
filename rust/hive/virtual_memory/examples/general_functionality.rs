@@ -1,7 +1,10 @@
-#![expect(unsafe_code, reason = "Necessary for this example")]
+#![allow(unused_crate_dependencies, reason = "This is an example")]
 
 use virtual_memory::{PageState, PageType, ProtectionFlags, VirtualMemorySystem};
 
+#[expect(clippy::missing_assert_message, reason = "The conditions are self-explanatory and this is an example")]
+#[expect(unsafe_code, reason = "Necessary for this example")]
+#[expect(clippy::expect_used, clippy::unwrap_used, reason = "They are fine here")]
 fn main() {
     // Instantiate a "virtual memory system"; it usually has no platform-specific equivalent, but does represent a platform-specific "initialization + information gathering" step.
     // You can instantiate as many as you like, they are all the same, since virtual memory is a process-wide resource.
@@ -48,7 +51,7 @@ fn main() {
         // Newly-committed pages have their memory set to zero by the OS
         assert_eq!(*byte, 0, "Newly-committed pages are supposed to have their memory zeroed by the OS");
         // We set the protection to READ_WRITE, so we can write
-        *byte = i as u8;
+        *byte = 1;
     }
 
     // We can get information about a range of pages sharing the same properties starting at some address
