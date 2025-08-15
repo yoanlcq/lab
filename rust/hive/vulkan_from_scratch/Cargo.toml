@@ -23,7 +23,7 @@ thiserror = "2.0.12"
 vek = "0.17.1"
 vk-mem = "0.4.0"
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
 features = [
     "Win32_Graphics_Gdi",

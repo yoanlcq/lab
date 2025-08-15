@@ -65,6 +65,11 @@
 use core::num::NonZeroUsize;
 use bitflags::bitflags;
 
+#[cfg(windows)]
+use windows::Win32::System::SystemInformation::*;
+#[cfg(windows)]
+use windows::Win32::System::Memory::*;
+
 pub use std::io::Error as Error;
 
 #[cfg(windows)]
@@ -211,7 +216,7 @@ impl VirtualMemorySystem {
     pub fn new() -> Self {
         #[cfg(windows)]
         {
-            let winapi::um::sysinfoapi::SYSTEM_INFO { dwPageSize, dwAllocationGranularity, .. } = windows_imp::get_system_info();
+            let SYSTEM_INFO { dwPageSize, dwAllocationGranularity, .. } = windows_imp::get_system_info();
             Self {
                 page_size: NonZeroUsize::new(dwPageSize as _).unwrap(),
                 allocation_granularity: NonZeroUsize::new(dwAllocationGranularity as _).unwrap(),
@@ -244,13 +249,11 @@ impl VirtualMemorySystem {
     /// For instance, if `page_size() == 4096`, `starting_address_hint == 4095` and `size == 2`, then assuming the call succeeds, the reserved range will be `0 .. 8192`.
     #[inline(always)]
     pub fn reserve(&self, starting_address_hint: Option<Addr>, size: usize) -> Result<AddrRange> {
-        #[cfg(all(windows, not(miri)))]
+        #[cfg(windows)]
         {
-            let non_null = windows_imp::virtual_alloc(starting_address_hint.map(|x| x.get()).unwrap_or(0), size, winapi::um::winnt::MEM_RESERVE, winapi::um::winnt::PAGE_NOACCESS)?;
+            let non_null = windows_imp::virtual_alloc(starting_address_hint.map(|x| x.get()).unwrap_or(0), size, MEM_RESERVE, PAGE_NOACCESS)?;
             Ok(AddrRange::new(Addr::new(non_null.addr().get()), size).covering_page_size(self.page_size))
         }
-        #[cfg(miri)]
-        self.miri_workaround_system.reserve(starting_address_hint, size)
     }
 
     /// NOTE: It is unspecified whether `protection_flags` will be applied to pages that were already committed.
@@ -263,14 +266,12 @@ impl VirtualMemorySystem {
     /// This returns a `PtrRange` corresponding to `addr_range.covering_page_size(page_size)`.
     #[inline(always)]
     pub fn commit(&self, addr_range: AddrRange, protection_flags: ProtectionFlags) -> Result<PtrRange> {
-        #[cfg(all(windows, not(miri)))]
+        #[cfg(windows)]
         {
-            let non_null = windows_imp::virtual_alloc(addr_range.addr.get(), addr_range.size, winapi::um::winnt::MEM_COMMIT, protection_flags.to_windows().0)?;
+            let non_null = windows_imp::virtual_alloc(addr_range.addr.get(), addr_range.size, MEM_COMMIT, PAGE_PROTECTION_FLAGS(protection_flags.to_windows().0))?;
             let aligned_addr_range = addr_range.covering_page_size(self.page_size);
             Ok(PtrRange::new(non_null.as_ptr().with_addr(aligned_addr_range.addr.get()), aligned_addr_range.size))
         }
-        #[cfg(miri)]
-        self.miri_workaround_system.commit(addr_range, protection_flags)
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
@@ -280,10 +281,8 @@ impl VirtualMemorySystem {
     /// You must make sure that nobody else is currently using that memory.
     #[inline(always)]
     pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
-        #[cfg(all(windows, not(miri)))]
-        unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, winapi::um::winnt::MEM_DECOMMIT) }
-        #[cfg(miri)]
-        unsafe { self.decommit(ptr_range) }
+        #[cfg(windows)]
+        unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, MEM_DECOMMIT) }
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
@@ -296,10 +295,8 @@ impl VirtualMemorySystem {
     /// On Windows, this will implicitly de-commit the pages for you before unreserving.
     #[inline(always)]
     pub unsafe fn unreserve(&self, addr_range: AddrRange) -> Result<()> {
-        #[cfg(all(windows, not(miri)))]
-        unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, winapi::um::winnt::MEM_RELEASE) }
-        #[cfg(miri)]
-        unsafe { self.miri_workaround_system.unreserve(addr_range) }
+        #[cfg(windows)]
+        unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, MEM_RELEASE) }
     }
 
     /// If succeeds, returns the previous protection flags of the FIRST page that intersects the specified range
@@ -310,7 +307,7 @@ impl VirtualMemorySystem {
     #[inline(always)]
     pub unsafe fn set_protection_flags(&self, addr_range: AddrRange, flags: ProtectionFlags) -> Result<OsProtectionFlags> {
         #[cfg(windows)]
-        windows_imp::virtual_protect(addr_range.addr.get(), addr_range.size, flags.to_windows().0).map(OsProtectionFlags)
+        windows_imp::virtual_protect(addr_range.addr.get(), addr_range.size, PAGE_PROTECTION_FLAGS(flags.to_windows().0)).map(|x| OsProtectionFlags(x.0))
     }
 
     #[inline(always)]
@@ -472,26 +469,26 @@ struct PageRangeInfoNotFree {
 
 impl PageRangeInfo {
     #[cfg(windows)]
-    fn from_windows(info: &winapi::um::winnt::MEMORY_BASIC_INFORMATION) -> Self {
-        let &winapi::um::winnt::MEMORY_BASIC_INFORMATION {
-            BaseAddress, AllocationBase, AllocationProtect, RegionSize, State, Protect, Type
+    fn from_windows(info: &MEMORY_BASIC_INFORMATION) -> Self {
+        let &MEMORY_BASIC_INFORMATION {
+            BaseAddress, AllocationBase, AllocationProtect, RegionSize, State, Protect, Type, PartitionId: _
         } = info;
 
-        let not_free = if State == winapi::um::winnt::MEM_FREE {
+        let not_free = if State == MEM_FREE {
             None
         } else {
             Some(PageRangeInfoNotFree {
-                protection_flags: if State == winapi::um::winnt::MEM_RESERVE { None } else { Some(OsProtectionFlags(Protect)) },
-                type_: PageType::try_from_windows(Type).unwrap(),
+                protection_flags: if State == MEM_RESERVE { None } else { Some(OsProtectionFlags(Protect.0)) },
+                type_: PageType::try_from_windows(Type.0).unwrap(),
                 allocation_addr: Addr::new(AllocationBase as _),
-                allocation_protection_flags: OsProtectionFlags(AllocationProtect),
+                allocation_protection_flags: OsProtectionFlags(AllocationProtect.0),
             })
         };
 
         Self {
             addr: Addr::new(BaseAddress as _),
             size: RegionSize,
-            state: PageState::try_from_windows(State).unwrap(),
+            state: PageState::try_from_windows(State.0).unwrap(),
             not_free,
         }
     }

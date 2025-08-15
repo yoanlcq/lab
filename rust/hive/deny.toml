@@ -9,6 +9,11 @@ feature-depth = 1
 ignore = [
 ]
 
+[bans]
+deny = [
+    { name = "winapi", reason = "Use the window-rs crate instead" }
+]
+
 [licenses]
 allow = [
     "MIT",
