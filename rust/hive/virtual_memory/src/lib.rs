@@ -19,7 +19,7 @@ use windows::Win32::System::{
 pub use std::io::Error as Error;
 
 #[cfg(windows)]
-mod windows_imp;
+mod imp_windows;
 
 type Result<T> = core::result::Result<T, Error>;
 
@@ -146,7 +146,7 @@ impl VirtualMemorySystem {
     #[must_use] pub fn new() -> Self {
         #[cfg(windows)]
         {
-            let SYSTEM_INFO { dwPageSize, dwAllocationGranularity, .. } = windows_imp::get_system_info();
+            let SYSTEM_INFO { dwPageSize, dwAllocationGranularity, .. } = imp_windows::get_system_info();
             #[expect(clippy::unwrap_used, reason = "These cannot fail")]
             Self {
                 page_size: NonZeroUsize::new(dwPageSize as _).unwrap(),
@@ -179,7 +179,7 @@ impl VirtualMemorySystem {
     pub fn reserve(&self, starting_address_hint: Option<Addr>, size: usize) -> Result<AddrRange> {
         #[cfg(windows)]
         {
-            let non_null = windows_imp::virtual_alloc(starting_address_hint.map_or(0, |x| x.get()), size, MEM_RESERVE, PAGE_NOACCESS)?;
+            let non_null = imp_windows::virtual_alloc(starting_address_hint.map_or(0, |x| x.get()), size, MEM_RESERVE, PAGE_NOACCESS)?;
             Ok(AddrRange::new(Addr::new(non_null.addr().get()), size).covering_page_size(self.page_size))
         }
     }
@@ -195,7 +195,7 @@ impl VirtualMemorySystem {
     pub fn commit(&self, addr_range: AddrRange, protection_flags: ProtectionFlags) -> Result<PtrRange> {
         #[cfg(windows)]
         {
-            let non_null = windows_imp::virtual_alloc(addr_range.addr.get(), addr_range.size, MEM_COMMIT, PAGE_PROTECTION_FLAGS(protection_flags.to_windows().0))?;
+            let non_null = imp_windows::virtual_alloc(addr_range.addr.get(), addr_range.size, MEM_COMMIT, PAGE_PROTECTION_FLAGS(protection_flags.to_windows().0))?;
             let aligned_addr_range = addr_range.covering_page_size(self.page_size);
             Ok(PtrRange::new(non_null.as_ptr().with_addr(aligned_addr_range.addr.get()), aligned_addr_range.size))
         }
@@ -209,7 +209,7 @@ impl VirtualMemorySystem {
     pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
         #[cfg(windows)]
         // SAFETY: We have to assume that the caller took proper precautions as described in this function's doc comment
-        unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, MEM_DECOMMIT) }
+        unsafe { imp_windows::virtual_free(ptr_range.ptr as _, ptr_range.size, MEM_DECOMMIT) }
     }
 
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
@@ -223,7 +223,7 @@ impl VirtualMemorySystem {
     pub unsafe fn unreserve(&self, addr_range: AddrRange) -> Result<()> {
         // SAFETY: We have to assume that the caller took proper precautions as described in this function's doc comment
         #[cfg(windows)]
-        unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, MEM_RELEASE) }
+        unsafe { imp_windows::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, MEM_RELEASE) }
     }
 
     /// If succeeds, returns the previous protection flags of the FIRST page that intersects the specified range
@@ -233,22 +233,22 @@ impl VirtualMemorySystem {
     /// You must make sure the new protection flags will not cause issues with existing allocations
     pub unsafe fn set_protection_flags(&self, addr_range: AddrRange, flags: ProtectionFlags) -> Result<OsProtectionFlags> {
         #[cfg(windows)]
-        windows_imp::virtual_protect(addr_range.addr.get(), addr_range.size, PAGE_PROTECTION_FLAGS(flags.to_windows().0)).map(|x| OsProtectionFlags(x.0))
+        imp_windows::virtual_protect(addr_range.addr.get(), addr_range.size, PAGE_PROTECTION_FLAGS(flags.to_windows().0)).map(|x| OsProtectionFlags(x.0))
     }
 
     pub fn bind_to_physical_memory(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
-        windows_imp::virtual_lock(addr_range.addr.get(), addr_range.size)
+        imp_windows::virtual_lock(addr_range.addr.get(), addr_range.size)
     }
 
     pub fn unbind_from_physical_memory(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
-        windows_imp::virtual_unlock(addr_range.addr.get(), addr_range.size)
+        imp_windows::virtual_unlock(addr_range.addr.get(), addr_range.size)
     }
 
     pub fn page_range_info(&self, addr: Addr) -> Result<PageRangeInfo> {
         #[cfg(windows)]
-        windows_imp::virtual_query(addr.get()).map(|x| PageRangeInfo::from_windows(&x))
+        imp_windows::virtual_query(addr.get()).map(|x| PageRangeInfo::from_windows(&x))
     }
 
     #[must_use] pub const fn page_range_info_iter(&self, addr: Addr) -> PageRangeInfoIterator {
