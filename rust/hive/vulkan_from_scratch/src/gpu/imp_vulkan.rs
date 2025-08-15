@@ -36,13 +36,13 @@ extern "system" fn vulkan_debug_callback(
     let message_id_name = if callback_data.p_message_id_name.is_null() {
         alloc::borrow::Cow::from("")
     } else {
-        unsafe { core::ffi::CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
+        unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
     };
 
     let message = if callback_data.p_message.is_null() {
         alloc::borrow::Cow::from("")
     } else {
-        unsafe { core::ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
+        unsafe { CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
     };
 
     if message_id_name == "Loader Message" && message_id_number == 0 {
@@ -80,7 +80,7 @@ extern "system" fn vulkan_debug_callback(
     vk::FALSE
 }
 
-pub struct VulkanApi {
+pub(super) struct VulkanApi {
     api_weak: WeakSelf<ApiInner>,
     #[expect(dead_code, reason = "ash::Entry must not be dropped, otherwise further calls will crash")]
     entry: ash::Entry,
@@ -123,7 +123,7 @@ impl VulkanApi {
     fn api_arc(&self) -> ApiArc {
         ApiArc(self.api_weak.upgrade_unwrap())
     }
-    pub fn create(_params: &ApiParams) -> Result<Self> {
+    pub(super) fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
         let api_version = vk::make_api_version(0, 1, 0, 0);
         let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
@@ -275,7 +275,7 @@ struct UsefulQueueFamilies {
 }
 
 impl UsefulQueueFamilies {
-    pub fn new(api: &VulkanApi, physical_device: vk::PhysicalDevice, queue_family_props: &[vk::QueueFamilyProperties]) -> Self {
+    pub(crate) fn new(api: &VulkanApi, physical_device: vk::PhysicalDevice, queue_family_props: &[vk::QueueFamilyProperties]) -> Self {
         let mut out = Self::default();
         for (queue_family_index, it) in queue_family_props.iter().enumerate() {
             if it.queue_count == 0 {
@@ -327,7 +327,7 @@ struct PhysicalDeviceWrapper {
 const MAX_QUEUES_PER_FAMILY: usize = 64; // Waaaaay way more than we'll ever need
 
 impl PhysicalDeviceWrapper {
-    pub fn new(api: &VulkanApi, physical_device: vk::PhysicalDevice) -> Self {
+    pub(crate) fn new(api: &VulkanApi, physical_device: vk::PhysicalDevice) -> Self {
         unsafe {
             let queue_family_props = api.instance.get_physical_device_queue_family_properties(physical_device);
             let useful_queue_families = UsefulQueueFamilies::new(api, physical_device, &queue_family_props);
@@ -351,7 +351,7 @@ struct MinimalQueueCreateInfo {
 impl MinimalQueueCreateInfo {
     // TODO: should take into account caller params. Right now very simple, pick the 1st
     // graphics_and_present queue
-    pub fn extract(useful_queue_families: &UsefulQueueFamilies) -> Vec<Self> {
+    pub(crate) fn extract(useful_queue_families: &UsefulQueueFamilies) -> Vec<Self> {
         useful_queue_families
             .graphics_and_present
             .first()
@@ -533,7 +533,7 @@ impl ApiImpl for VulkanApi {
 }
 
 unsafe fn and_vkbool32_structs<T>(out: &mut T, input: &T, offset: usize) {
-    let size = core::mem::size_of::<T>();
+    let size = size_of::<T>();
     debug_assert_eq!(offset % 4, 0, "size must be a multiple of vkBool32. Don't just pass any struct to this function!");
     debug_assert_eq!((size - offset) % 4, 0, "offset must be aligned to vkBool32.");
     unsafe {
@@ -569,7 +569,7 @@ fn filter_v13_features<'a>(supported: &mut vk::PhysicalDeviceVulkan13Features<'a
     }
 }
 
-pub struct VulkanDevice {
+pub(super) struct VulkanDevice {
     api: ApiArc,
     device: ash::Device,
     #[expect(dead_code, reason = "This will certainly be useful later")]

@@ -1,6 +1,6 @@
 #![expect(unsafe_code, reason = "Necessary for this example")]
 
-use virtual_memory::*;
+use virtual_memory::{PageState, PageType, ProtectionFlags, VirtualMemorySystem};
 
 fn main() {
     // Instantiate a "virtual memory system"; it usually has no platform-specific equivalent, but does represent a platform-specific "initialization + information gathering" step.
@@ -66,8 +66,8 @@ fn main() {
 
     // SAFETY: Nobody is currently using the memory within the committed range
     unsafe {
-        virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range");
-    }
+        virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range")
+    };
 
     // SAFETY: We're passing a virtual address range returned by reserve()
     unsafe {

@@ -58,7 +58,7 @@ static_assertions::assert_impl_all!(AddrRange: Send, Sync);
 
 impl AddrRange {
     #[must_use]
-    pub fn new(addr: Addr, size: usize) -> Self {
+    pub const fn new(addr: Addr, size: usize) -> Self {
         Self { addr, size }
     }
     #[must_use]
@@ -67,22 +67,22 @@ impl AddrRange {
         let end = (self.addr.get() + self.size).next_multiple_of(page_size.get());
         Self::new(Addr::new(start), end - start)
     }
-    pub fn addr(&self) -> Addr {
+    #[must_use] pub const fn addr(&self) -> Addr {
         self.addr
     }
-    pub fn size(&self) -> usize {
+    #[must_use] pub const fn size(&self) -> usize {
         self.size
     }
-    pub fn to_usize_range(self) -> std::ops::Range<usize> {
+    #[must_use] pub const fn to_usize_range(self) -> core::ops::Range<usize> {
         self.addr.get() .. self.addr.get() + self.size
     }
-    pub fn start(&self) -> usize {
+    #[must_use] pub const fn start(&self) -> usize {
         self.addr.get()
     }
-    pub fn end(&self) -> usize {
+    #[must_use] pub const fn end(&self) -> usize {
         self.addr.get() + self.size
     }
-    pub fn contains(&self, other: AddrRange) -> bool {
+    #[must_use] pub const fn contains(&self, other: Self) -> bool {
         self.start() <= other.start() && other.end() <= self.end()
     }
 }
@@ -97,7 +97,7 @@ pub struct PtrRange {
 }
 
 impl PtrRange {
-    pub fn new(ptr: *mut u8, size: usize) -> Self {
+    pub const fn new(ptr: *mut u8, size: usize) -> Self {
         Self { ptr, size }
     }
     #[must_use]
@@ -105,13 +105,13 @@ impl PtrRange {
         let addr_range = self.to_addr_range().covering_page_size(page_size);
         Self::new(self.ptr.with_addr(addr_range.addr().get()), addr_range.size())
     }
-    pub fn ptr(&self) -> *mut u8 {
+    #[must_use] pub const fn ptr(&self) -> *mut u8 {
         self.ptr
     }
-    pub fn size(&self) -> usize {
+    #[must_use] pub const fn size(&self) -> usize {
         self.size
     }
-    pub fn to_addr_range(self) -> AddrRange {
+    #[must_use] pub fn to_addr_range(self) -> AddrRange {
         AddrRange::new(Addr::new(self.ptr.addr()), self.size)
     }
 }
@@ -142,7 +142,7 @@ impl Default for VirtualMemorySystem {
 
 impl VirtualMemorySystem {
     // How "expensive" this is depends on the OS, but it's generally cheap and you typically don't need to do this many times.
-    pub fn new() -> Self {
+    #[must_use] pub fn new() -> Self {
         #[cfg(windows)]
         {
             let SYSTEM_INFO { dwPageSize, dwAllocationGranularity, .. } = windows_imp::get_system_info();
@@ -153,12 +153,12 @@ impl VirtualMemorySystem {
         }
     }
 
-    pub fn page_size(&self) -> NonZeroUsize {
+    #[must_use] pub const fn page_size(&self) -> NonZeroUsize {
         self.page_size
     }
 
     // The granularity for the starting address at which virtual memory can be allocated
-    pub fn allocation_granularity(&self) -> NonZeroUsize {
+    #[must_use] pub const fn allocation_granularity(&self) -> NonZeroUsize {
         self.allocation_granularity
     }
 
@@ -177,7 +177,7 @@ impl VirtualMemorySystem {
     pub fn reserve(&self, starting_address_hint: Option<Addr>, size: usize) -> Result<AddrRange> {
         #[cfg(windows)]
         {
-            let non_null = windows_imp::virtual_alloc(starting_address_hint.map(|x| x.get()).unwrap_or(0), size, MEM_RESERVE, PAGE_NOACCESS)?;
+            let non_null = windows_imp::virtual_alloc(starting_address_hint.map_or(0, |x| x.get()), size, MEM_RESERVE, PAGE_NOACCESS)?;
             Ok(AddrRange::new(Addr::new(non_null.addr().get()), size).covering_page_size(self.page_size))
         }
     }
@@ -247,7 +247,7 @@ impl VirtualMemorySystem {
         windows_imp::virtual_query(addr.get()).map(|x| PageRangeInfo::from_windows(&x))
     }
 
-    pub fn page_range_info_iter(&self, addr: Addr) -> PageRangeInfoIterator {
+    #[must_use] pub const fn page_range_info_iter(&self, addr: Addr) -> PageRangeInfoIterator {
         PageRangeInfoIterator { virtual_memory_system: self, addr, finished: false }
     }
 }
@@ -301,7 +301,7 @@ impl ProtectionFlags {
         modifiers | (access << 1)
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
-    fn from_windows_uint(mut flags: OsProtectionFlagsPrimitiveUint) -> Self {
+    const fn from_windows_uint(mut flags: OsProtectionFlagsPrimitiveUint) -> Self {
         let modifiers = flags & Self::MODIFIERS_MASK.bits();
 
         let has_execute = flags & 0xf0 != 0;
@@ -318,18 +318,18 @@ impl ProtectionFlags {
         Self::from_bits_retain(modifiers | flags | if has_execute { Self::EXECUTE.bits() } else { 0 })
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
-    pub fn to_windows(self) -> OsProtectionFlags {
+    #[must_use] pub fn to_windows(self) -> OsProtectionFlags {
         OsProtectionFlags(self.to_windows_uint())
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
-    pub fn from_windows(flags: OsProtectionFlags) -> Self {
+    #[must_use] pub const fn from_windows(flags: OsProtectionFlags) -> Self {
         Self::from_windows_uint(flags.0)
     }
-    pub fn from_os_lossy(flags: OsProtectionFlags) -> Self {
+    #[must_use] pub const fn from_os_lossy(flags: OsProtectionFlags) -> Self {
         #[cfg(windows)]
         Self::from_windows(flags)
     }
-    pub fn to_os(self) -> OsProtectionFlags {
+    #[must_use] pub fn to_os(self) -> OsProtectionFlags {
         #[cfg(windows)]
         self.to_windows()
     }
@@ -341,7 +341,7 @@ pub struct PageRangeInfoIterator<'a> {
     finished: bool,
 }
 
-impl<'a> Iterator for PageRangeInfoIterator<'a> {
+impl Iterator for PageRangeInfoIterator<'_> {
     type Item = Result<PageRangeInfo>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished {
@@ -402,17 +402,17 @@ impl PageRangeInfo {
             not_free,
         }
     }
-    pub fn addr(&self) -> Addr {
+    #[must_use] pub const fn addr(&self) -> Addr {
         self.addr
     }
-    pub fn size(&self) -> usize {
+    #[must_use] pub const fn size(&self) -> usize {
         self.size
     }
-    pub fn state(&self) -> PageState {
+    #[must_use] pub const fn state(&self) -> PageState {
         self.state
     }
     /// Will return `None` if `state() != PageState::Committed` or if the OS does not support reporting this.
-    pub fn os_protection_flags(&self) -> Option<OsProtectionFlags> {
+    #[must_use] pub fn os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.protection_flags)?
     }
     /// Will return `None` if `state() != PageState::Committed` or if the OS does not support reporting this.
@@ -420,16 +420,16 @@ impl PageRangeInfo {
         self.os_protection_flags().map(ProtectionFlags::from_os_lossy)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
-    pub fn type_(&self) -> Option<PageType> {
+    #[must_use] pub fn type_(&self) -> Option<PageType> {
         self.not_free.map(|x| x.type_)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
-    pub fn allocation_addr(&self) -> Option<Addr> {
+    #[must_use] pub fn allocation_addr(&self) -> Option<Addr> {
         self.not_free.map(|x| x.allocation_addr)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
     /// May be 0 if the caller does not have access.
-    pub fn allocation_os_protection_flags(&self) -> Option<OsProtectionFlags> {
+    #[must_use] pub fn allocation_os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.allocation_protection_flags)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.

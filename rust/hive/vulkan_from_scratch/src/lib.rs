@@ -7,10 +7,6 @@ use crate::gpu::{ApiArc, ApiParams, ApiSpec, DeviceParams};
 use crate::windowing::{PumpEventParams, WindowParams};
 
 extern crate alloc;
-extern crate ash;
-extern crate ash_window;
-extern crate raw_window_handle;
-extern crate windows;
 
 pub mod as_any;
 pub mod debugger;
@@ -26,7 +22,7 @@ struct StartupProfiler {
 }
 
 impl StartupProfiler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let this = Self {
             startup_instant: Instant::now(),
         };
@@ -56,7 +52,7 @@ impl StartupProfiler {
         }
     }
 
-    pub fn log_step(&self, description: &str) {
+    pub(crate) fn log_step(&self, description: &str) {
         let elapsed = Instant::now().duration_since(self.startup_instant).as_secs_f32();
         println!("[Startup][{elapsed:.3}] {description}");
     }

@@ -1,5 +1,5 @@
 use super::Error;
-use std::{mem::MaybeUninit, ptr::NonNull};
+use core::{mem::MaybeUninit, ptr::NonNull};
 
 use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Memory::*;
@@ -13,7 +13,7 @@ pub fn get_system_info() -> SYSTEM_INFO {
 }
 
 pub fn virtual_alloc(starting_address_hint: usize, size: usize, flags: VIRTUAL_ALLOCATION_TYPE, protection: PAGE_PROTECTION_FLAGS) -> Result<NonNull<u8>, Error> {
-    let p = unsafe { VirtualAlloc(Some(std::ptr::with_exposed_provenance_mut(starting_address_hint)), size, flags, protection) };
+    let p = unsafe { VirtualAlloc(Some(core::ptr::with_exposed_provenance_mut(starting_address_hint)), size, flags, protection) };
     if p.is_null() {
         Err(Error::last_os_error())
     } else {
@@ -29,7 +29,7 @@ pub unsafe fn virtual_free(addr: usize, size: usize, flags: VIRTUAL_FREE_TYPE) -
 pub fn virtual_query(addr: usize) -> Result<MEMORY_BASIC_INFORMATION, Error> {
     let mut info = MaybeUninit::uninit();
     unsafe {
-        match VirtualQuery(Some(addr as *mut _), info.as_mut_ptr(), std::mem::size_of_val(&info)) {
+        match VirtualQuery(Some(addr as *mut _), info.as_mut_ptr(), size_of_val(&info)) {
             0 => Err(Error::last_os_error()),
             _ => Ok(info.assume_init()),
         }

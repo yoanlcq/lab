@@ -122,7 +122,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 }
 
 #[derive(Debug)]
-pub struct Win32Display {
+pub(super) struct Win32Display {
     weak_display: WeakSelf<DisplayInner>,
     hinstance: Win32HandleWrapper<HINSTANCE>,
     typical_window_class: Mutex<Weak<Win32WindowClass>>,
@@ -160,7 +160,7 @@ impl DisplayImpl for Win32Display {
             })
         }
     }
-    fn create_window(&self, params: &WindowParams) -> Result<Box<dyn super::WindowImpl>> {
+    fn create_window(&self, params: &WindowParams) -> Result<Box<dyn WindowImpl>> {
         let &WindowParams { ref title, position, size } = params;
         let mut title_w: Vec<u16> = std::ffi::OsStr::new(title).encode_wide().collect();
         title_w.push(0);
@@ -212,13 +212,13 @@ impl DisplayImpl for Win32Display {
 
         Ok(Box::new(window))
     }
-    fn hinstance(&self) -> windows::Win32::Foundation::HINSTANCE {
+    fn hinstance(&self) -> HINSTANCE {
         self.hinstance.0
     }
 }
 
 impl Win32Display {
-    pub fn open(_params: &DisplayParams) -> Result<Self> {
+    pub(super) fn open(_params: &DisplayParams) -> Result<Self> {
         Ok(Self {
             // Question: maybe not as simple as this? https://stackoverflow.com/a/78906765
             // Options:
@@ -258,7 +258,7 @@ impl Win32Display {
 }
 
 #[derive(Debug)]
-pub struct Win32Window {
+pub(super) struct Win32Window {
     #[expect(
         dead_code,
         reason = "The variable is not read but is really needed to manage the lifetime of the window class"
@@ -291,7 +291,7 @@ impl WindowImpl for Win32Window {
         self.weak_window.init(weak_window.clone());
         Win32HwndUserdata::set(self.hwnd.0, Some(Box::new(Win32HwndUserdata { weak_window })));
     }
-    fn hwnd(&self) -> windows::Win32::Foundation::HWND {
+    fn hwnd(&self) -> HWND {
         self.hwnd.0
     }
     fn show(&self) -> Result<()> {

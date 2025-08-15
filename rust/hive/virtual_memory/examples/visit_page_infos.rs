@@ -1,4 +1,4 @@
-use virtual_memory::*;
+use virtual_memory::{Addr, PageRangeInfo, PageState, ProtectionFlags, VirtualMemorySystem};
 
 fn print_page_range_info(r: &PageRangeInfo) {
     print!("{{ ");
