@@ -4,7 +4,6 @@ use std::{mem::MaybeUninit, ptr::NonNull};
 use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Memory::*;
 
-#[inline(always)]
 pub fn get_system_info() -> SYSTEM_INFO {
     let mut info = MaybeUninit::uninit();
     unsafe {

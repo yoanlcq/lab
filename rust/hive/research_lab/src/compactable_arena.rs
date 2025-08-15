@@ -17,7 +17,6 @@ mod workarounds {
 
     // #[unstable(feature = "nonnull_provenance", issue = "135243")]
     #[must_use]
-    #[inline]
     pub const fn nonnull_without_provenance<T>(addr: NonZero<usize>) -> NonNull<T> {
         let pointer = std::ptr::without_provenance_mut(addr.get());
         // SAFETY: we know `addr` is non-zero.

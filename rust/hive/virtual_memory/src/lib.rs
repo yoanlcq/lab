@@ -37,7 +37,6 @@ static_assertions::assert_impl_all!(Addr: Send, Sync);
 
 impl Addr {
     #[must_use]
-    #[inline]
     pub const fn new(addr: usize) -> Self {
         Self(addr)
     }
@@ -98,25 +97,20 @@ pub struct PtrRange {
 }
 
 impl PtrRange {
-    #[inline(always)]
     pub fn new(ptr: *mut u8, size: usize) -> Self {
         Self { ptr, size }
     }
     #[must_use]
-    #[inline(always)]
     pub fn covering_page_size(self, page_size: NonZeroUsize) -> Self {
         let addr_range = self.to_addr_range().covering_page_size(page_size);
         Self::new(self.ptr.with_addr(addr_range.addr().get()), addr_range.size())
     }
-    #[inline(always)]
     pub fn ptr(&self) -> *mut u8 {
         self.ptr
     }
-    #[inline(always)]
     pub fn size(&self) -> usize {
         self.size
     }
-    #[inline(always)]
     pub fn to_addr_range(self) -> AddrRange {
         AddrRange::new(Addr::new(self.ptr.addr()), self.size)
     }
@@ -159,13 +153,11 @@ impl VirtualMemorySystem {
         }
     }
 
-    #[inline(always)]
     pub fn page_size(&self) -> NonZeroUsize {
         self.page_size
     }
 
     // The granularity for the starting address at which virtual memory can be allocated
-    #[inline(always)]
     pub fn allocation_granularity(&self) -> NonZeroUsize {
         self.allocation_granularity
     }
@@ -182,7 +174,6 @@ impl VirtualMemorySystem {
     /// 
     /// This can only reserve whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     /// For instance, if `page_size() == 4096`, `starting_address_hint == 4095` and `size == 2`, then assuming the call succeeds, the reserved range will be `0 .. 8192`.
-    #[inline(always)]
     pub fn reserve(&self, starting_address_hint: Option<Addr>, size: usize) -> Result<AddrRange> {
         #[cfg(windows)]
         {
@@ -199,7 +190,6 @@ impl VirtualMemorySystem {
     /// This can only operate on whole pages, therefore the range defined by the provided parameters is implicitly "extended" in both directions until its bounds are aligned to a page boundary.
     /// 
     /// This returns a `PtrRange` corresponding to `addr_range.covering_page_size(page_size)`.
-    #[inline(always)]
     pub fn commit(&self, addr_range: AddrRange, protection_flags: ProtectionFlags) -> Result<PtrRange> {
         #[cfg(windows)]
         {
@@ -214,7 +204,6 @@ impl VirtualMemorySystem {
     /// # Safety
     /// 
     /// You must make sure that nobody else is currently using that memory.
-    #[inline(always)]
     pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
         #[cfg(windows)]
         unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, MEM_DECOMMIT) }
@@ -228,7 +217,6 @@ impl VirtualMemorySystem {
     /// - You must make sure that nobody else is currently using that memory.
     ///
     /// On Windows, this will implicitly de-commit the pages for you before unreserving.
-    #[inline(always)]
     pub unsafe fn unreserve(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
         unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, MEM_RELEASE) }
@@ -239,31 +227,26 @@ impl VirtualMemorySystem {
     /// # Safety
     /// 
     /// You must make sure the new protection flags will not cause issues with existing allocations
-    #[inline(always)]
     pub unsafe fn set_protection_flags(&self, addr_range: AddrRange, flags: ProtectionFlags) -> Result<OsProtectionFlags> {
         #[cfg(windows)]
         windows_imp::virtual_protect(addr_range.addr.get(), addr_range.size, PAGE_PROTECTION_FLAGS(flags.to_windows().0)).map(|x| OsProtectionFlags(x.0))
     }
 
-    #[inline(always)]
     pub fn bind_to_physical_memory(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
         windows_imp::virtual_lock(addr_range.addr.get(), addr_range.size)
     }
 
-    #[inline(always)]
     pub fn unbind_from_physical_memory(&self, addr_range: AddrRange) -> Result<()> {
         #[cfg(windows)]
         windows_imp::virtual_unlock(addr_range.addr.get(), addr_range.size)
     }
 
-    #[inline(always)]
     pub fn page_range_info(&self, addr: Addr) -> Result<PageRangeInfo> {
         #[cfg(windows)]
         windows_imp::virtual_query(addr.get()).map(|x| PageRangeInfo::from_windows(&x))
     }
 
-    #[inline(always)]
     pub fn page_range_info_iter(&self, addr: Addr) -> PageRangeInfoIterator {
         PageRangeInfoIterator { virtual_memory_system: self, addr, finished: false }
     }
@@ -335,21 +318,17 @@ impl ProtectionFlags {
         Self::from_bits_retain(modifiers | flags | if has_execute { Self::EXECUTE.bits() } else { 0 })
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
-    #[inline(always)]
     pub fn to_windows(self) -> OsProtectionFlags {
         OsProtectionFlags(self.to_windows_uint())
     }
     #[cfg(windows)] // This isn't strictly required but I do this to remove noise for other platforms
-    #[inline(always)]
     pub fn from_windows(flags: OsProtectionFlags) -> Self {
         Self::from_windows_uint(flags.0)
     }
-    #[inline(always)]
     pub fn from_os_lossy(flags: OsProtectionFlags) -> Self {
         #[cfg(windows)]
         Self::from_windows(flags)
     }
-    #[inline(always)]
     pub fn to_os(self) -> OsProtectionFlags {
         #[cfg(windows)]
         self.to_windows()
@@ -423,47 +402,38 @@ impl PageRangeInfo {
             not_free,
         }
     }
-    #[inline(always)]
     pub fn addr(&self) -> Addr {
         self.addr
     }
-    #[inline(always)]
     pub fn size(&self) -> usize {
         self.size
     }
-    #[inline(always)]
     pub fn state(&self) -> PageState {
         self.state
     }
     /// Will return `None` if `state() != PageState::Committed` or if the OS does not support reporting this.
-    #[inline(always)]
     pub fn os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.protection_flags)?
     }
     /// Will return `None` if `state() != PageState::Committed` or if the OS does not support reporting this.
-    #[inline(always)]
     pub fn protection_flags_lossy(&self) -> Option<ProtectionFlags> {
         self.os_protection_flags().map(ProtectionFlags::from_os_lossy)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
-    #[inline(always)]
     pub fn type_(&self) -> Option<PageType> {
         self.not_free.map(|x| x.type_)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
-    #[inline(always)]
     pub fn allocation_addr(&self) -> Option<Addr> {
         self.not_free.map(|x| x.allocation_addr)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
     /// May be 0 if the caller does not have access.
-    #[inline(always)]
     pub fn allocation_os_protection_flags(&self) -> Option<OsProtectionFlags> {
         self.not_free.map(|x| x.allocation_protection_flags)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
     /// May be 0 if the caller does not have access.
-    #[inline(always)]
     pub fn allocation_protection_flags_lossy(&self) -> Option<ProtectionFlags> {
         self.allocation_os_protection_flags().map(ProtectionFlags::from_os_lossy)
     }
