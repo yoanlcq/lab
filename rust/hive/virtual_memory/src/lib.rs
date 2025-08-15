@@ -371,7 +371,7 @@ static_assertions::assert_impl_all!(PageRangeInfo: Send, Sync);
 struct PageRangeInfoNotFree {
     // Undefined if state == Reserved
     protection_flags: Option<OsProtectionFlags>,
-    type_: PageType,
+    r#type: PageType,
     allocation_addr: Addr,
     // May be 0 if the caller does not have access
     allocation_protection_flags: OsProtectionFlags,
@@ -389,7 +389,7 @@ impl PageRangeInfo {
         } else {
             Some(PageRangeInfoNotFree {
                 protection_flags: if State == MEM_RESERVE { None } else { Some(OsProtectionFlags(Protect.0)) },
-                type_: PageType::try_from_windows(Type.0).unwrap(),
+                r#type: PageType::try_from_windows(Type.0).unwrap(),
                 allocation_addr: Addr::new(AllocationBase as _),
                 allocation_protection_flags: OsProtectionFlags(AllocationProtect.0),
             })
@@ -420,8 +420,8 @@ impl PageRangeInfo {
         self.os_protection_flags().map(ProtectionFlags::from_os_lossy)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
-    #[must_use] pub fn type_(&self) -> Option<PageType> {
-        self.not_free.map(|x| x.type_)
+    #[must_use] pub fn r#type(&self) -> Option<PageType> {
+        self.not_free.map(|x| x.r#type)
     }
     /// Will return `None` if `state() == PageState::Free` or if the OS does not support reporting this.
     #[must_use] pub fn allocation_addr(&self) -> Option<Addr> {

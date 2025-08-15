@@ -62,7 +62,7 @@ fn main() {
     assert_eq!(page_range_info.addr().get(), committed_range.ptr().addr());
     assert_eq!(page_range_info.size(), committed_range.size());
     assert_eq!(page_range_info.state(), PageState::Committed);
-    assert_eq!(page_range_info.type_().unwrap(), PageType::Private);
+    assert_eq!(page_range_info.r#type().unwrap(), PageType::Private);
 
     // Don't forget to clean-up.
     // Obviously, on any modern OS, this also happens automatically when the process exists.

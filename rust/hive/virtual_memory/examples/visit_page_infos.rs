@@ -18,7 +18,7 @@ fn print_page_range_info(r: &PageRangeInfo) {
         if r.state() != PageState::Reserved {
             print!(", prot: {:#010x} ({:?})", r.os_protection_flags().unwrap().0, r.protection_flags_lossy().unwrap());
         }
-        print!(", type: {:?}", r.type_().unwrap());
+        print!(", type: {:?}", r.r#type().unwrap());
     }
     print!(" }}");
 }
