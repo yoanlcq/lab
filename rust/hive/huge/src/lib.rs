@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-use core::{alloc::Layout, fmt::Debug, num::NonZeroUsize, ptr::NonNull};
+use core::{fmt::Debug, num::NonZeroUsize, ptr::NonNull};
 use alloc::{collections::BTreeMap, sync::Arc};
 use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, PtrRange, VirtualMemorySystem};
 use unique_ptr::Unique;
@@ -314,7 +314,7 @@ impl Allocation {
     /// The implementation _may_ avoid the `Arc::clone()`, hence it takes a reference
     pub fn with_committed_size(allocator: &Arc<Allocator>, drop_result_handler: DropResultHandler, committed_size: usize, protection_flags: ProtectionFlags) -> Result<Self> {
         let mut s = Self::new(allocator.clone(), drop_result_handler);
-        s.set_committed_size(committed_size, protection_flags)?;
+        s.grow(committed_size, protection_flags)?;
         Ok(s)
     }
     #[must_use]
@@ -349,15 +349,19 @@ impl Allocation {
         self.committed_size().next_multiple_of(self.page_size().get())
     }
     #[must_use] pub fn committed_memory_slice(&self) -> &[u8] {
+        // SAFETY: set_committed_size() ensures that the length <= isize::MAX, and that we point to a big enough sequence of consecutive committed pages
         unsafe { core::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     #[must_use] pub fn actual_committed_memory_slice(&self) -> &[u8] {
+        // SAFETY: See `Self::committed_memory_slice()`
         unsafe { core::slice::from_raw_parts(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
     pub fn committed_memory_slice_mut(&mut self) -> &mut [u8] {
+        // SAFETY: See `Self::committed_memory_slice()`
         unsafe { core::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.committed_size()) }
     }
     pub fn actual_committed_memory_slice_mut(&mut self) -> &mut [u8] {
+        // SAFETY: See `Self::committed_memory_slice()`
         unsafe { core::slice::from_raw_parts_mut(self.committed_memory_start().as_ptr(), self.actual_committed_size()) }
     }
     #[must_use] pub fn committed_memory_nonnull_slice(&self) -> NonNull<[u8]> {
@@ -371,12 +375,19 @@ impl Allocation {
         self.allocator.actual_available_size_for_any_allocation_racy()
     }
     /// This is called `set_committed_size` because it can either grow or shrink the allocation
-    pub fn set_committed_size(&mut self, new_size: usize, protection_flags: ProtectionFlags) -> Result<()> {
+    /// 
+    /// # Safety
+    /// 
+    /// If `new_size` is less than `committed_size()`, this may decommit one or more pages, starting from the end of the committed range.
+    /// You must make sure that there is no reference to memory inside the range that is about to be decommitted, because accessing that range will be invalid.
+    #[expect(clippy::missing_panics_doc, clippy::unwrap_in_result, reason = "These panics are impossible")]
+    #[expect(clippy::significant_drop_tightening, reason = "Taking the lock only once is critical for correctness here")]
+    pub unsafe fn set_committed_size(&mut self, new_size: usize, protection_flags: ProtectionFlags) -> Result<()> {
         if new_size == 0 {
             return self.decommit_all();
         }
 
-        if new_size > isize::MAX as usize {
+        if new_size.next_multiple_of(self.page_size().get()) > isize::MAX as usize {
             return Err(Error::other("Cannot allocate more than isize::MAX, functions such as ptr::add() assume this"));
         }
 
@@ -384,6 +395,7 @@ impl Allocation {
             self.storage = Some(self.allocator.allocate()?);
         }
 
+        // SAFETY: The check above ensures that this is never None. We can't use `get_or_insert_with` here unfortunately
         let storage = unsafe { self.storage.as_mut().unwrap_unchecked() };
 
         let page_size = self.allocator.virtual_memory_system.page_size().get();
@@ -407,7 +419,10 @@ impl Allocation {
                 let commit_result = self.allocator.virtual_memory_system.commit(AddrRange::new(Addr::new(current_page_end), desired_page_end - current_page_end), protection_flags);
                 if storage.ptr.is_none() {
                     match commit_result {
-                        Ok(ptr_range) => storage.ptr = Some(unsafe { Unique::new(NonNull::new(ptr_range.ptr()).unwrap()) }),
+                        Ok(ptr_range) => {
+                            // SAFETY: `commit()` never returns null
+                            storage.ptr = Some(unsafe { Unique::new(NonNull::new_unchecked(ptr_range.ptr())) });
+                        },
                         Err(e) => {
                             #[cfg(feature="track_allocation_sizes")]
                             drop(optional_state_lock);
@@ -418,18 +433,26 @@ impl Allocation {
                         }
                     }
                 }
-                commit_result?;
+                _ = commit_result?;
             } else {
-                unsafe { self.allocator.virtual_memory_system.decommit(PtrRange::new(storage.ptr.unwrap().get().with_addr(NonZeroUsize::new(desired_page_end).unwrap()).as_ptr(), current_page_end - desired_page_end)) }?;
+                // SAFETY: `desired_page_end` can never be null
+                let desired_page_end_non_zero = unsafe { NonZeroUsize::new_unchecked(desired_page_end) };
+                #[expect(clippy::expect_used, reason = "See the explanation")]
+                let ptr = storage.ptr.expect("`storage.ptr` is kept in sync with the fact that `storage.size` is non-zero");
+                let ptr = ptr.get().with_addr(desired_page_end_non_zero).as_ptr();
+                let range = PtrRange::new(ptr, current_page_end - desired_page_end);
+                // SAFETY: the range of pages is within the reserved range, and the caller is responsible for ensuring that nobody is using them anymore
+                unsafe { self.allocator.virtual_memory_system.decommit(range) }?;
             }
 
             // Do this AFTER commit/decommit, because if they failed, we don't want to reach here.
             #[cfg(feature="track_allocation_sizes")]
             if let Some(mut state) = optional_state_lock {
                 if old_actual_committed_size != 0 {
+                    #[expect(clippy::unwrap_used, reason = "TODO")]
                     let refcount = state.allocations_actual_committed_sizes.get_mut(&old_actual_committed_size).unwrap();
                     if *refcount == 1 {
-                        state.allocations_actual_committed_sizes.remove(&old_actual_committed_size);
+                        _ = state.allocations_actual_committed_sizes.remove(&old_actual_committed_size);
                     } else {
                         *refcount -= 1;
                     }
@@ -444,105 +467,24 @@ impl Allocation {
     }
     /// Same as `set_committed_size(0)` but more efficient
     pub fn decommit_all(&mut self) -> Result<()> {
+        // Use `as_ref()` instead of `take()` in order to handle the early return of `decommit()` properly
         if let Some(storage) = self.storage.as_ref() {
-            unsafe { self.allocator.virtual_memory_system.decommit(PtrRange::new(storage.ptr.unwrap().get().as_ptr(), storage.size)) }?;
+            if let Some(ptr) = storage.ptr {
+                // SAFETY: We have ensured this is a valid range of committed pages
+                unsafe { self.allocator.virtual_memory_system.decommit(PtrRange::new(ptr.get().as_ptr(), storage.size)) }?;
+            }
             self.allocator.deallocate(storage);
             self.storage = None;
         }
         Ok(())
     }
     pub fn grow(&mut self, additional_size: usize, protection_flags: ProtectionFlags) -> Result<()> {
-        self.set_committed_size(self.committed_size().saturating_add(additional_size), protection_flags)
-    }
-    pub fn set_layout_assuming_committed_size_is_nonzero(&mut self, layout: Layout, protection_flags: ProtectionFlags) -> Result<NonNull<[u8]>> {
-        assert!(self.storage.is_some()); // Otherwise committed_memory_start() will give a dangling pointer
-        let allocation_start = self.committed_memory_start();
-        let align_offset = allocation_start.align_offset(layout.align());
-        let aligned_start = unsafe { allocation_start.add(align_offset) };
-        let end = unsafe { aligned_start.add(layout.size()) };
-        let new_size = end.addr().get() - allocation_start.addr().get();
-        self.set_committed_size(new_size, protection_flags)?;
-        Ok(NonNull::slice_from_raw_parts(aligned_start, new_size))
+        // SAFETY: This will not invalidate any memory, since we are only growing the allocation.
+        unsafe { self.set_committed_size(self.committed_size().saturating_add(additional_size), protection_flags) }
     }
 }
 
 static_assertions::assert_impl_all!(Allocation: Send, Sync);
-
-#[derive(Debug)]
-pub struct LinearAllocator {
-    allocation: parking_lot::Mutex<Allocation>,
-    protection_flags: ProtectionFlags,
-}
-
-static_assertions::assert_impl_all!(LinearAllocator: Send, Sync);
-
-mod linear_allocator {
-    use core::ptr::NonNull;
-    use core::alloc::{AllocError, Layout};
-    use alloc::alloc::handle_alloc_error;
-
-    use super::LinearAllocator;
-
-    unsafe impl core::alloc::Allocator for LinearAllocator {
-        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            if layout.size() == 0 {
-                return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
-            }
-            let mut allocation = self.allocation.lock();
-
-            // This allocator does not support multiple non-zero allocations; it supports only one, which can grow and shrink, reflecting the way it's truly implemented.
-            // Supporting multiple non-zero allocations in any way that isn't plain stupid would require advanced management, such as internal allocations for storing a list of free ranges, etc.
-            if allocation.committed_size() > 0 {
-                return Err(AllocError);
-            }
-            allocation.set_committed_size(1, self.protection_flags).map_err(|_| AllocError)?;
-            allocation.set_layout_assuming_committed_size_is_nonzero(layout, self.protection_flags).map_err(|_| AllocError)
-        }
-
-        unsafe fn deallocate(&self, _ptr: NonNull<u8>, layout: Layout) {
-            // Caller may allocate() zero-size multiple times. A matching call to deallocate() for one of them must not invalidate any non-zero allocate().
-            if layout.size() == 0 {
-                return;
-            }
-            // If we reach here, then we must be the one non-zero allocation
-            self.allocation.lock().decommit_all().unwrap_or_else(|_| handle_alloc_error(layout));
-        }
-
-        fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            // This works ONLY because we allow no more than ONE non-zero allocation.
-            // If this results in new pages being committed, we know that we are the first one ever to commit them.
-            // We also know that any newly-committed page is zero-initialized.
-            #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
-            self.allocate(layout)
-        }
-
-        unsafe fn grow(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            // Caller may allocate() zero-size multiple times. If we are one of these zero-size allocations, make sure we do not disturb any existing non-zero allocation.
-            if old_layout.size() == 0 {
-                return self.allocate(new_layout);
-            }
-            // If we reach here, then we must be the one non-zero allocation
-            self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
-        }
-
-        unsafe fn grow_zeroed(&self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            // See allocate_zeroed() for why this is correct
-            #[cfg(windows)] // zeroed-pages-on-commit is true at least on Windows. Is it also true for other platforms?
-            unsafe { self.grow(ptr, old_layout, new_layout) }
-        }
-
-        unsafe fn shrink(&self, _ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            if old_layout.size() == 0 {
-                return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
-            }
-            if new_layout.size() == 0 {
-                return self.allocation.lock().decommit_all().map(|()| NonNull::slice_from_raw_parts(NonNull::dangling(), 0)).map_err(|_| AllocError);
-            }
-            // If we reach here, then we must be the one non-zero allocation
-            self.allocation.lock().set_layout_assuming_committed_size_is_nonzero(new_layout, self.protection_flags).map_err(|_| AllocError)
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -554,6 +496,7 @@ mod tests {
     use super::{Allocator, Allocation, DropResultHandler};
 
     #[test]
+    #[expect(clippy::unwrap_used, clippy::expect_used, reason = "This is a test which has absolutely no reason to fail")]
     fn it_works() {
         let virtual_memory_system = Arc::new(virtual_memory::VirtualMemorySystem::new());
         let allocator = Arc::new(Allocator::create(&virtual_memory_system, NonZeroUsize::new(isize::MAX as _).unwrap(), DropResultHandler::Unwrap, Allocator::IS_TRACK_ALLOCATION_SIZES_FEATURE_ENABLED).expect("Failed to create allocator"));
@@ -562,12 +505,12 @@ mod tests {
             let allocator = allocator.clone();
             std::thread::spawn(move || {
                 let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
-                allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE).unwrap();
+                allocation.grow(4096, ProtectionFlags::READ_WRITE).unwrap();
             })
         };
 
         let mut allocation = Allocation::new(allocator, DropResultHandler::Unwrap);
-        allocation.set_committed_size(4096, ProtectionFlags::READ_WRITE).unwrap();
+        allocation.grow(4096, ProtectionFlags::READ_WRITE).unwrap();
 
         join_handle.join().unwrap();
     }
