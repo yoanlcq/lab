@@ -29,16 +29,16 @@ pub struct Positions {
 
 impl Positions {
     pub fn insert_ifn(&mut self, eid: EID, pos: f32, entities: &mut Entities) {
-        entities.map.entry(eid.clone()).or_default().componentdef_names.insert("Positions");
-        self.map.entry(eid).or_insert(SyncUnsafeCell::new(pos));
+        _ = entities.map.entry(eid.clone()).or_default().componentdef_names.insert("Positions");
+        _ = self.map.entry(eid).or_insert_with(|| SyncUnsafeCell::new(pos));
     }
-    pub fn remove(&mut self, eid: &EID) {
+    pub fn remove(&mut self, eid: &EID) -> Option<f32> {
         if let Some(pre_remove) = self.pre_remove.remove(eid) {
             for mut f in pre_remove {
                 f(eid.clone());
             }
         }
-        self.map.remove(eid);
+        self.map.remove(eid).map(SyncUnsafeCell::into_inner)
     }
     pub fn get_mut(&mut self, eid: &EID) -> Option<&mut f32> {
         self.map.get_mut(eid).map(SyncUnsafeCell::get_mut)
@@ -60,11 +60,12 @@ impl Velocities {
     ) {
         positions.insert_ifn(eid.clone(), 0., entities);
         let map = Rc::clone(&self.map);
-        positions.pre_remove.entry(eid.clone()).or_default().push(Box::new(move |eid| { map.borrow_mut().remove(&eid);}));
-        entities.map.entry(eid.clone()).or_default().componentdef_names.insert("Velocities");
-        self.map.borrow_mut().insert(eid, vel);
+        positions.pre_remove.entry(eid.clone()).or_default().push(Box::new(move |eid| { _ = map.borrow_mut().remove(&eid);}));
+        _ = entities.map.entry(eid.clone()).or_default().componentdef_names.insert("Velocities");
+        _ = self.map.borrow_mut().insert(eid, vel);
     }
 
+    #[expect(clippy::missing_panics_doc, reason = "This cannot panic because having a velocity implies having a position")]
     pub fn update_positions(
         &mut self,
         positions: &mut Positions,
@@ -74,7 +75,8 @@ impl Velocities {
         let mut pending_adds = vec![];
         let mut pending_removals = vec![];
         self.map.borrow().iter().for_each(|(eid, velocity)| {
-            let position = positions.get_mut(eid).unwrap();
+            #[expect(clippy::expect_used, reason = "See the explanation")]
+            let position = positions.get_mut(eid).expect("Having a velocity implies having a position, see Velocities::insert()");
             *position += *velocity * dt;
 
             if *position > 5. && *position < 10. {
@@ -87,7 +89,7 @@ impl Velocities {
             if *position > 20. {
                 let eid = eid.clone();
                 pending_removals.push(move |positions: &mut Positions| {
-                    positions.remove(&eid);
+                    _ = positions.remove(&eid);
                 });
             }
         });
@@ -98,6 +100,7 @@ impl Velocities {
             command(positions);
         }
     }
+    #[expect(clippy::missing_panics_doc, clippy::unwrap_used, reason = "This cannot panic because the mutexes cannot be poisoned")]
     pub fn update_positions_par(
         &mut self,
         positions: &mut Positions,
@@ -124,7 +127,7 @@ impl Velocities {
                 if *position > 20. {
                     let eid = eid.clone();
                     pending_removals.lock().unwrap().push(move |positions: &mut Positions| {
-                        positions.remove(&eid);
+                        _ = positions.remove(&eid);
                     });
                 }
             });
@@ -144,13 +147,13 @@ pub trait ComponentDef {
 
 impl ComponentDef for Positions {
     fn remove(&mut self, eid: &EID) {
-        Self::remove(self, eid);
+        _ = Self::remove(self, eid);
     }
 }
 
 impl ComponentDef for Velocities {
     fn remove(&mut self, eid: &EID) {
-        self.map.borrow_mut().remove(eid);
+        _ = self.map.borrow_mut().remove(eid);
     }
 }
 
@@ -172,10 +175,10 @@ impl Cx {
         }
     }
     pub fn componentdef_mut(&mut self, name: &str) -> Option<&mut dyn ComponentDef> {
-        let Self {
+        let &mut Self {
             entities: _,
-            positions,
-            velocities,
+            ref mut positions,
+            ref mut velocities,
         } = self;
         match name {
             "Positions" => Some(positions),
@@ -190,7 +193,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_idiomatic_ecs() {
+    fn idiomatic_ecs() {
         let mut cx = Cx::default();
         cx.velocities.update_positions(&mut cx.positions, 0., &mut cx.entities);
         #[cfg(not(miri))]
