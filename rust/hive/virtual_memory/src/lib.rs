@@ -70,9 +70,6 @@ pub use std::io::Error as Error;
 #[cfg(windows)]
 mod windows_imp;
 
-// #[cfg(miri)]
-mod miri_workaround;
-
 type Result<T> = core::result::Result<T, Error>;
 
 
@@ -195,8 +192,6 @@ impl PtrRange {
 pub struct VirtualMemorySystem {
     page_size: NonZeroUsize,
     allocation_granularity: NonZeroUsize,
-    // #[cfg(miri)]
-    miri_workaround_system: miri_workaround::System,
 }
 
 impl Drop for VirtualMemorySystem {
@@ -220,8 +215,6 @@ impl VirtualMemorySystem {
             Self {
                 page_size: NonZeroUsize::new(dwPageSize as _).unwrap(),
                 allocation_granularity: NonZeroUsize::new(dwAllocationGranularity as _).unwrap(),
-                // #[cfg(miri)]
-                miri_workaround_system: miri_workaround::System::new(NonZeroUsize::new(dwPageSize as _).unwrap(), NonZeroUsize::new(dwAllocationGranularity as _).unwrap()),
             }
         }
     }

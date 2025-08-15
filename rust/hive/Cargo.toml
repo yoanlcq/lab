@@ -5,58 +5,65 @@ members = [
     "huge",
     "research_lab", "unique_ptr",
     "virtual_memory",
+    "vulkan_from_scratch",
 ]
 
+[profile.release]
+debug = true
+# Enabling LTO results in MUCH longer link time even for a simple program.
+# When I tested it, it resulted in a 25% decrease of the PDB size, and a barely-noticeable decrease in the exe file.
+lto = false
+
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-restriction = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
+#   all = { level = "warn", priority = -1 }
+#   pedantic = { level = "warn", priority = -1 }
+#   restriction = { level = "warn", priority = -1 }
+#   nursery = { level = "warn", priority = -1 }
+#   cargo = { level = "warn", priority = -1 }
 
-# General guidelines
-absolute_paths = "allow"
-arbitrary_source_item_ordering = "allow"
-as_conversions = "allow"
-as_pointer_underscore = "allow"
-as_underscore = "allow"
-blanket_clippy_restriction_lints = "allow"
-implicit_return = "allow"
-min_ident_chars = "allow"
-missing_trait_methods = "allow"
-question_mark_used = "allow"
-shadow_reuse = "allow"
-shadow_same = "allow"
-shadow_unrelated = "allow"
-single_call_fn = "allow"
-single_char_lifetime_names = "allow"
-unreadable_literal = "allow"
+#   # General guidelines
+#   absolute_paths = "allow"
+#   arbitrary_source_item_ordering = "allow"
+#   as_conversions = "allow"
+#   as_pointer_underscore = "allow"
+#   as_underscore = "allow"
+#   blanket_clippy_restriction_lints = "allow"
+#   implicit_return = "allow"
+#   min_ident_chars = "allow"
+#   missing_trait_methods = "allow"
+#   question_mark_used = "allow"
+#   shadow_reuse = "allow"
+#   shadow_same = "allow"
+#   shadow_unrelated = "allow"
+#   single_call_fn = "allow"
+#   single_char_lifetime_names = "allow"
+#   unreadable_literal = "allow"
 
-# Maybe they got a point for this crate
-pub_use = "allow"
+#   # Maybe they got a point for this crate
+#   pub_use = "allow"
 
-# Tmp
-cargo_common_metadata = "allow"
-inline_always = "allow"
-missing_const_for_fn = "allow"
-missing_docs_in_private_items = "allow"
-must_use_candidate = "allow"
-unwrap_used = "allow"
+#   # Tmp
+#   cargo_common_metadata = "allow"
+#   inline_always = "allow"
+#   missing_const_for_fn = "allow"
+#   missing_docs_in_private_items = "allow"
+#   must_use_candidate = "allow"
+#   unwrap_used = "allow"
 
-# From the GSheets
-allow_attributes = "allow"
-allow_attributes_without_reason = "allow"
-arithmetic_side_effects = "allow"
-borrow_as_ptr = "allow"
-default_numeric_fallback = "allow"
-elidable_lifetime_names = "allow"
-empty_drop = "allow"
-exhaustive_enums = "allow"
-exhaustive_structs = "allow"
-map_unwrap_or = "allow"
-missing_errors_doc = "allow"
-missing_inline_in_public_items = "allow"
-missing_panics_doc = "allow"
-multiple_unsafe_ops_per_block = "allow"
-std_instead_of_core = "allow"
-undocumented_unsafe_blocks = "allow"
+#   # From the GSheets
+#   allow_attributes = "allow"
+#   allow_attributes_without_reason = "allow"
+#   arithmetic_side_effects = "allow"
+#   borrow_as_ptr = "allow"
+#   default_numeric_fallback = "allow"
+#   elidable_lifetime_names = "allow"
+#   empty_drop = "allow"
+#   exhaustive_enums = "allow"
+#   exhaustive_structs = "allow"
+#   map_unwrap_or = "allow"
+#   missing_errors_doc = "allow"
+#   missing_inline_in_public_items = "allow"
+#   missing_panics_doc = "allow"
+#   multiple_unsafe_ops_per_block = "allow"
+#   std_instead_of_core = "allow"
+#   undocumented_unsafe_blocks = "allow"
