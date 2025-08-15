@@ -1,7 +1,7 @@
-use std::cell::{RefCell, SyncUnsafeCell};
+use core::cell::{RefCell, SyncUnsafeCell};
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
-use std::rc::Rc;
+use core::hash::Hash;
+use alloc::rc::Rc;
 use std::sync::Mutex;
 
 use rayon::prelude::*;
@@ -79,7 +79,7 @@ impl Velocities {
 
             if *position > 5. && *position < 10. {
                 pending_adds.push(
-                    |positions: &mut Positions, velocities: &mut Velocities, entities: &mut Entities| {
+                    |positions: &mut Positions, velocities: &mut Self, entities: &mut Entities| {
                         velocities.insert(EID::default(), 1., positions, entities);
                     },
                 );
@@ -116,7 +116,7 @@ impl Velocities {
 
                 if *position > 5. && *position < 10. {
                     pending_adds.lock().unwrap().push(
-                        |positions: &mut Positions, velocities: &mut Velocities, entities: &mut Entities| {
+                        |positions: &mut Positions, velocities: &mut Self, entities: &mut Entities| {
                             velocities.insert(EID::default(), 1., positions, entities);
                         },
                     );
@@ -127,8 +127,8 @@ impl Velocities {
                         positions.remove(&eid);
                     });
                 }
-            });
-        }
+            })
+        };
         for command in pending_adds.into_inner().unwrap() {
             command(positions, self, entities);
         }
@@ -144,7 +144,7 @@ pub trait ComponentDef {
 
 impl ComponentDef for Positions {
     fn remove(&mut self, eid: &EID) {
-        Positions::remove(self, eid);
+        Self::remove(self, eid);
     }
 }
 
