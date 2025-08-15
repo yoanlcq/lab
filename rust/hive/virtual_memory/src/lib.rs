@@ -142,10 +142,12 @@ impl Default for VirtualMemorySystem {
 
 impl VirtualMemorySystem {
     // How "expensive" this is depends on the OS, but it's generally cheap and you typically don't need to do this many times.
+    #[cfg_attr(windows, expect(clippy::missing_panics_doc, reason = "Panics are impossible in this case"))]
     #[must_use] pub fn new() -> Self {
         #[cfg(windows)]
         {
             let SYSTEM_INFO { dwPageSize, dwAllocationGranularity, .. } = windows_imp::get_system_info();
+            #[expect(clippy::unwrap_used, reason = "These cannot fail")]
             Self {
                 page_size: NonZeroUsize::new(dwPageSize as _).unwrap(),
                 allocation_granularity: NonZeroUsize::new(dwAllocationGranularity as _).unwrap(),
@@ -206,6 +208,7 @@ impl VirtualMemorySystem {
     /// You must make sure that nobody else is currently using that memory.
     pub unsafe fn decommit(&self, ptr_range: PtrRange) -> Result<()> {
         #[cfg(windows)]
+        // SAFETY: We have to assume that the caller took proper precautions as described in this function's doc comment
         unsafe { windows_imp::virtual_free(ptr_range.ptr as _, ptr_range.size, MEM_DECOMMIT) }
     }
 
@@ -218,6 +221,7 @@ impl VirtualMemorySystem {
     ///
     /// On Windows, this will implicitly de-commit the pages for you before unreserving.
     pub unsafe fn unreserve(&self, addr_range: AddrRange) -> Result<()> {
+        // SAFETY: We have to assume that the caller took proper precautions as described in this function's doc comment
         #[cfg(windows)]
         unsafe { windows_imp::virtual_free(addr_range.addr.get(), 0 /* Must pass 0 */, MEM_RELEASE) }
     }
@@ -379,6 +383,7 @@ struct PageRangeInfoNotFree {
 
 impl PageRangeInfo {
     #[cfg(windows)]
+    #[expect(clippy::unwrap_used, reason = "These should never fail unless we did something stupid in their implementation")]
     fn from_windows(info: &MEMORY_BASIC_INFORMATION) -> Self {
         let &MEMORY_BASIC_INFORMATION {
             BaseAddress, AllocationBase, AllocationProtect, RegionSize, State, Protect, Type, PartitionId: _
@@ -462,7 +467,7 @@ impl PageState {
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PageType {
-    Image = 0x1000000, // MEM_IMAGE
+    Image = 0x100_0000, // MEM_IMAGE
     Mapped = 0x40000, // MEM_MAPPED
     Private = 0x20000, // MEM_PRIVATE
 }
@@ -484,16 +489,18 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(clippy::unwrap_used, reason = "This is a test and these should never fail")]
     fn committing_already_committed_pages() {
         let vms = VirtualMemorySystem::new();
         let page_size = vms.page_size().get();
         let r = vms.reserve(None, page_size * 2).unwrap();
         let ra = AddrRange::new(r.addr(), page_size);
         let rb = AddrRange::new(r.addr(), page_size * 2);
-        vms.commit(ra, ProtectionFlags::READ_WRITE).unwrap();
+        _ = vms.commit(ra, ProtectionFlags::READ_WRITE).unwrap();
         let pb = vms.commit(rb, ProtectionFlags::READ_WRITE_EXECUTE).unwrap();
         let info = vms.page_range_info(ra.addr()).unwrap();
         assert_eq!(info.protection_flags_lossy().unwrap(), ProtectionFlags::READ_WRITE_EXECUTE);
+        // SAFETY: We know the memory range is valid and nobody is using it
         unsafe {
             vms.decommit(pb).unwrap();
             vms.unreserve(r).unwrap();
