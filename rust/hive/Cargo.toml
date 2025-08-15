@@ -15,55 +15,247 @@ debug = true
 lto = false
 
 [workspace.lints.clippy]
-#   all = { level = "warn", priority = -1 }
-#   pedantic = { level = "warn", priority = -1 }
-#   restriction = { level = "warn", priority = -1 }
-#   nursery = { level = "warn", priority = -1 }
-#   cargo = { level = "warn", priority = -1 }
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
 
-#   # General guidelines
-#   absolute_paths = "allow"
-#   arbitrary_source_item_ordering = "allow"
-#   as_conversions = "allow"
-#   as_pointer_underscore = "allow"
-#   as_underscore = "allow"
-#   blanket_clippy_restriction_lints = "allow"
-#   implicit_return = "allow"
-#   min_ident_chars = "allow"
-#   missing_trait_methods = "allow"
-#   question_mark_used = "allow"
-#   shadow_reuse = "allow"
-#   shadow_same = "allow"
-#   shadow_unrelated = "allow"
-#   single_call_fn = "allow"
-#   single_char_lifetime_names = "allow"
-#   unreadable_literal = "allow"
+#
+# TODO: enable these by default and let workspace members override it
+#
+missing_docs_in_private_items = "allow"
+cargo_common_metadata = "allow"
+missing_errors_doc = "allow"
 
-#   # Maybe they got a point for this crate
-#   pub_use = "allow"
+#
+# Clippy "nursery" lints
+#
 
-#   # Tmp
-#   cargo_common_metadata = "allow"
-#   inline_always = "allow"
-#   missing_const_for_fn = "allow"
-#   missing_docs_in_private_items = "allow"
-#   must_use_candidate = "allow"
-#   unwrap_used = "allow"
+# Sorry, but map_or_else is really less readable...
+option_if_let_else = "allow"
 
-#   # From the GSheets
-#   allow_attributes = "allow"
-#   allow_attributes_without_reason = "allow"
-#   arithmetic_side_effects = "allow"
-#   borrow_as_ptr = "allow"
-#   default_numeric_fallback = "allow"
-#   elidable_lifetime_names = "allow"
-#   empty_drop = "allow"
-#   exhaustive_enums = "allow"
-#   exhaustive_structs = "allow"
-#   map_unwrap_or = "allow"
-#   missing_errors_doc = "allow"
-#   missing_inline_in_public_items = "allow"
-#   missing_panics_doc = "allow"
-#   multiple_unsafe_ops_per_block = "allow"
-#   std_instead_of_core = "allow"
-#   undocumented_unsafe_blocks = "allow"
+#
+# Clippy "restriction" lints
+#
+
+# These may not be idiomatic but are fine
+absolute_paths = "allow"
+
+alloc_instead_of_core = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+# This one is way too far-reaching, but most importantly, alphabetical order of declarations is almost never the best one for readers.
+# For instance you generally want the new() method to appear first.
+# You also generally want to keep related functions close together, and alphabetical order should have no say in that.
+arbitrary_source_item_ordering = "allow"
+
+arithmetic_side_effects = "allow"
+as_conversions = "allow"
+as_pointer_underscore = "allow"
+as_underscore = "allow"
+assertions_on_result_states = "warn"
+big_endian_bytes = "allow"
+cfg_not_test = "allow"
+clone_on_ref_ptr = "allow"
+cognitive_complexity = "allow"
+create_dir = "allow"
+dbg_macro = "allow"
+decimal_literal_representation = "allow"
+default_numeric_fallback = "allow"
+default_union_representation = "allow"
+deref_by_slicing = "allow"
+disallowed_script_idents = "warn"
+doc_include_without_cfg = "warn"
+else_if_without_else = "allow"
+empty_drop = "allow"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+error_impl_error = "allow"
+exhaustive_enums = "allow"
+exhaustive_structs = "allow"
+exit = "warn"
+
+# Related: the "unwrap_used" lint.
+# I'm choosing "warn" to encourage writing APIs that return a Result instead.
+# However there are many times where using `expect()` is the right choice, so feel free to allow it in some crates or functions.
+expect_used = "warn"
+
+field_scoped_visibility_modifiers = "allow"
+filetype_is_file = "warn"
+float_arithmetic = "allow"
+float_cmp_const = "allow"
+fn_to_numeric_cast_any = "allow"
+get_unwrap = "warn"
+host_endian_bytes = "allow"
+if_then_some_else_none = "warn"
+impl_trait_in_params = "allow"
+implicit_return = "allow"
+indexing_slicing = "allow"
+infinite_loop = "warn"
+inline_asm_x86_att_syntax = "allow"
+inline_asm_x86_intel_syntax = "allow"
+integer_division = "allow"
+integer_division_remainder_used = "allow"
+iter_over_hash_type = "allow"
+large_include_file = "allow"
+let_underscore_must_use = "warn"
+let_underscore_untyped = "allow"
+little_endian_bytes = "allow"
+lossy_float_literal = "warn"
+map_err_ignore = "warn"
+map_with_unused_argument_over_ranges = "warn"
+mem_forget = "allow"
+min_ident_chars = "allow"
+missing_assert_message = "warn"
+missing_asserts_for_indexing = "allow"
+missing_inline_in_public_items = "allow"
+missing_trait_methods = "allow"
+mixed_read_write_in_expression = "allow"
+
+# This is the opposite of the clippy::self_named_module_files lint that we prefer because it avoids having one file and one folder with the same name that must be kept in sync. Even though having multiple mod.rs tabs opened can be confusing.
+mod_module_files = "allow"
+
+module_name_repetitions = "warn"
+modulo_arithmetic = "allow"
+multiple_inherent_impl = "allow"
+multiple_unsafe_ops_per_block = "allow"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+needless_raw_strings = "warn"
+non_ascii_literal = "allow"
+non_zero_suggestions = "warn"
+panic = "warn"
+panic_in_result_fn = "warn"
+partial_pub_fields = "allow"
+pathbuf_init_then_push = "warn"
+pattern_type_mismatch = "warn"
+precedence_bits = "warn"
+print_stderr = "allow"
+print_stdout = "allow"
+pub_use = "allow"
+pub_with_shorthand = "allow"
+pub_without_shorthand = "allow"
+question_mark_used = "allow"
+rc_buffer = "warn"
+rc_mutex = "warn"
+redundant_test_prefix = "warn"
+redundant_type_annotations = "warn"
+
+# You literally have no other choice when destructuring a non-Copy member out of a struct ref
+ref_patterns = "allow"
+
+renamed_function_params = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+return_and_then = "warn"
+same_name_method = "allow"
+
+# NOTE: Opposite of clippy::mod_module_files
+self_named_module_files = "warn"
+
+semicolon_inside_block = "allow"
+semicolon_outside_block = "warn"
+separated_literal_suffix = "allow"
+shadow_reuse = "allow"
+shadow_same = "allow"
+shadow_unrelated = "allow"
+single_call_fn = "allow"
+single_char_lifetime_names = "allow"
+std_instead_of_alloc = "warn"
+std_instead_of_core = "warn"
+str_to_string = "warn"
+string_add = "allow"
+string_lit_chars_any = "allow"
+string_slice = "allow"
+suspicious_xor_used_as_pow = "warn"
+tests_outside_test_module = "warn"
+todo = "allow"
+try_err = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "allow"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_self_imports = "warn"
+unneeded_field_pattern = "allow"
+unreachable = "allow"
+
+# NOTE: Opposite of clippy::separated_literal_suffix
+unseparated_literal_suffix = "warn"
+
+unused_result_ok = "warn"
+unused_trait_names = "allow"
+unwrap_in_result = "warn"
+
+# Related: the "expect_used" lint.
+# Do NOT allow+use `unwrap()` unless for one the following situations:
+# - Quick/prototype/example code
+# - You are 100% certain the panic is impossible (thanks to invariants or earlier proofs) AND there really is nothing to explain if the panic is triggered
+# - There is no other sensible option than panicking with no explanation; example: std's `Mutex::lock()` in most cases
+unwrap_used = "warn"
+
+use_debug = "allow"
+verbose_file_reads = "warn"
+wildcard_enum_match_arm = "allow"
+
+
+# https://doc.rust-lang.org/beta/rustc/lints/listing/allowed-by-default.html
+[workspace.lints.rust]
+absolute_paths_not_starting_with_crate = "warn"
+ambiguous_negative_literals = "warn"
+closure_returning_async_block = "warn"
+deprecated_safe_2024 = "warn"
+deref_into_dyn_supertrait = "warn"
+edition_2024_expr_fragment_specifier = "warn"
+elided_lifetimes_in_paths = "allow"
+explicit_outlives_requirements = "warn"
+ffi_unwind_calls = "warn"
+fuzzy_provenance_casts = "warn"
+if_let_rescope = "allow"
+impl_trait_overcaptures = "warn"
+impl_trait_redundant_captures = "warn"
+keyword_idents_2018 = "warn"
+keyword_idents_2024 = "warn"
+let_underscore_drop = "warn"
+linker_messages = "warn"
+lossy_provenance_casts = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_copy_implementations = "allow"
+missing_debug_implementations = "allow"
+missing_docs = "allow"
+missing_unsafe_on_extern = "warn"
+multiple_supertrait_upcastable = "allow"
+must_not_suspend = "warn"
+non_ascii_idents = "warn"
+non_exhaustive_omitted_patterns = "allow"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+rust_2021_incompatible_closure_captures = "warn"
+rust_2021_incompatible_or_patterns = "warn"
+rust_2021_prefixes_incompatible_syntax = "allow"
+rust_2021_prelude_collisions = "warn"
+rust_2024_guarded_string_incompatible_syntax = "warn"
+rust_2024_incompatible_pat = "warn"
+rust_2024_prelude_collisions = "warn"
+single_use_lifetimes = "warn"
+supertrait_item_shadowing_definition = "warn"
+supertrait_item_shadowing_usage = "warn"
+tail_expr_drop_order = "allow"
+trivial_casts = "allow"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unnameable_types = "warn"
+unqualified_local_imports = "warn"
+unreachable_pub = "warn"
+unsafe_attr_outside_unsafe = "warn"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "warn"
+unstable_features = "allow"
+unused_crate_dependencies = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+unused_qualifications = "warn"
+unused_results = "warn"
+variant_size_differences = "allow"
