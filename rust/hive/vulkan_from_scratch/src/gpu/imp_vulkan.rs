@@ -8,8 +8,8 @@
 use alloc::sync::Weak;
 use vk_mem::Alloc;
 use core::fmt::Debug;
-use std::collections::{HashSet};
-use core::num::{NonZeroU32};
+use std::collections::HashSet;
+use core::num::NonZeroU32;
 use core::mem::ManuallyDrop;
 use core::ffi::CStr;
 use std::sync::Mutex;
@@ -108,8 +108,10 @@ impl Debug for VulkanApi {
 impl Drop for VulkanApi {
     fn drop(&mut self) {
         unsafe {
-            for surface in self.surfaces.lock().unwrap().iter() {
-                self.surface_loader.destroy_surface(*surface, self.allocator.as_ref());
+            if let Ok(surfaces) = result_hole::inspect(self.surfaces.lock()) {
+                for surface in surfaces.iter() {
+                    self.surface_loader.destroy_surface(*surface, self.allocator.as_ref());
+                }
             }
             if let (Some(loader), Some(messenger)) = (self.debug_utils_loader.as_ref(), self.debug_utils_messenger.take()) {
                 loader.destroy_debug_utils_messenger(messenger, self.allocator.as_ref());
@@ -224,7 +226,7 @@ impl VulkanApi {
             })
         }
     }
-    #[expect(dead_code, reason = "This is a draft")]
+    #[expect(dead_code, clippy::unwrap_used, reason = "This is a draft")]
     #[expect(
         clippy::panic,
         reason = "The behavior when creating a surface twice on the same window is not well-defined"
@@ -233,7 +235,7 @@ impl VulkanApi {
         let surface = self.create_surface(window).unwrap();
         if self.surfaces.lock().unwrap().insert(surface) {
             let api_weak = self.api_weak.weak().clone();
-            window.0.post_destroy_confirmed.lock().unwrap().push(Box::new(move |()| {
+            let _listener_handle = window.0.post_destroy_confirmed.push(Box::new(move |()| {
                 if let Some(api) = api_weak.upgrade() {
                     let this = api.imp.as_any().downcast_ref::<Self>().unwrap();
                     // TODO: should also wait for in-flight work to be idle??
@@ -243,7 +245,8 @@ impl VulkanApi {
                     unsafe {
                         this.surface_loader.destroy_surface(surface, this.allocator.as_ref());
                     };
-                    this.surfaces.lock().unwrap().remove(&surface);
+                    let was_present = this.surfaces.lock().unwrap().remove(&surface);
+                    assert!(was_present, "We are the only ones who manage the set of surfaces");
                 }
                 MulticastDelegateResult::Remove
             }));
@@ -359,6 +362,7 @@ impl MinimalQueueCreateInfo {
             .map_or_else(Vec::new, |queue_family_index| {
                 vec![Self {
                     queue_family_index,
+                    #[expect(clippy::unwrap_used, reason = "Obvious")]
                     count: NonZeroU32::new(1).unwrap(),
                 }]
             })
@@ -630,7 +634,7 @@ impl DeviceImpl for VulkanDevice {
                 }
             )?;
 
-            self.debug_utils_loader.as_ref().inspect(|debug_utils_loader| {
+            if let Some(debug_utils_loader) = self.debug_utils_loader.as_ref() {
                 let name_info = vk::DebugUtilsObjectNameInfoEXT {
                     object_type: vk::ObjectType::BUFFER,
                     ..Default::default()
@@ -639,7 +643,7 @@ impl DeviceImpl for VulkanDevice {
                     .object_name(c"Test buffer");
 
                 result_hole::add(debug_utils_loader.set_debug_utils_object_name(&name_info));
-            });
+            }
 
             // TODO: vk_mem doesn't expose this function supported by VMA. Consider adding it?
             // self.vma_allocator.set_allocation_name(allocation, c"TODO");

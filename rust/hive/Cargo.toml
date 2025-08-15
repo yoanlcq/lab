@@ -35,6 +35,9 @@ missing_errors_doc = "allow"
 # Sorry, but map_or_else is really less readable...
 option_if_let_else = "allow"
 
+# Note, this lint goes against rustc's "unreachable-pub"
+redundant_pub_crate = "allow"
+
 #
 # Clippy "restriction" lints
 #
@@ -247,7 +250,10 @@ trivial_numeric_casts = "warn"
 unit_bindings = "warn"
 unnameable_types = "warn"
 # unqualified_local_imports = "warn"
+
+# Note: conflicts with clippy::redundant_pub_crate
 unreachable_pub = "warn"
+
 unsafe_attr_outside_unsafe = "warn"
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "warn"

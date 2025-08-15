@@ -90,6 +90,7 @@ pub fn main() -> gpu::Result<()> {
     let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
         std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
+            #[expect(clippy::expect_used, reason = "This is desired, we are at the top level in another thread")]
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work")
         })?
     });
@@ -123,7 +124,9 @@ pub fn main() -> gpu::Result<()> {
             break;
         }
 
-        gpu_thread_result.as_ref().inspect(|x| result_hole::add(x.device.set_frame_index(frame_index)));
+        if let Some(gpu_thread_result) = gpu_thread_result.as_ref() {
+            result_hole::add(gpu_thread_result.device.set_frame_index(frame_index));
+        }
 
         frame_index += 1;
     }

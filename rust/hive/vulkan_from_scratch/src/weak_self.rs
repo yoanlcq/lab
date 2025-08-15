@@ -15,7 +15,7 @@ pub mod sync {
         }
     }
 
-    #[expect(clippy::missing_panics_doc, reason = "WeakSelf is for a very specific pattern that is very hard to write incorrectly. This type exists exactly because we know the panics will not occur if the pattern is followed")]
+    #[expect(clippy::missing_panics_doc, clippy::expect_used, reason = "WeakSelf is for a very specific pattern that is very hard to write incorrectly. This type exists exactly because we know the panics will not occur if the pattern is followed")]
     impl<T> WeakSelf<T> {
         #[must_use]
         pub const fn new() -> Self {
@@ -60,7 +60,7 @@ pub mod rc {
         }
     }
 
-    #[expect(clippy::missing_panics_doc, reason = "WeakSelf is for a very specific pattern that is very hard to write incorrectly. This type exists exactly because we know the panics will not occur if the pattern is followed")]
+    #[expect(clippy::missing_panics_doc, clippy::expect_used, reason = "WeakSelf is for a very specific pattern that is very hard to write incorrectly. This type exists exactly because we know the panics will not occur if the pattern is followed")]
     impl<T> WeakSelf<T> {
         #[must_use]
         pub const fn new() -> Self {

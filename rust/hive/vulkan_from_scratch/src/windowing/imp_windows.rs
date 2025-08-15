@@ -46,7 +46,7 @@ struct Win32HwndUserdata {
 impl Win32HwndUserdata {
     fn set(hwnd: HWND, this: Option<Box<Self>>) {
         unsafe {
-            SetWindowLongPtrW(
+            let _previous_value = SetWindowLongPtrW(
                 hwnd,
                 GWLP_USERDATA,
                 this.as_ref().map_or(0, |b| { 
@@ -83,7 +83,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_CLOSE => {
             // TODO: consider asking the user before exit and calling DestroyWindow() only if confirmed
             if let Some(window) = Win32HwndUserdata::get(hwnd).and_then(|x| x.upgrade()) {
-                let win32_window = window.imp.as_any().downcast_ref::<Win32Window>().unwrap();
+                let win32_window = Win32Window::from_window_inner(&window);
                 result_hole::add(win32_window.destroy());
                 LRESULT(0)
             } else {
@@ -94,9 +94,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_DESTROY => {
             if let Some(window) = Win32HwndUserdata::get(hwnd).and_then(|x| x.upgrade()) {
-                let win32_window = window.imp.as_any().downcast_ref::<Win32Window>().unwrap();
+                let win32_window = Win32Window::from_window_inner(&window);
                 win32_window.hwnd_is_destroyed.store(true, core::sync::atomic::Ordering::Relaxed);
-                window.post_destroy_confirmed.lock().unwrap().broadcast(());
+                window.post_destroy_confirmed.broadcast(());
             }
             unsafe {
                 // TODO: PostQuitMessage only if there are no more windows OR the app is willing to exit.
@@ -149,7 +149,7 @@ impl DisplayImpl for Win32Display {
                     }
 
                     let _is_translated = TranslateMessage(&raw const msg);
-                    DispatchMessageW(&raw const msg);
+                    let _value_returned_by_wndproc = DispatchMessageW(&raw const msg);
 
                     result.nb_received_events += 1;
                     if msg.message == WM_QUIT {
@@ -283,6 +283,10 @@ impl Win32Window {
 
         unsafe { DestroyWindow(self.hwnd.0) }?;
         Ok(true)
+    }
+    fn from_window_inner(window: &WindowInner) -> &Self {
+        #[expect(clippy::expect_used, reason = "See the explanation below")]
+        window.imp.as_any().downcast_ref::<Self>().expect("Anyone who calls this is within this module, therefore the only possible implementation for Window in that case is Win32Window")
     }
 }
 

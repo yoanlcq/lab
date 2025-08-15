@@ -2,13 +2,12 @@ use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
 use core::sync::atomic::AtomicU32;
 use std::io::Result;
-use std::sync::Mutex;
 use core::time::Duration;
 
 use vek::{Extent2, Vec2};
 
 use crate::as_any::AsAny;
-use crate::delegates::MulticastDelegate;
+use crate::delegates::SharedMulticastDelegate;
 
 #[cfg(windows)]
 mod imp_windows;
@@ -53,8 +52,8 @@ impl DisplayArc {
             imp: self.0.imp.create_window(params)?,
             display: self.clone(),
             id: WindowID::new(),
-            pre_destroy_requested: Mutex::new(MulticastDelegate::new()),
-            post_destroy_confirmed: Mutex::new(MulticastDelegate::new()),
+            pre_destroy_requested: SharedMulticastDelegate::new(),
+            post_destroy_confirmed: SharedMulticastDelegate::new(),
         });
         arc.imp.set_weak_window(Arc::downgrade(&arc));
         Ok(WindowArc(arc))
@@ -90,8 +89,8 @@ pub struct WindowInner {
     imp: Box<dyn WindowImpl>,
     display: DisplayArc,
     id: WindowID,
-    pub pre_destroy_requested: Mutex<MulticastDelegate<()>>,
-    pub post_destroy_confirmed: Mutex<MulticastDelegate<()>>,
+    pub pre_destroy_requested: SharedMulticastDelegate<()>,
+    pub post_destroy_confirmed: SharedMulticastDelegate<()>,
 }
 
 #[derive(Debug)]
@@ -131,10 +130,7 @@ impl WindowArc {
 
 impl Drop for WindowInner {
     fn drop(&mut self) {
-        self.pre_destroy_requested
-            .lock()
-            .unwrap()
-            .broadcast(());
+        self.pre_destroy_requested.broadcast(());
     }
 }
 
