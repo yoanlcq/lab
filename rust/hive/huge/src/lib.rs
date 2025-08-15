@@ -1,4 +1,5 @@
 #![feature(allocator_api)]
+#![expect(unsafe_code, reason = "Necessary for memory management")]
 
 use std::{alloc::Layout, collections::BTreeMap, fmt::Debug, num::NonZeroUsize, ptr::NonNull, sync::Arc};
 use virtual_memory::{Addr, AddrRange, Error, ProtectionFlags, PtrRange, VirtualMemorySystem};
@@ -20,6 +21,8 @@ pub enum DropResultHandler {
     Fn(fn(Result<()>)),
     Box(Box<dyn FnMut(Result<()>) + Send + Sync>),
 }
+
+static_assertions::assert_impl_all!(DropResultHandler: Send, Sync);
 
 impl Default for DropResultHandler {
     fn default() -> Self {
@@ -50,11 +53,6 @@ impl DropResultHandler {
             Self::Fn(f) => f(r),
             Self::Box(ref mut f) => f(r),
         }
-    }
-    #[allow(dead_code)]
-    fn must_be_send_and_sync() {
-        fn f<T: Send + Sync>() {}
-        f::<Self>();
     }
 }
 
@@ -280,12 +278,9 @@ impl Allocator {
 
         state.free_allocation_indices.insert(index, addr);
     }
-    #[allow(dead_code)]
-    fn must_be_send_and_sync() {
-        fn f<T: Send + Sync>() {}
-        f::<Self>();
-    }
 }
+
+static_assertions::assert_impl_all!(Allocator: Send, Sync);
 
 #[derive(Debug)]
 struct AllocationStorage {
@@ -483,12 +478,9 @@ impl Allocation {
         self.set_committed_size(new_size, protection_flags)?;
         Ok(NonNull::slice_from_raw_parts(aligned_start, new_size))
     }
-    #[allow(dead_code)]
-    fn must_be_send_and_sync() {
-        fn f<T: Send + Sync>() {}
-        f::<Self>();
-    }
 }
+
+static_assertions::assert_impl_all!(Allocation: Send, Sync);
 
 #[derive(Debug)]
 pub struct LinearAllocator {
@@ -496,13 +488,7 @@ pub struct LinearAllocator {
     protection_flags: ProtectionFlags,
 }
 
-impl LinearAllocator {
-    #[allow(dead_code)]
-    fn must_be_send_and_sync() {
-        fn f<T: Send + Sync>() {}
-        f::<Self>();
-    }
-}
+static_assertions::assert_impl_all!(LinearAllocator: Send, Sync);
 
 mod linear_allocator {
     use std::{alloc::{handle_alloc_error, AllocError, Layout}, ptr::NonNull};

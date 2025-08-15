@@ -110,6 +110,7 @@ impl Velocities {
             let positions = &positions.map;
             self.map.borrow().par_iter().for_each(|(eid, velocity)| {
                 // SAFETY: positions is &mut in this function, so nobody can resize it + each iteration has a unique EID therefore there is no aliasing of mutable refs
+                #[expect(unsafe_code, reason = "This is a showcase, not production code")]
                 let position = unsafe { &mut *positions.get(eid).unwrap().get() };
                 *position += *velocity * dt;
 

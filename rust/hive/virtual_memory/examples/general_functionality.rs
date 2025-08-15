@@ -1,3 +1,5 @@
+#![expect(unsafe_code, reason = "Necessary for this example")]
+
 use virtual_memory::*;
 
 fn main() {

@@ -1,4 +1,5 @@
-#![allow(dead_code, unused_variables, unreachable_code, unused_mut)]
+#![expect(warnings, reason = "This is experimental")]
+#![expect(unsafe_code, reason = "This is fine, being a fundamental collection. The unsafe part is mostly for optimization and will be thoroughly tested")]
 
 use std::{iter::{Filter, Skip, Take}, marker::PhantomData, ops::{Deref, DerefMut}};
 

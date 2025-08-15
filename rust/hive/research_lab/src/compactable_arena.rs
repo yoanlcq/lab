@@ -1,3 +1,6 @@
+#![expect(warnings, reason = "This is experimental")]
+#![expect(unsafe_code, reason = "We're doing memory management stuff")]
+
 use std::{alloc::Layout, marker::PhantomData, mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull, sync::atomic::{AtomicPtr, AtomicUsize}};
 
 mod workarounds {
