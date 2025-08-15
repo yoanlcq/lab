@@ -1,0 +1,3 @@
+[type.fr_md]
+extend-glob = ["*_fr.md"]
+check-file = false

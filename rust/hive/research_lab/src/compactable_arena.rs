@@ -220,7 +220,7 @@ impl ArenaHeader {
         todo!()
     }
     // TODO: parallel allocations, frees, and compaction
-    // TODO: pouvoir itérer sur toutes les suballocations de l'arena
+    // TODO: ability to iterate over the arena's suballocations
     // TODO: thought experiment (juste pour le lol/tester): dans la zone droite d'une arena, faire une suballocation, et créer une arena dedans.
     pub fn create_relocatable_vec<T: Unpin>(&self) -> Option<RelocatableVecStrongRef<T>> {
         todo!()

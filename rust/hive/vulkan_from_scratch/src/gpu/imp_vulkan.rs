@@ -379,7 +379,7 @@ impl ApiImpl for VulkanApi {
             .into_iter()
             .map(|physical_device| {
                 let mut wrapper = PhysicalDeviceWrapper::new(self, physical_device);
-                // TODO: This should depend on params. This is why I'm keeping it seaparate for now
+                // TODO: This should depend on params. This is why I'm keeping it separate for now
                 wrapper.requested_queues = MinimalQueueCreateInfo::extract(&wrapper.useful_queue_families);
                 wrapper
             })

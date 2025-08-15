@@ -20,7 +20,7 @@ fn main() {
         let starting_address_hint= None;
 
         // Reserving a few pages should be fine.
-        // Note that the size is not required to be a multiple of the page size; in this crate, all APIs implicity calculate the range of pages touched by user-provided ranges, because this is generally done by the platform-specific API anyway.
+        // Note that the size is not required to be a multiple of the page size; in this crate, all APIs implicitly calculate the range of pages touched by user-provided ranges, because this is generally done by the platform-specific API anyway.
         let reserve_size = (page_size * 4) / 3;
 
         virtual_memory_system.reserve(starting_address_hint, reserve_size).expect("Should be able to reserve a few pages worth of virtual address space")
@@ -62,7 +62,7 @@ fn main() {
     // Don't forget to clean-up.
     // Obviously, on any modern OS, this also happens automatically when the process exists.
 
-    // SAFETY: Nobody is currently using the memory withing the committed range
+    // SAFETY: Nobody is currently using the memory within the committed range
     unsafe {
         virtual_memory_system.decommit(committed_range).expect("decommit() should not fail, because we just committed the range");
     }
