@@ -119,7 +119,7 @@ pub fn main() -> gpu::Result<()> {
         }
 
         if let Some(gpu_thread_result) = gpu_thread_result.as_ref() {
-            result_hole::add(gpu_thread_result.device.set_frame_index(frame_index));
+            result_hole::consume(gpu_thread_result.device.set_frame_index(frame_index));
         }
 
         frame_index += 1;

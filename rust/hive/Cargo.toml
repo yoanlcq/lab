@@ -10,7 +10,6 @@ members = [
     "crates/os/debugger",
     "crates/os/virtual_memory",
     "crates/std_based/as_any",
-    "crates/std_based/scope_guard",
     "crates/std_based/unique_ptr",
     "crates/std_based/weak_self",
 ]
