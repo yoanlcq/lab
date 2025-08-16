@@ -25,6 +25,10 @@ impl UntypedListenerHandle {
             uid: LAST_LISTENER_UID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
         }
     }
+    #[must_use]
+    pub(crate) const fn from_parts(initial_index_hint: usize, uid: u64) -> Self {
+        Self { initial_index_hint, uid }
+    }
 }
 
 #[expect(clippy::module_name_repetitions, reason = "We don't want it to be named just `Handle`")]
@@ -44,13 +48,6 @@ impl<T> ListenerHandle<T> {
     #[must_use]
     pub const fn untyped(&self) -> UntypedListenerHandle {
         self.untyped
-    }
-    #[must_use]
-    pub(crate) const fn from_parts(initial_index_hint: usize, uid: u64) -> Self {
-        Self {
-            untyped: UntypedListenerHandle { initial_index_hint, uid },
-            phantom: PhantomData,
-        }
     }
 }
 
