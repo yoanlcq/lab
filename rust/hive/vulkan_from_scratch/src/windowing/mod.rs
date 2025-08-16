@@ -7,7 +7,6 @@ use core::time::Duration;
 use vek::{Extent2, Vec2};
 
 use crate::as_any::AsAny;
-use crate::delegates::SharedMulticastDelegate;
 
 #[cfg(windows)]
 mod imp_windows;
@@ -52,8 +51,8 @@ impl DisplayArc {
             imp: self.0.imp.create_window(params)?,
             display: self.clone(),
             id: WindowID::new(),
-            pre_destroy_requested: SharedMulticastDelegate::new(),
-            post_destroy_confirmed: SharedMulticastDelegate::new(),
+            pre_destroy_requested: delegates::multicast::shared::Delegate::new(),
+            post_destroy_confirmed: delegates::multicast::shared::Delegate::new(),
         });
         arc.imp.set_weak_window(Arc::downgrade(&arc));
         Ok(WindowArc(arc))
@@ -89,8 +88,8 @@ pub struct WindowInner {
     imp: Box<dyn WindowImpl>,
     display: DisplayArc,
     id: WindowID,
-    pub pre_destroy_requested: SharedMulticastDelegate<()>,
-    pub post_destroy_confirmed: SharedMulticastDelegate<()>,
+    pub pre_destroy_requested: delegates::multicast::shared::Delegate<()>,
+    pub post_destroy_confirmed: delegates::multicast::shared::Delegate<()>,
 }
 
 #[derive(Debug)]

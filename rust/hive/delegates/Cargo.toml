@@ -1,0 +1,10 @@
+[package]
+name = "delegates"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+parking_lot = "0.12.4"
+
+[lints]
+workspace = true

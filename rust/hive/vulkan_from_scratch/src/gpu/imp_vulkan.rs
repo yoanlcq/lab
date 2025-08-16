@@ -13,11 +13,11 @@ use core::num::NonZeroU32;
 use core::mem::ManuallyDrop;
 use core::ffi::CStr;
 use std::sync::Mutex;
+use delegates::multicast::MulticastDelegateResult;
 
 use ash::vk;
 
 use crate::debugger::breakpoint;
-use crate::delegates::MulticastDelegateResult;
 use crate::gpu::{ApiArc, ApiImpl, ApiInner, ApiParams, DeviceImpl, DeviceParams, Result, SwapChainImpl, SwapChainParams};
 use crate::result_hole;
 use crate::weak_self::sync::WeakSelf;

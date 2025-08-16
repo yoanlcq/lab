@@ -10,7 +10,6 @@ extern crate alloc;
 
 pub mod as_any;
 pub mod debugger;
-pub mod delegates;
 pub mod gpu;
 pub mod result_hole;
 pub mod scope_guard;
