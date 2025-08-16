@@ -166,8 +166,10 @@ macro_rules! declare_shared_multicast_delegate {
                                     MulticastDelegateResult::Remove => self.pending_removal.lock().push(UntypedListenerHandle::from_parts(i, listener.uid)),
                                 }
                             }
-                            // TODO: consider flushing pending_push and retry?
                         }
+                        // Question: what of listeners possibly added to pending_push during the loop above?
+                        // Consider adding a "policy" params to `push()` for specifying whether or not to call the pushed listener within the current call to `broadcast()`?
+                        // That would add a lot of complexity and a bit of overhead. I'm probably overthinking it, since Unreal Engine doesn't bother with that (it just calls the listener in reverse order, so this ignores those added during iteration)
 
                         // If we are the last "owner" of the lock, flush pending operations
                         let mut removed_funcs = vec![];
