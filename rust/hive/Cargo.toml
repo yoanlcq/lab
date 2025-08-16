@@ -1,12 +1,18 @@
 [workspace]
 resolver = "3"
-members = [ "as_any", "debugger", "delegates",
-    "hive",
-    "huge",
-    "research_lab", "result_hole", "scope_guard",
-    "unique_ptr",
-    "virtual_memory",
-    "vulkan_from_scratch", "weak_self",
+members = [
+    "crates/collections/delegates",
+    "crates/collections/hive",
+    "crates/collections/huge",
+    "crates/lab/research_lab",
+    "crates/lab/vulkan_from_scratch",
+    "crates/misc/result_hole",
+    "crates/os/debugger",
+    "crates/os/virtual_memory",
+    "crates/std_based/as_any",
+    "crates/std_based/scope_guard",
+    "crates/std_based/unique_ptr",
+    "crates/std_based/weak_self",
 ]
 
 [profile.release]

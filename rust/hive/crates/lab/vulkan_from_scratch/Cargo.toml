@@ -22,11 +22,11 @@ raw-window-handle = "0.6.2"
 thiserror = "2.0.12"
 vek = "0.17.1"
 vk-mem = "0.4.0"
-delegates = { path = "../delegates" }
-as_any = { path = "../as_any" }
-debugger = { path = "../debugger" }
-result_hole = { path = "../result_hole" }
-weak_self = { path = "../weak_self" }
+delegates = { path = "../../collections/delegates" }
+as_any = { path = "../../std_based/as_any" }
+debugger = { path = "../../os/debugger" }
+result_hole = { path = "../../misc/result_hole" }
+weak_self = { path = "../../std_based/weak_self" }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"

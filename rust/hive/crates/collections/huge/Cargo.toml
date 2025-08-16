@@ -13,6 +13,6 @@ track_allocation_sizes = []
 
 [dependencies]
 parking_lot = "0.12.4"
-virtual_memory = { path = "../virtual_memory" }
-unique_ptr = { path = "../unique_ptr" }
+virtual_memory = { path = "../../os/virtual_memory" }
+unique_ptr = { path = "../../std_based/unique_ptr" }
 static_assertions = "1.1.0"
