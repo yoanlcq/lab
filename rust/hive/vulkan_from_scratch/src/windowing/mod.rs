@@ -1,4 +1,5 @@
 use alloc::sync::{Arc, Weak};
+use delegates::multicast::SimpleSharedMulticastDelegate;
 use core::fmt::Debug;
 use core::sync::atomic::AtomicU32;
 use std::io::Result;
@@ -51,8 +52,8 @@ impl DisplayArc {
             imp: self.0.imp.create_window(params)?,
             display: self.clone(),
             id: WindowID::new(),
-            pre_destroy_requested: delegates::multicast::shared::Delegate::new(),
-            post_destroy_confirmed: delegates::multicast::shared::Delegate::new(),
+            pre_destroy_requested: SimpleSharedMulticastDelegate::new(),
+            post_destroy_confirmed: SimpleSharedMulticastDelegate::new(),
         });
         arc.imp.set_weak_window(Arc::downgrade(&arc));
         Ok(WindowArc(arc))
@@ -88,8 +89,8 @@ pub struct WindowInner {
     imp: Box<dyn WindowImpl>,
     display: DisplayArc,
     id: WindowID,
-    pub pre_destroy_requested: delegates::multicast::shared::Delegate<()>,
-    pub post_destroy_confirmed: delegates::multicast::shared::Delegate<()>,
+    pub pre_destroy_requested: SimpleSharedMulticastDelegate,
+    pub post_destroy_confirmed: SimpleSharedMulticastDelegate,
 }
 
 #[derive(Debug)]
@@ -129,7 +130,7 @@ impl WindowArc {
 
 impl Drop for WindowInner {
     fn drop(&mut self) {
-        self.pre_destroy_requested.broadcast(());
+        self.pre_destroy_requested.broadcast();
     }
 }
 

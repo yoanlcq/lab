@@ -235,7 +235,7 @@ impl VulkanApi {
         let surface = self.create_surface(window).unwrap();
         if self.surfaces.lock().unwrap().insert(surface) {
             let api_weak = self.api_weak.weak().clone();
-            let _listener_handle = window.0.post_destroy_confirmed.push(Box::new(move |()| {
+            let _listener_handle = window.0.post_destroy_confirmed.push(Box::new(move || {
                 if let Some(api) = api_weak.upgrade() {
                     let this = api.imp.as_any().downcast_ref::<Self>().unwrap();
                     // TODO: should also wait for in-flight work to be idle??

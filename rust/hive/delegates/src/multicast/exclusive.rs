@@ -1,7 +1,7 @@
 use paste::paste;
 
 #[macro_export]
-macro_rules! declare {
+macro_rules! declare_exclusive_multicast_delegate {
     ($visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
         paste!{
             $visibility type $Delegate = [<$Delegate _internal>]::Delegate;
@@ -28,7 +28,8 @@ macro_rules! declare {
 
                 impl core::fmt::Debug for Listener {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                        f.debug_struct("Listener").field("uid", &self.uid).finish_non_exhaustive()
+                        let Self { func: _, ref uid } = *self;
+                        f.debug_struct("Listener").field("uid", &uid).finish_non_exhaustive()
                     }
                 }
 
@@ -65,7 +66,10 @@ macro_rules! declare {
 
                 impl core::fmt::Debug for Delegate {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                        f.debug_struct("Delegate").field("listeners", &self.listeners).finish()
+                        let Self { ref listeners } = *self;
+                        f.debug_struct(stringify!($Delegate))
+                            .field("listeners", listeners)
+                            .finish()
                     }
                 }
 
@@ -116,6 +120,13 @@ macro_rules! declare {
     }
 }
 
-declare!(pub SimpleMulticastDelegate, FnMut());
-declare!(pub SimpleMulticastDelegateSendAndSync, FnMut() + Send + Sync);
-declare!(SimpleMulticastDelegateSendAndSyncp, FnMut() + Send + Sync);
+declare_exclusive_multicast_delegate!(pub SimpleExclusiveMulticastDelegate, FnMut());
+declare_exclusive_multicast_delegate!(pub SimpleExclusiveMulticastDelegateSendAndSync, FnMut() + Send + Sync);
+
+impl SimpleExclusiveMulticastDelegateSendAndSync {
+    #[expect(dead_code, reason = "This is a static assert")]
+    const fn must_be_send_and_sync() {
+        const fn f<T: Send + Sync>() {}
+        f::<Self>();
+    }
+}

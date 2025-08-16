@@ -96,7 +96,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if let Some(window) = Win32HwndUserdata::get(hwnd).and_then(|x| x.upgrade()) {
                 let win32_window = Win32Window::from_window_inner(&window);
                 win32_window.hwnd_is_destroyed.store(true, core::sync::atomic::Ordering::Relaxed);
-                window.post_destroy_confirmed.broadcast(());
+                window.post_destroy_confirmed.broadcast();
             }
             unsafe {
                 // TODO: PostQuitMessage only if there are no more windows OR the app is willing to exit.
