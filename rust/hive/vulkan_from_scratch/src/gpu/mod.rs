@@ -1,7 +1,7 @@
 use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
 
-use crate::as_any::AsAny;
+use as_any::AsAny;
 use crate::windowing::WindowArc;
 
 mod imp_vulkan;

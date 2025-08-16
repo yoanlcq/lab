@@ -1,0 +1,10 @@
+[package]
+name = "result_hole"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+debugger = { path = "../debugger" }
+
+[lints]
+workspace = true

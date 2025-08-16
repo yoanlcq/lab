@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = [ "delegates",
+members = [ "as_any", "debugger", "delegates",
     "hive",
     "huge",
-    "research_lab",
+    "research_lab", "result_hole", "scope_guard",
     "unique_ptr",
     "virtual_memory",
-    "vulkan_from_scratch",
+    "vulkan_from_scratch", "weak_self",
 ]
 
 [profile.release]

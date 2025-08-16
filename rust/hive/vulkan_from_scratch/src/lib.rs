@@ -8,12 +8,7 @@ use crate::windowing::{PumpEventParams, WindowParams};
 
 extern crate alloc;
 
-pub mod as_any;
-pub mod debugger;
 pub mod gpu;
-pub mod result_hole;
-pub mod scope_guard;
-pub mod weak_self;
 pub mod windowing;
 
 struct StartupProfiler {

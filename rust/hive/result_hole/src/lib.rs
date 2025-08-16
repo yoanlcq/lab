@@ -1,7 +1,5 @@
 use core::error::Error;
 
-use crate::debugger;
-
 /// A general-purpose function for results that we don't know what to do with.
 ///
 /// For instance, if they occur during Drop or other inconvenient places such as system callbacks.

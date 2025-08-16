@@ -19,8 +19,7 @@ use windows::Win32::System::Threading::INFINITE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{DisplayParams, WindowParams};
-use crate::result_hole;
-use crate::weak_self::sync::WeakSelf;
+use weak_self::sync::WeakSelf;
 use crate::windowing::{DisplayImpl, DisplayInner, PumpEventParams, PumpEventResult, WindowImpl, WindowInner};
 
 trait Win32HandleType {}

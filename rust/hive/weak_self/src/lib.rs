@@ -1,3 +1,4 @@
+extern crate alloc;
 
 pub mod sync {
     use alloc::sync::{Arc, Weak};

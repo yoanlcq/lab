@@ -17,10 +17,9 @@ use delegates::multicast::MulticastDelegateResult;
 
 use ash::vk;
 
-use crate::debugger::breakpoint;
+use debugger::breakpoint;
 use crate::gpu::{ApiArc, ApiImpl, ApiInner, ApiParams, DeviceImpl, DeviceParams, Result, SwapChainImpl, SwapChainParams};
-use crate::result_hole;
-use crate::weak_self::sync::WeakSelf;
+use weak_self::sync::WeakSelf;
 use crate::windowing::WindowArc;
 
 // https://registry.khronos.org/vulkan/specs/latest/man/html/PFN_vkDebugReportCallbackEXT.html

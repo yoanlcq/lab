@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use vek::{Extent2, Vec2};
 
-use crate::as_any::AsAny;
+use as_any::AsAny;
 
 #[cfg(windows)]
 mod imp_windows;
