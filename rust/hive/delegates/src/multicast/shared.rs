@@ -93,7 +93,7 @@ impl<T> Delegate<T> {
                 return Some(listeners.remove(listener_handle.initial_index_hint).func);
             }
         }
-        if let Some(index) = listeners.iter().position(|x| x.uid == listener_handle.uid) {
+        if let Some(index) = listeners.iter().rposition(|x| x.uid == listener_handle.uid) {
             Some(listeners.remove(index).func)
         } else {
             None

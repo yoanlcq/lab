@@ -52,7 +52,7 @@ impl<T> Delegate<T> {
                 return Some(self.listeners.remove(listener_handle.initial_index_hint).func);
             }
         }
-        if let Some(index) = self.listeners.iter().position(|x| x.uid == listener_handle.uid) {
+        if let Some(index) = self.listeners.iter().rposition(|x| x.uid == listener_handle.uid) {
             Some(self.listeners.remove(index).func)
         } else {
             None
