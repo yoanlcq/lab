@@ -1,6 +1,6 @@
 use crate::{listener::ListenerHandle, multicast::MulticastDelegateResult};
 
-type Func<T> = Box<dyn FnMut(T) -> MulticastDelegateResult + Send>;
+type Func<T> = Box<dyn FnMut(T) -> MulticastDelegateResult + Send + Sync /* NOSUBMIT */>;
 
 struct Listener<T> {
     func: Func<T>,
@@ -13,16 +13,13 @@ impl<T> core::fmt::Debug for Listener<T> {
     }
 }
 
-/*
-FIXME
 impl<T> Listener<T> {
     #[expect(dead_code, reason = "This is a static assert")]
     const fn must_be_send_and_sync() {
         const fn f<T: Send + Sync>() {}
-        f::<Self>()
+        f::<Self>();
     }
 }
- */
 
 pub struct Delegate<T> {
     listeners: Vec<Listener<T>>,

@@ -34,7 +34,7 @@ impl UntypedListenerHandle {
 #[expect(clippy::module_name_repetitions, reason = "We don't want it to be named just `Handle`")]
 pub struct ListenerHandle<T> {
     untyped: UntypedListenerHandle,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<fn() -> T>,
 }
 
 impl<T> ListenerHandle<T> {
@@ -90,13 +90,11 @@ impl<T> Ord for ListenerHandle<T> {
         self.untyped.cmp(&other.untyped)
     }
 }
-/*
-FIXME
+
 impl<T> ListenerHandle<T> {
     #[expect(dead_code, reason = "This is a static assert")]
     const fn must_be_send_and_sync() {
         const fn f<T: Send + Sync>() {}
-        f::<Self>()
+        f::<Self>();
     }
 }
-    */
