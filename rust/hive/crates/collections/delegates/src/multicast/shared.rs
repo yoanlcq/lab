@@ -1,4 +1,4 @@
-use paste::paste;
+use pastey::paste;
 
 mod pending_removal {
     use std::collections::HashSet;

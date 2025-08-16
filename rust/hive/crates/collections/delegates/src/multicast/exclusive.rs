@@ -1,4 +1,4 @@
-use paste::paste;
+use pastey::paste;
 
 #[macro_export]
 macro_rules! declare_exclusive_multicast_delegate {
