@@ -1,9 +1,21 @@
+//! "Exclusive" multicast delegates, best for single-threaded contexts.
+//! 
+//! Unlike those in the `shared` module, an "exclusive" multicast delegate is as simple as it gets: it's a `Vec` of boxed closures.
+//! 
+//! - All operations require exclusive (`&mut`) access. This makes it very predictable but possibly harder to use in large codebases.
+//!   You can of course wrap it in `RefCell` or `Mutex`, but beware of chain reactions that could cause a deadlock or panic.
+//! - Listeners are called from first to last.
+//! - Removing a listener is order-preserving.
+//! - When dropping the delegate, listeners are dropped in reverse order.
+
 use pastey::paste;
 
+/// Declare your own exclusive delegate types with as precise trait requirements as needed.
 #[macro_export]
 macro_rules! declare_exclusive_multicast_delegate {
-    ($visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
+    ($(#[$outer:meta])* $visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
         paste!{
+            $(#[$outer])* 
             $visibility type $Delegate = [<$Delegate _internal>]::Delegate;
 
             #[allow(dead_code, reason = "This lightens the load when $visibility is empty and the delegate type is not used")]
@@ -16,10 +28,11 @@ macro_rules! declare_exclusive_multicast_delegate {
             #[allow(dead_code, reason = "This lightens the load when $visibility is empty and the delegate type is not used")]
             #[expect(clippy::allow_attributes, reason = "allow(...) is necessary if $visibility is empty")]
             mod [<$Delegate _internal>] {
-                use $crate::multicast::MulticastDelegateResult;
+                use $crate::listener::ListenerReply;
                 use $crate::listener::UntypedListenerHandle;
+                use $crate::multicast::BroadcastStats;
 
-                type Func = Box<dyn $FnTrait($($Args),*) -> MulticastDelegateResult $(+ $ExtraTraits)*>;
+                type Func = Box<dyn $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
 
                 struct Listener {
                     func: Func,
@@ -40,7 +53,7 @@ macro_rules! declare_exclusive_multicast_delegate {
 
                 impl ListenerHandle {
                     #[must_use]
-                    pub fn generate_new(initial_index_hint: usize) -> Self {
+                    fn generate_new(initial_index_hint: usize) -> Self {
                         Self {
                             untyped: UntypedListenerHandle::generate_new(initial_index_hint),
                         }
@@ -51,13 +64,25 @@ macro_rules! declare_exclusive_multicast_delegate {
                     }
                 }
 
+                impl From<UntypedListenerHandle> for ListenerHandle {
+                    fn from(value: UntypedListenerHandle) -> Self {
+                        Self { untyped: value }
+                    }
+                }
+
+                impl From<ListenerHandle> for UntypedListenerHandle {
+                    fn from(value: ListenerHandle) -> Self {
+                        value.untyped
+                    }
+                }
+
                 pub struct Delegate {
                     listeners: Vec<Listener>,
                 }
 
+                /// Have a well-defined drop order where listeners are dropped from last to first
                 impl Drop for Delegate {
                     fn drop(&mut self) {
-                        // Have a well-defined drop order where listeners are dropped from last to first
                         for listener in core::mem::take(&mut self.listeners).into_iter().rev() {
                             drop(listener);
                         }
@@ -80,10 +105,30 @@ macro_rules! declare_exclusive_multicast_delegate {
                 }
 
                 impl Delegate {
+                    /// Creates a new delegate, doesn't perform any allocation.
                     #[must_use]
                     pub const fn new() -> Self {
                         Self { listeners: vec![] }
                     }
+                    #[must_use]
+                    pub fn with_capacity(capacity: usize) -> Self {
+                        Self { listeners: Vec::with_capacity(capacity) }
+                    }
+                    #[must_use]
+                    pub const fn len(&self) -> usize {
+                        self.listeners.len()
+                    }
+                    #[must_use]
+                    pub const fn capacity(&self) -> usize {
+                        self.listeners.capacity()
+                    }
+                    #[must_use]
+                    pub const fn is_empty(&self) -> bool {
+                        self.listeners.is_empty()
+                    }
+                    /// Removes a listener by handle, preserving ordering of the listeners list, returning `Some(...)` if it was found and removed.
+                    /// 
+                    /// This has O(N) complexity, but has an O(1) "happy path" when removals always occur from the end of the list.
                     pub fn remove(&mut self, listener_handle: &ListenerHandle) -> Option<Func> {
                         let listener_handle = listener_handle.untyped();
                         if let Some(listener) = self.listeners.get(listener_handle.initial_index_hint) {
@@ -97,21 +142,33 @@ macro_rules! declare_exclusive_multicast_delegate {
                             None
                         }
                     }
+                    /// Adds a listener to the end of the list.
+                    /// 
+                    /// `func` must return a `ListenerReply` indicating whether or not it should be removed from the list.
+                    /// This is useful when `func` has a clear "receiver" that may expire, or if it's designed as a one-shot alarm.
                     pub fn push(&mut self, func: Func) -> ListenerHandle {
                         let listener_handle = ListenerHandle::generate_new(self.listeners.len());
                         self.listeners.push(Listener { func, uid: listener_handle.untyped().uid });
                         listener_handle
                     }
-                    pub fn broadcast(&mut self, $(args: $Args),*) where $($Args: Copy),* {
-                        self.broadcast_cloning($({ let _: $Args; &args }),*);
+                    /// Broadcast (or "dispatch" or "invoke") this delegate, calling all listeners with the provided arguments to the function.
+                    /// 
+                    /// Listeners are called following the natural order in which they appear in the list.
+                    pub fn broadcast(&mut self, $(args: $Args),*) -> BroadcastStats where $($Args: Copy),* {
+                        self.broadcast_cloning($({ let _: $Args; &args }),*)
                     }
-                    pub fn broadcast_cloning(&mut self, $(args: &$Args),*) where $($Args: Clone),* {
+                    /// Same as `broadcast()` but the arguments are cloned. You should of course prefer `broadcast()` unless you have no choice.
+                    pub fn broadcast_cloning(&mut self, $(args: &$Args),*) -> BroadcastStats where $($Args: Clone),* {
                         let mut i = 0;
                         while i < self.listeners.len() {
                             match (self.listeners[i].func)($({ let _: $Args; args.clone() }),*) {
-                                MulticastDelegateResult::Keep => i += 1,
-                                MulticastDelegateResult::Remove => drop(self.listeners.remove(i)),
+                                ListenerReply::Keep => i += 1,
+                                ListenerReply::Remove => drop(self.listeners.remove(i)),
                             }
+                        }
+                        BroadcastStats {
+                            had_any_listener: !self.listeners.is_empty(),
+                            has_called_any_listener: !self.listeners.is_empty(),
                         }
                     }
                 }
@@ -120,8 +177,19 @@ macro_rules! declare_exclusive_multicast_delegate {
     }
 }
 
-declare_exclusive_multicast_delegate!(pub SimpleExclusiveMulticastDelegate, FnMut());
-declare_exclusive_multicast_delegate!(pub SimpleExclusiveMulticastDelegateSendAndSync, FnMut() + Send + Sync);
+declare_exclusive_multicast_delegate!{
+    /// An exclusive multicast delegate that takes no parameters.
+    pub SimpleExclusiveMulticastDelegate, FnMut()
+}
+
+declare_exclusive_multicast_delegate!{
+    /// An exclusive multicast delegate that takes no parameters, and is `Send` and `Sync`.
+    /// 
+    /// Compared to `SimpleExclusiveMulticastDelegate`, this one is given the longer name, because it is expected to be less commonly used.
+    /// 
+    /// Also consider using a "shared" delegate instead.
+    pub SimpleExclusiveMulticastDelegateSendAndSync, FnMut() + Send + Sync
+}
 
 impl SimpleExclusiveMulticastDelegateSendAndSync {
     #[expect(dead_code, reason = "This is a static assert")]

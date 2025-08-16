@@ -13,7 +13,7 @@ use core::num::NonZeroU32;
 use core::mem::ManuallyDrop;
 use core::ffi::CStr;
 use std::sync::Mutex;
-use delegates::multicast::MulticastDelegateResult;
+use delegates::listener::ListenerReply;
 
 use ash::vk;
 
@@ -248,7 +248,7 @@ impl VulkanApi {
                     let was_present = this.surfaces.lock().unwrap().remove(&surface);
                     assert!(was_present, "We are the only ones who manage the set of surfaces");
                 }
-                MulticastDelegateResult::Remove
+                ListenerReply::Remove
             }));
         } else {
             panic!("Surface was already existing??");

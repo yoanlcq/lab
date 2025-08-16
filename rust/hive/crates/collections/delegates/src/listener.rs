@@ -1,8 +1,29 @@
+//! Utilities related to listeners (or "subscribers")
+
 use core::sync::atomic::AtomicU64;
 use core::marker::PhantomData;
 
+/// Indicates whether or not a listener should be removed.
+/// 
+/// This exists to be clearer than just a `bool`, especially since it is the expected return value for multicast delegate listeners.
+#[expect(clippy::module_name_repetitions, reason = "We don't want it to be named just `Presence`")]
+#[must_use = "The delegate uses this to know if the listener hasn't expired"]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ListenerReply {
+    /// Keep the listener
+    Keep,
+    /// Remove the listener. This is useful when you know that the target object has expired and that there's no point in this listener being called again.
+    Remove,
+}
+
+/// A lightweight opaque handle that is a unique identifier for a listener (or "subscriber" if you will)
+/// 
+/// The uniqueness of the handle is limited to the current process, so it is not meant to be used outside of it.
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UntypedListenerHandle {
+    /// We can't solely rely on this index to identify a listener, because that listener's position may change as elements are removed from the container.
+    /// We could almost remove it to spare some space.
+    /// It brings the most value when listeners are only ever removed from the end of the container: i.e "push(a) -> push(b) -> remove(a) -> remove(a)", which I expect (but cannot verify) that it is the common case.
     pub(crate) initial_index_hint: usize,
     pub(crate) uid: u64,
 }
@@ -31,20 +52,26 @@ impl UntypedListenerHandle {
     }
 }
 
+/// A thin wrapper around `UntypedListenerHandle` that exists simply to increase type-safety
 #[expect(clippy::module_name_repetitions, reason = "We don't want it to be named just `Handle`")]
 pub struct ListenerHandle<T> {
     untyped: UntypedListenerHandle,
     phantom: PhantomData<fn() -> T>,
 }
 
-impl<T> ListenerHandle<T> {
-    #[must_use]
-    pub fn generate_new(initial_index_hint: usize) -> Self {
-        Self {
-            untyped: UntypedListenerHandle::generate_new(initial_index_hint),
-            phantom: PhantomData,
-        }
+impl<T> From<UntypedListenerHandle> for ListenerHandle<T> {
+    fn from(value: UntypedListenerHandle) -> Self {
+        Self { untyped: value, phantom: PhantomData }
     }
+}
+
+impl<T> From<ListenerHandle<T>> for UntypedListenerHandle {
+    fn from(value: ListenerHandle<T>) -> Self {
+        value.untyped
+    }
+}
+
+impl<T> ListenerHandle<T> {
     #[must_use]
     pub const fn untyped(&self) -> UntypedListenerHandle {
         self.untyped

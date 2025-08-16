@@ -130,7 +130,7 @@ impl WindowArc {
 
 impl Drop for WindowInner {
     fn drop(&mut self) {
-        self.pre_destroy_requested.broadcast();
+        _ = self.pre_destroy_requested.broadcast();
     }
 }
 
