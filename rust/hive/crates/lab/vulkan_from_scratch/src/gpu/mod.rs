@@ -16,8 +16,8 @@ pub enum Error {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// Just a newtype to enhance an Arc<Api> with better methods.
-/// The definition of this type will not ever change, it will always be an Arc<Api>.
+/// Just a newtype to enhance an `Arc<Api>` with better methods.
+/// The definition of this type will not ever change, it will always be an `Arc<Api>`.
 #[derive(Debug, Clone)]
 pub struct ApiArc(Arc<ApiInner>);
 
