@@ -136,7 +136,8 @@ impl VulkanApi {
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layer_names_raw: Vec<_> = layer_names.iter().map(|x| x.as_ptr()).collect();
 
-                let ash_window_required_extension_names = ash_window::enumerate_required_extensions(raw_window_handle::WindowsDisplayHandle::new().into())?;
+                #[cfg(windows)]
+                let ash_window_required_extension_names = [ash::khr::surface::NAME.as_ptr(), ash::khr::win32_surface::NAME.as_ptr()];
                 let required_extension_names: HashSet<&CStr> = ash_window_required_extension_names.iter().map(|x| CStr::from_ptr(*x)).collect();
                 let desired_extension_names: HashSet<&CStr> = [
                     ash::ext::debug_utils::NAME,
