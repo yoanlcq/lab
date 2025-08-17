@@ -43,6 +43,7 @@ trait ApiImpl: Debug + Send + Sync + AsAny {
 
 impl ApiArc {
     pub fn create(params: &ApiParams) -> Result<Self> {
+        let _zone = tracing_facade::span!("gpu::api::create").with_color(0x4d0303);
         let imp = Box::new(match params.spec {
             ApiSpec::Vulkan => imp_vulkan::VulkanApi::create(params),
         }?);
@@ -51,6 +52,7 @@ impl ApiArc {
         Ok(Self(arc))
     }
     pub fn create_device(&self, params: &DeviceParams) -> Result<DeviceArc> {
+        let _zone = tracing_facade::span!("gpu::device::create").with_color(0x750505);
         let imp = self.0.imp.create_device(params)?;
         Ok(DeviceArc(Arc::new(DeviceInner { imp })))
     }
@@ -70,6 +72,7 @@ impl DeviceArc {
         Ok(SwapChainArc(Arc::new(SwapChainInner { imp })))
     }
     pub fn test_upload_large_buffer(&self) -> Result<()> {
+        let _zone = tracing_facade::span!("gpu::test_upload_large_buffer").with_color(0x99321d);
         self.0.imp.test_upload_large_buffer()
     }
     pub fn set_frame_index(&self, frame_index: u64) -> Result<()> {

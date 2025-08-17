@@ -57,25 +57,16 @@ struct GpuThreadResult {
 }
 
 fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<GpuThreadResult> {
-    let api = {
-        let _zone = tracing_facade::span!("gpu::api_create").with_color(0x4d0303);
-        let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
-        startup_profiler.log_step("GPU API created");
-        api
-    };
+    let _zone = tracing_facade::span!("gpu_thread_work").with_color(0x210101);
 
-    let device = {
-        let _zone = tracing_facade::span!("gpu::device_create").with_color(0x750505);
-        let device = api.create_device(&DeviceParams {})?;
-        startup_profiler.log_step("GPU Device created");
-        device
-    };
+    let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
+    startup_profiler.log_step("GPU API created");
 
-    {
-        let _zone = tracing_facade::span!("gpu::test_upload_large_buffer").with_color(0x99321d);
-        device.test_upload_large_buffer()?;
-        startup_profiler.log_step("GPU Buffer uploaded");
-    };
+    let device = api.create_device(&DeviceParams {})?;
+    startup_profiler.log_step("GPU Device created");
+
+    device.test_upload_large_buffer()?;
+    startup_profiler.log_step("GPU Buffer uploaded");
 
     // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
     // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
@@ -101,8 +92,6 @@ pub fn main() -> gpu::Result<()> {
     let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
         std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
-            let _zone = tracing_facade::span!("gpu_thread_work").with_color(0x210101);
-
             #[expect(clippy::expect_used, reason = "This is desired, we are at the top level in another thread")]
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work")
         })?
@@ -115,12 +104,12 @@ pub fn main() -> gpu::Result<()> {
     window1.show()?;
     startup_profiler.log_step("Window showed");
 
+    tracing_manager.start_first_frame();
     startup_profiler.log_step("Main event loop starting");
 
     // At 300FPS, we have ((2^64) / (300 * 60 * 60 * 24 * 365)) = 2e9 years of runtime. So don't even think about std::num::Wrapping
     let mut frame_index = 0_u64;
     let mut gpu_thread_result = None;
-    tracing_manager.start_first_frame();
     loop {
         if let Some(t) = gpu_thread.take() {
             if t.is_finished() {
@@ -130,20 +119,17 @@ pub fn main() -> gpu::Result<()> {
             }
         }
 
+        if let Some(gpu_thread_result) = gpu_thread_result.as_ref() {
+            result_hole::consume!(gpu_thread_result.device.set_frame_index(frame_index));
+        }
+
         let params = PumpEventParams {
             timeout: gpu_thread.is_some().then_some(Duration::from_secs_f32(1. / 144.)),
             max_events: None,
         };
 
-        {
-            let _zone = tracing_facade::span!("pump_events").with_color(0x16033d);
-            if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
-                break;
-            }
-        }
-
-        if let Some(gpu_thread_result) = gpu_thread_result.as_ref() {
-            result_hole::consume!(gpu_thread_result.device.set_frame_index(frame_index));
+        if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
+            break;
         }
 
         frame_index += 1;

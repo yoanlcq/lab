@@ -4,7 +4,7 @@
     reason = "Using the Win32 API is necessarily an unsafe fest. Commenting every single one would add too much noise, actually harming \
               readability. Note that we are still able to re-enable this lint in specific places if we'd like"
 )]
-#![expect(unsafe_code, reason = "This is normal since we're using the Vulkan API")]
+#![expect(unsafe_code, reason = "This is normal since we're using the Win32 API")]
 
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::AtomicBool;
@@ -78,6 +78,7 @@ impl Win32HwndUserdata {
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let _zone = tracing_facade::span!("wndproc").with_color(0x16033d);
     match msg {
         WM_CLOSE => {
             // TODO: consider asking the user before exit and calling DestroyWindow() only if confirmed
@@ -139,7 +140,11 @@ impl DisplayImpl for Win32Display {
         unsafe {
             // https://stackoverflow.com/a/10866466/7972165
             // https://learn.microsoft.com/fr-fr/archive/blogs/larryosterman/things-you-shouldnt-do-part-4-msgwaitformultipleobjects-is-a-very-tricky-api
-            (MsgWaitForMultipleObjects(None, false, milliseconds, QS_ALLINPUT) == WAIT_OBJECT_0).then(|| {
+            let wait_result = {
+                let _zone = tracing_facade::span!("MsgWaitForMultipleObjects").with_color(0x16033d);
+                MsgWaitForMultipleObjects(None, false, milliseconds, QS_ALLINPUT)
+            };
+            (wait_result == WAIT_OBJECT_0).then(|| {
                 let mut result = PumpEventResult::default();
                 let mut msg = MSG::default();
                 while params.max_events.is_none_or(|max_events| result.nb_received_events < max_events) {
@@ -148,7 +153,10 @@ impl DisplayImpl for Win32Display {
                     }
 
                     let _is_translated = TranslateMessage(&raw const msg);
-                    let _value_returned_by_wndproc = DispatchMessageW(&raw const msg);
+                    {
+                        let _zone = tracing_facade::span!("DispatchMessageW").with_color(0x16033d);
+                        let _value_returned_by_wndproc = DispatchMessageW(&raw const msg);
+                    }
 
                     result.nb_received_events += 1;
                     if msg.message == WM_QUIT {
@@ -179,6 +187,7 @@ impl DisplayImpl for Win32Display {
         };
 
         let hwnd = unsafe {
+            let _zone = tracing_facade::span!("CreateWindowExW").with_color(0x16033d);
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "Virtual desktop coordinates are still within float integer range, so casts are lossless. This will be fine \
@@ -244,9 +253,12 @@ impl Win32Display {
             lpszClassName: windows::core::PCWSTR::from_raw(name.as_ptr()),
         };
 
-        let atom = unsafe { RegisterClassW(&raw const wndclass) };
-        if atom == 0 {
-            return Err(std::io::Error::last_os_error());
+        {
+            let _zone = tracing_facade::span!("RegisterClassW").with_color(0x16033d);
+            let atom = unsafe { RegisterClassW(&raw const wndclass) };
+            if atom == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
         }
 
         Ok(Win32WindowClass {
@@ -280,6 +292,7 @@ impl Win32Window {
             return Ok(false);
         }
 
+        let _zone = tracing_facade::span!("DestroyWindow").with_color(0x16033d);
         unsafe { DestroyWindow(self.hwnd.0) }?;
         Ok(true)
     }
@@ -312,6 +325,7 @@ struct Win32WindowClass {
 impl Drop for Win32WindowClass {
     fn drop(&mut self) {
         unsafe {
+            let _zone = tracing_facade::span!("UnregisterClassW").with_color(0x16033d);
             result_hole::consume!(UnregisterClassW(
                 windows::core::PCWSTR::from_raw(self.name.as_ptr()),
                 Some(self.hinstance.0),

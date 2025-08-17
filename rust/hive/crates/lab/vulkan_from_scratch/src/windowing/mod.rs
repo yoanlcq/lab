@@ -40,6 +40,7 @@ trait DisplayImpl: Debug + Send + Sync + AsAny {
 
 impl DisplayArc {
     pub fn open(params: &DisplayParams) -> Result<Self> {
+        let _zone = tracing_facade::span!("display::open").with_color(0x16033d);
         let arc = Arc::new(DisplayInner {
             #[cfg(windows)]
             imp: Box::new(imp_windows::Win32Display::open(params)?),
@@ -48,6 +49,7 @@ impl DisplayArc {
         Ok(Self(arc))
     }
     pub fn create_window(&self, params: &WindowParams) -> Result<WindowArc> {
+        let _zone = tracing_facade::span!("window::create").with_color(0x16033d);
         let arc = Arc::new(WindowInner {
             imp: self.0.imp.create_window(params)?,
             display: self.clone(),
@@ -60,6 +62,7 @@ impl DisplayArc {
     }
     #[must_use]
     pub fn pump_events(&self, params: &PumpEventParams) -> Option<PumpEventResult> {
+        let _zone = tracing_facade::span!("display::pump_events").with_color(0x16033d);
         self.0.imp.pump_events(params)
     }
     #[cfg(windows)]
@@ -115,6 +118,7 @@ impl WindowArc {
         self.0.display.clone()
     }
     pub fn show(&self) -> Result<()> {
+        let _zone = tracing_facade::span!("window::show").with_color(0x16033d);
         self.0.imp.show()
     }
     #[must_use]

@@ -127,7 +127,10 @@ impl VulkanApi {
     pub(super) fn create(_params: &ApiParams) -> Result<Self> {
         let allocator = None;
         let api_version = vk::make_api_version(0, 1, 0, 0);
-        let entry = unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?;
+        let entry = {
+            let _zone = tracing_facade::span!("ash::Entry::load").with_color(0x16033d);
+            unsafe { ash::Entry::load() }.map_err(std::io::Error::other)?
+        };
         unsafe {
             let supports_get_physical_device_properties2;
             let has_debug_utils;
@@ -182,6 +185,7 @@ impl VulkanApi {
                     .enabled_extension_names(&enabled_extension_names)
                     .enabled_layer_names(&layer_names_raw);
 
+                let _zone = tracing_facade::span!("vkCreateInstance").with_color(0x16033d);
                 entry
                     .create_instance(&create_info, allocator.as_ref())
                     .map_err(std::io::Error::other)?
@@ -503,6 +507,7 @@ impl ApiImpl for VulkanApi {
                 device_create_info = device_create_info.push_next(&mut enabled_features2);
             }
 
+            let _zone = tracing_facade::span!("vkCreateDevice").with_color(0x16033d);
             unsafe {
                 self.instance
                     .create_device(physical_device.physical_device, &device_create_info, self.allocator.as_ref())?
@@ -524,6 +529,7 @@ impl ApiImpl for VulkanApi {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::EXT_MEMORY_BUDGET;
             }
             create_info.vulkan_api_version = self.api_version;
+            let _zone = tracing_facade::span!("vmaCreateAllocator").with_color(0x16033d);
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(create_info) }?)
         };
 
