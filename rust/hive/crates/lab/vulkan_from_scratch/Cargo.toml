@@ -26,6 +26,7 @@ debugger = { path = "../../os/debugger" }
 result_hole = { path = "../../misc/result_hole" }
 weak_self = { path = "../../std_based/weak_self" }
 tracing_facade = { path = "../../tracing/tracing_facade" }
+mimalloc = "0.1.47"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
