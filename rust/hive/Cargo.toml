@@ -43,6 +43,9 @@ option_if_let_else = "allow"
 # Note, this lint goes against rustc's "unreachable-pub"
 redundant_pub_crate = "allow"
 
+# I liked this one, but unfortunately it wanted me to write 0x00ff_0000 instead of 0xff0000 for a hex color... The suggestion is actually less readable.
+unreadable_literal = "allow"
+
 #
 # Clippy "restriction" lints
 #

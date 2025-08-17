@@ -57,11 +57,29 @@ struct GpuThreadResult {
 }
 
 fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<GpuThreadResult> {
-    let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
-    startup_profiler.log_step("GPU API created");
-    let device = api.create_device(&DeviceParams {})?;
-    startup_profiler.log_step("GPU Device created");
-    device.test_upload_large_buffer()?;
+    let api = {
+        let zone = tracy_client::span!("gpu::api_create");
+        zone.emit_color(0x4d0303);
+        let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
+        startup_profiler.log_step("GPU API created");
+        api
+    };
+
+    let device = {
+        let zone = tracy_client::span!("gpu::device_create");
+        zone.emit_color(0x750505);
+        let device = api.create_device(&DeviceParams {})?;
+        startup_profiler.log_step("GPU Device created");
+        device
+    };
+
+    {
+        let zone = tracy_client::span!("gpu::test_upload_large_buffer");
+        zone.emit_color(0x99321d);
+        device.test_upload_large_buffer()?;
+        startup_profiler.log_step("GPU Buffer uploaded");
+    };
+
     // let _swapchain0 = device.create_swap_chain(&SwapChainParams { window: &window0 })?;
     // let _swapchain1 = device.create_swap_chain(&SwapChainParams { window: &window1 })?;
     Ok(GpuThreadResult { device })
@@ -79,11 +97,16 @@ fn make_window_params(index: u32) -> WindowParams {
 
 #[expect(clippy::missing_panics_doc, reason = "This function is for experimenting quickly")]
 pub fn main() -> gpu::Result<()> {
+    // StartupProfiler goes first because Tracy initialization takes some time and we want to capture that fact
     let startup_profiler = Arc::new(StartupProfiler::new());
+    let _tracy_client = tracy_client::Client::start();
 
     let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
         std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
+            let zone = tracy_client::span!("gpu_thread_work");
+            zone.emit_color(0x210101);
+
             #[expect(clippy::expect_used, reason = "This is desired, we are at the top level in another thread")]
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work")
         })?
@@ -114,8 +137,13 @@ pub fn main() -> gpu::Result<()> {
             timeout: gpu_thread.is_some().then_some(Duration::from_secs_f32(1. / 144.)),
             max_events: None,
         };
-        if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
-            break;
+
+        {
+            let zone = tracy_client::span!("pump_events");
+            zone.emit_color(0x16033d);
+            if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
+                break;
+            }
         }
 
         if let Some(gpu_thread_result) = gpu_thread_result.as_ref() {
@@ -123,6 +151,7 @@ pub fn main() -> gpu::Result<()> {
         }
 
         frame_index += 1;
+        tracy_client::frame_mark();
     }
 
     Ok(())
