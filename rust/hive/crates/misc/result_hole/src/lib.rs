@@ -14,10 +14,12 @@ use core::error::Error;
 use std::sync::LazyLock;
 
 use delegates::declare_shared_multicast_delegate;
+use source_line_info::SourceLineInfo;
 
 #[derive(Debug, Copy, Clone)]
 pub struct ErrorPayload<'a> {
     pub error: &'a dyn Error,
+    pub source_line_info: &'a SourceLineInfo,
     pub caller_may_use_ok: bool,
     pub caller_may_use_err: bool,
 }
@@ -44,32 +46,33 @@ impl ResultHole {
         f::<Self>();
     }
 
-    pub fn consume<T, E: Error>(&self, r: Result<T, E>) {
-        self.inspect_impl(&r, false, false);
+    pub fn consume<T, E: Error>(&self, r: Result<T, E>, source_line_info: &SourceLineInfo) {
+        self.inspect_impl(&r, source_line_info, false, false);
         drop(r);
     }
 
-    pub fn consume_err<T, E: Error>(&self, r: Result<T, E>) -> Option<T> {
-        self.inspect_impl(&r, true, false);
+    pub fn consume_err<T, E: Error>(&self, r: Result<T, E>, source_line_info: &SourceLineInfo) -> Option<T> {
+        self.inspect_impl(&r, source_line_info, true, false);
         r.ok()
     }
 
-    pub fn inspect<T, E: Error>(&self, r: Result<T, E>) -> Result<T, E> {
-        self.inspect_impl(&r, true, true);
+    pub fn inspect<T, E: Error>(&self, r: Result<T, E>, source_line_info: &SourceLineInfo) -> Result<T, E> {
+        self.inspect_impl(&r, source_line_info, true, true);
         r
     }
 
-    pub fn inspect_ref<'a, T, E: Error>(&'_ self, r: &'a Result<T, E>) -> &'a Result<T, E> {
-        self.inspect_impl(r, true, true);
+    pub fn inspect_ref<'a, T, E: Error>(&'_ self, r: &'a Result<T, E>, source_line_info: &SourceLineInfo) -> &'a Result<T, E> {
+        self.inspect_impl(r, source_line_info, true, true);
         r
     }
 
-    fn inspect_impl<T, E: Error>(&self, r: &Result<T, E>, caller_may_use_ok: bool, caller_may_use_err: bool) {
-        if let Err(e) = r.as_ref() {
-            eprintln!("Discarded result: {e}");
+    fn inspect_impl<T, E: Error>(&self, r: &Result<T, E>, source_line_info: &SourceLineInfo, caller_may_use_ok: bool, caller_may_use_err: bool) {
+        if let Err(error) = r.as_ref() {
+            eprintln!("Discarded result at ({source_line_info}): {error}");
             debugger::breakpoint!();
             _ = self.on_error.broadcast(&ErrorPayload {
-                error: e,
+                error,
+                source_line_info,
                 caller_may_use_ok,
                 caller_may_use_err,
             });
@@ -79,18 +82,30 @@ impl ResultHole {
 
 pub static GLOBAL: LazyLock<ResultHole> = LazyLock::new(ResultHole::new);
 
-pub fn consume<T, E: Error>(r: Result<T, E>) {
-    GLOBAL.consume(r);
+pub mod private_reexports {
+    pub use source_line_info::source_line_info;
 }
 
-pub fn consume_err<T, E: Error>(r: Result<T, E>) -> Option<T> {
-    GLOBAL.consume_err(r)
+#[macro_export]
+macro_rules! consume {
+    ($result:expr) => { $crate::GLOBAL.consume($result, &$crate::private_reexports::source_line_info!()) };
+    ($result_hole:expr, $result:expr) => { $result_hole.consume($result, $crate::private_reexports::source_line_info!()) };
 }
 
-pub fn inspect<T, E: Error>(r: Result<T, E>) -> Result<T, E> {
-    GLOBAL.inspect(r)
+#[macro_export]
+macro_rules! consume_err {
+    ($result:expr) => { $crate::GLOBAL.consume_err($result, &$crate::private_reexports::source_line_info!()) };
+    ($result_hole:expr, $result:expr) => { $result_hole.consume_err($result, &$crate::private_reexports::source_line_info!()) };
 }
 
-pub fn inspect_ref<T, E: Error>(r: &Result<T, E>) -> &Result<T, E> {
-    GLOBAL.inspect_ref(r)
+#[macro_export]
+macro_rules! inspect {
+    ($result:expr) => { $crate::GLOBAL.inspect($result, &$crate::private_reexports::source_line_info!()) };
+    ($result_hole:expr, $result:expr) => { $result_hole.inspect($result, &$crate::private_reexports::source_line_info!()) };
+}
+
+#[macro_export]
+macro_rules! inspect_ref {
+    ($result:expr) => { $crate::GLOBAL.inspect_ref($result, &$crate::private_reexports::source_line_info!()) };
+    ($result_hole:expr, $result:expr) => { $result_hole.inspect_ref($result, &$crate::private_reexports::source_line_info!()) };
 }

@@ -83,7 +83,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // TODO: consider asking the user before exit and calling DestroyWindow() only if confirmed
             if let Some(window) = Win32HwndUserdata::get(hwnd).and_then(|x| x.upgrade()) {
                 let win32_window = Win32Window::from_window_inner(&window);
-                result_hole::consume(win32_window.destroy());
+                result_hole::consume!(win32_window.destroy());
                 LRESULT(0)
             } else {
                 eprintln!("{hwnd:?} received WM_CLOSE but we couldn't get its userdata");
@@ -270,7 +270,7 @@ pub(super) struct Win32Window {
 
 impl Drop for Win32Window {
     fn drop(&mut self) {
-        result_hole::consume(self.destroy());
+        result_hole::consume!(self.destroy());
     }
 }
 
@@ -312,7 +312,7 @@ struct Win32WindowClass {
 impl Drop for Win32WindowClass {
     fn drop(&mut self) {
         unsafe {
-            result_hole::consume(UnregisterClassW(
+            result_hole::consume!(UnregisterClassW(
                 windows::core::PCWSTR::from_raw(self.name.as_ptr()),
                 Some(self.hinstance.0),
             ));

@@ -107,7 +107,7 @@ impl Debug for VulkanApi {
 impl Drop for VulkanApi {
     fn drop(&mut self) {
         unsafe {
-            if let Ok(surfaces) = result_hole::inspect(self.surfaces.lock()) {
+            if let Ok(surfaces) = result_hole::inspect!(self.surfaces.lock()) {
                 for surface in surfaces.iter() {
                     self.surface_loader.destroy_surface(*surface, self.allocator.as_ref());
                 }
@@ -606,7 +606,7 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         let allocator = self.api().allocator;
         unsafe {
-            result_hole::consume(self.device.device_wait_idle());
+            result_hole::consume!(self.device.device_wait_idle());
             ManuallyDrop::drop(&mut self.vma_allocator);
             self.device.destroy_device(allocator.as_ref());
         }
@@ -642,7 +642,7 @@ impl DeviceImpl for VulkanDevice {
                     .object_handle(buffer)
                     .object_name(c"Test buffer");
 
-                result_hole::consume(debug_utils_loader.set_debug_utils_object_name(&name_info));
+                result_hole::consume!(debug_utils_loader.set_debug_utils_object_name(&name_info));
             }
 
             // TODO: vk_mem doesn't expose this function supported by VMA. Consider adding it?
@@ -657,7 +657,7 @@ impl DeviceImpl for VulkanDevice {
 
             self.vma_allocator.unmap_memory(&mut allocation);
 
-            result_hole::consume(self.vma_allocator.flush_allocation(&allocation, 0, size as u64));
+            result_hole::consume!(self.vma_allocator.flush_allocation(&allocation, 0, size as u64));
 
             self.vma_allocator.destroy_buffer(buffer, &mut allocation);
 
