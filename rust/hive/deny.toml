@@ -10,8 +10,39 @@ ignore = [
 ]
 
 [bans]
+# temp
+multiple-versions = "warn"
 deny = [
-    { name = "winapi", reason = "Use the window-rs crate instead. Best having only one of those huge crates instead of both" }
+    # We allow "nu-ansi-term" because it's used indirectly by "loom" which we don't use (it requires "cfg(loom)" but tooling still conservatively assumes that we depend on it)
+    { name = "winapi", reason = "Use the window-rs crate instead. Best having only one of those huge crates instead of both", wrappers = ["nu-ansi-term"] }
+]
+skip-tree = [
+    "loom",
+    # This is overkill, but look at this:
+    # Because the windows crate is not at 1.0, any change in minor version is considered "breaking". We'll never get out of this.
+    # 
+    #  ├ windows_x86_64_msvc v0.52.6
+    #  └── windows-targets v0.52.6
+    #      ├── parking_lot_core v0.9.11
+    #      │   └── parking_lot v0.12.4
+    #      │       ├── delegates v0.1.0
+    #      │       │   ├── result_hole v0.1.0
+    #      │       │   │   └── vulkan_from_scratch v0.1.0
+    #      │       │   └── vulkan_from_scratch v0.1.0 (*)
+    #      │       ├── huge_virtual_memory_alloc v0.1.0
+    #      │       └── research_lab v0.1.0
+    #      └── tracy-client-sys v0.26.1
+    #          └── tracy-client v0.18.2
+    #              └── tracing_facade v0.1.0
+    #                  └── vulkan_from_scratch v0.1.0 (*)
+    #  ├ windows_x86_64_msvc v0.53.0
+    #  └── windows-targets v0.53.3
+    #      └── libloading v0.8.8
+    #          └── ash v0.38.0+1.3.281
+    #              ├── vk-mem v0.4.0
+    #              │   └── vulkan_from_scratch v0.1.0
+    #              └── vulkan_from_scratch v0.1.0 (*)
+    "windows-targets"
 ]
 
 [licenses]
