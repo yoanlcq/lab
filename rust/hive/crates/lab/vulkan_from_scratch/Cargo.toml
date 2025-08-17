@@ -25,7 +25,7 @@ as_any = { path = "../../std_based/as_any" }
 debugger = { path = "../../os/debugger" }
 result_hole = { path = "../../misc/result_hole" }
 weak_self = { path = "../../std_based/weak_self" }
-tracy-client = "0.18.2"
+tracing_facade = { path = "../../tracing/tracing_facade" }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"

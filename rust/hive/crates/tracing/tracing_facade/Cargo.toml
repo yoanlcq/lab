@@ -1,0 +1,11 @@
+[package]
+name = "tracing_facade"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tracy-client = "0.18.2"
+
+[lints]
+workspace = true

@@ -58,24 +58,21 @@ struct GpuThreadResult {
 
 fn gpu_thread_work(startup_profiler: &StartupProfiler) -> gpu::Result<GpuThreadResult> {
     let api = {
-        let zone = tracy_client::span!("gpu::api_create");
-        zone.emit_color(0x4d0303);
+        let _zone = tracing_facade::span!("gpu::api_create").with_color(0x4d0303);
         let api = ApiArc::create(&ApiParams { spec: ApiSpec::Vulkan })?;
         startup_profiler.log_step("GPU API created");
         api
     };
 
     let device = {
-        let zone = tracy_client::span!("gpu::device_create");
-        zone.emit_color(0x750505);
+        let _zone = tracing_facade::span!("gpu::device_create").with_color(0x750505);
         let device = api.create_device(&DeviceParams {})?;
         startup_profiler.log_step("GPU Device created");
         device
     };
 
     {
-        let zone = tracy_client::span!("gpu::test_upload_large_buffer");
-        zone.emit_color(0x99321d);
+        let _zone = tracing_facade::span!("gpu::test_upload_large_buffer").with_color(0x99321d);
         device.test_upload_large_buffer()?;
         startup_profiler.log_step("GPU Buffer uploaded");
     };
@@ -99,13 +96,12 @@ fn make_window_params(index: u32) -> WindowParams {
 pub fn main() -> gpu::Result<()> {
     // StartupProfiler goes first because Tracy initialization takes some time and we want to capture that fact
     let startup_profiler = Arc::new(StartupProfiler::new());
-    let _tracy_client = tracy_client::Client::start();
+    let tracing_manager = tracing_facade::TracingManager::start();
 
     let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
         std::thread::Builder::new().name("GPU API thread".to_owned()).spawn(move || {
-            let zone = tracy_client::span!("gpu_thread_work");
-            zone.emit_color(0x210101);
+            let _zone = tracing_facade::span!("gpu_thread_work").with_color(0x210101);
 
             #[expect(clippy::expect_used, reason = "This is desired, we are at the top level in another thread")]
             gpu_thread_work(&startup_profiler).expect("Something failed in the GPU thread work")
@@ -124,6 +120,7 @@ pub fn main() -> gpu::Result<()> {
     // At 300FPS, we have ((2^64) / (300 * 60 * 60 * 24 * 365)) = 2e9 years of runtime. So don't even think about std::num::Wrapping
     let mut frame_index = 0_u64;
     let mut gpu_thread_result = None;
+    tracing_manager.start_first_frame();
     loop {
         if let Some(t) = gpu_thread.take() {
             if t.is_finished() {
@@ -139,8 +136,7 @@ pub fn main() -> gpu::Result<()> {
         };
 
         {
-            let zone = tracy_client::span!("pump_events");
-            zone.emit_color(0x16033d);
+            let _zone = tracing_facade::span!("pump_events").with_color(0x16033d);
             if display.pump_events(&params).is_some_and(|r| r.exit_requested) {
                 break;
             }
@@ -151,7 +147,7 @@ pub fn main() -> gpu::Result<()> {
         }
 
         frame_index += 1;
-        tracy_client::frame_mark();
+        tracing_manager.end_frame();
     }
 
     Ok(())

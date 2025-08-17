@@ -9,9 +9,11 @@ members = [
     "crates/misc/result_hole",
     "crates/os/debugger",
     "crates/os/virtual_memory",
-    "crates/std_based/as_any", "crates/std_based/source_line_info",
+    "crates/std_based/as_any",
+    "crates/std_based/source_line_info",
     "crates/std_based/unique_ptr",
     "crates/std_based/weak_self",
+    "crates/tracing/tracing_facade",
 ]
 
 [profile.release]

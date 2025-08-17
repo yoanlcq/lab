@@ -11,15 +11,16 @@ ignore = [
 
 [bans]
 deny = [
-    { name = "winapi", reason = "Use the window-rs crate instead" }
+    { name = "winapi", reason = "Use the window-rs crate instead. Best having only one of those huge crates instead of both" }
 ]
 
 [licenses]
 allow = [
-    "MIT",
     "Apache-2.0",
-    "Unicode-3.0",
+    "BSD-3-Clause",
     "ISC",
+    "MIT",
+    "Unicode-3.0",
 ]
 
 [licenses.private]
