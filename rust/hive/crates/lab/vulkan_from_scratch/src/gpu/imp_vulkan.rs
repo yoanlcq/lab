@@ -154,20 +154,26 @@ impl VulkanApi {
                     required_extension_names.insert(ash::khr::get_physical_device_properties2::NAME.as_ptr());
                 }
 
-                let extension_properties = entry.enumerate_instance_extension_properties(None)?;
-                let supported_extension_names: HashSet<&CStr> = extension_properties.iter().filter_map(|x| x.extension_name_as_c_str().ok()).collect();
+                let enabled_extension_names: Vec<*const _> = {
+                    let extension_properties = { 
+                        let _zone = tracing_facade::span!("vkEnumerateInstanceExtensionProperties").with_color(0x16033d);
+                        entry.enumerate_instance_extension_properties(None)?
+                    };
 
-                let enabled_extension_names: HashSet<&CStr> = required_extension_names.intersection(&supported_extension_names).copied().collect();
-                if enabled_extension_names.len() < required_extension_names.len() {
-                    return Err(std::io::Error::other("Some required instance extensions are not supported").into());
-                }
+                    let supported_extension_names: HashSet<&CStr> = extension_properties.iter().filter_map(|x| x.extension_name_as_c_str().ok()).collect();
 
-                let enabled_extension_names: HashSet<&CStr> = enabled_extension_names.into_iter().chain(desired_extension_names.intersection(&supported_extension_names).copied()).collect();
+                    let enabled_extension_names: HashSet<&CStr> = required_extension_names.intersection(&supported_extension_names).copied().collect();
+                    if enabled_extension_names.len() < required_extension_names.len() {
+                        return Err(std::io::Error::other("Some required instance extensions are not supported").into());
+                    }
 
-                supports_get_physical_device_properties2 = enabled_extension_names.contains(ash::khr::get_physical_device_properties2::NAME);
-                has_debug_utils = enabled_extension_names.contains(ash::ext::debug_utils::NAME);
+                    let enabled_extension_names: HashSet<&CStr> = enabled_extension_names.into_iter().chain(desired_extension_names.intersection(&supported_extension_names).copied()).collect();
 
-                let enabled_extension_names: Vec<*const _> = enabled_extension_names.into_iter().map(CStr::as_ptr).collect();
+                    supports_get_physical_device_properties2 = enabled_extension_names.contains(ash::khr::get_physical_device_properties2::NAME);
+                    has_debug_utils = enabled_extension_names.contains(ash::ext::debug_utils::NAME);
+
+                    enabled_extension_names.into_iter().map(CStr::as_ptr).collect()
+                };
 
                 let application_info = vk::ApplicationInfo::default()
                     .api_version(api_version)
@@ -175,6 +181,7 @@ impl VulkanApi {
                     .application_version(0)
                     .engine_name(c"NoEngine")
                     .engine_version(0);
+
                 let create_info = vk::InstanceCreateInfo::default()
                     .flags(if cfg!(any(target_os = "macos", target_os = "ios")) {
                         vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
@@ -529,7 +536,6 @@ impl ApiImpl for VulkanApi {
                 create_info.flags |= vk_mem::AllocatorCreateFlags::EXT_MEMORY_BUDGET;
             }
             create_info.vulkan_api_version = self.api_version;
-            let _zone = tracing_facade::span!("vmaCreateAllocator").with_color(0x16033d);
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(create_info) }?)
         };
 
