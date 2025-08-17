@@ -4,7 +4,7 @@
 use std::{alloc::Layout, marker::PhantomData, mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull, sync::atomic::{AtomicPtr, AtomicUsize}};
 
 mod workarounds {
-    use std::{mem::MaybeUninit, num::NonZero, ptr::NonNull};
+    use std::{mem::MaybeUninit, num::{NonZero, NonZeroUsize}, ptr::NonNull};
 
     // Replacement for NonNull<[T]>::as_non_null_ptr() (#[unstable(feature = "slice_ptr_get", issue = "74265")])
     pub const fn non_null_slice_ptr<T>(p: NonNull<[T]>) -> NonNull<T> {
@@ -17,10 +17,15 @@ mod workarounds {
 
     // #[unstable(feature = "nonnull_provenance", issue = "135243")]
     #[must_use]
-    pub const fn nonnull_without_provenance<T>(addr: NonZero<usize>) -> NonNull<T> {
-        let pointer = std::ptr::without_provenance_mut(addr.get());
+    pub const fn sentinel<T>() -> NonNull<T> {
+        let pointer = std::ptr::without_provenance_mut(usize::MAX);
         // SAFETY: we know `addr` is non-zero.
         unsafe { NonNull::new_unchecked(pointer) }
+    }
+
+    #[must_use]
+    pub fn is_sentinel<T>(p: NonNull<T>) -> bool {
+        p.addr() == NonZeroUsize::MAX
     }
 
     #[test]
@@ -82,7 +87,7 @@ impl<T> Drop for RelocatableVecStrongRef<T> {
             let arena_strong_ref = suballocation_header_inner.arena_strong_ref.take().unwrap();
             let generation = suballocation_header_inner.generation.wrapping_add(1);
             *suballocation_header_inner = SuballocationHeaderInner {
-                suballocation_within_arena: NonNull::slice_from_raw_parts(workarounds::nonnull_without_provenance(NonZeroUsize::MAX), 0),
+                suballocation_within_arena: NonNull::slice_from_raw_parts(workarounds::sentinel(), 0),
                 strong_ref_count: 0,
                 element_layout: Layout::new::<u8>(),
                 arena_strong_ref: None,
@@ -116,7 +121,7 @@ impl<T> RelocatableVecWeakRef<T> {
     pub fn new() -> Self {
         Self {
             arena_weak_ref: ArenaWeakRef::new(),
-            suballocation_header_ptr: workarounds::nonnull_without_provenance(NonZeroUsize::MAX),
+            suballocation_header_ptr: workarounds::sentinel(),
             generation: usize::MAX,
             phantom: Default::default(),
         }
@@ -202,7 +207,7 @@ impl ArenaHeader {
         arena_header.suballocation_headers_free_list = arena_header.create_relocatable_vec_internal_to_this_arena().map(parking_lot::Mutex::new);
         assert_eq!(arena_header.strong_ref_count.load(std::sync::atomic::Ordering::SeqCst), 1, "After creating internal structures, the arena's strong ref count must still be 1");
         let arena_header_ptr = NonNull::from(arena_header);
-        assert_ne!(arena_header_ptr.addr(), NonZeroUsize::MAX);
+        assert!(!workarounds::is_sentinel(arena_header_ptr));
         ArenaStrongRef { arena_header_ptr, phantom: PhantomData }
     }
     pub fn client_area(&self) -> NonNull<[u8]> {
@@ -293,11 +298,11 @@ impl Default for ArenaWeakRef {
 impl ArenaWeakRef {
     pub const fn new() -> Self {
         Self {
-            arena_header_ptr: workarounds::nonnull_without_provenance(NonZeroUsize::MAX),
+            arena_header_ptr: workarounds::sentinel(),
         }
     }
     pub fn is_dangling(&self) -> bool {
-        self.arena_header_ptr.addr() == NonZeroUsize::MAX
+        workarounds::is_sentinel(self.arena_header_ptr)
     }
     fn arena_header(&self) -> Option<&ArenaHeader> {
         if self.is_dangling() {
