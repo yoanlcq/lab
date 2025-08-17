@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/collections/delegates",
     "crates/collections/hive",
-    "crates/collections/huge",
+    "crates/collections/huge_virtual_memory_alloc",
     "crates/lab/research_lab",
     "crates/lab/vulkan_from_scratch",
     "crates/misc/result_hole",
