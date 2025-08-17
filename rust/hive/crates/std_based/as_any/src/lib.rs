@@ -21,14 +21,14 @@
 //! }
 //! 
 //! // Instantiate a concrete logger
-//! let my_concrete_logger = ConcreteLogger;
+//! let concrete_logger = ConcreteLogger;
 //! 
 //! // Get a trait object from it (this is what will generally be used in the codebase)
-//! let logger: &dyn AbstractLogger = &my_concrete_logger;
+//! let logger: &dyn AbstractLogger = &concrete_logger;
 //! 
 //! // If you'd like to cast it back to a ConcreteLogger if possible, you can use `as_any()`.
 //! let downcast_result = logger.as_any().downcast_ref::<ConcreteLogger>().unwrap();
-//! assert!(core::ptr::eq(&my_concrete_logger, downcast_result));
+//! assert!(core::ptr::eq(&concrete_logger, downcast_result));
 //! ```
  
 #![no_std]
