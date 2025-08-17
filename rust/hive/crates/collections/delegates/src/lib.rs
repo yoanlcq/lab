@@ -22,3 +22,12 @@
 
 pub mod multicast;
 pub mod listener;
+
+/// This module exists only so that macros from this crate work in other crates. Do not use it.
+/// 
+/// It is only public out of necessity.
+#[doc(hidden)]
+pub mod private_reexports {
+    pub use pastey;
+    pub use parking_lot;
+}

@@ -8,13 +8,11 @@
 //! - Removing a listener is order-preserving.
 //! - When dropping the delegate, listeners are dropped in reverse order.
 
-use pastey::paste;
-
 /// Declare your own exclusive delegate types with as precise trait requirements as needed.
 #[macro_export]
 macro_rules! declare_exclusive_multicast_delegate {
     ($(#[$outer:meta])* $visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
-        paste!{
+        $crate::private_reexports::pastey::paste!{
             $(#[$outer])* 
             $visibility type $Delegate = [<$Delegate _internal>]::Delegate;
 
@@ -31,6 +29,8 @@ macro_rules! declare_exclusive_multicast_delegate {
                 use $crate::listener::ListenerReply;
                 use $crate::listener::UntypedListenerHandle;
                 use $crate::multicast::BroadcastStats;
+                #[allow(unused_imports, reason = "This is actually required for convenience for callers")]
+                use super::*;
 
                 type Func = Box<dyn $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
 

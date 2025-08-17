@@ -24,8 +24,12 @@ pub struct UntypedListenerHandle {
     /// We can't solely rely on this index to identify a listener, because that listener's position may change as elements are removed from the container.
     /// We could almost remove it to spare some space.
     /// It brings the most value when listeners are only ever removed from the end of the container: i.e "push(a) -> push(b) -> remove(a) -> remove(a)", which I expect (but cannot verify) that it is the common case.
-    pub(crate) initial_index_hint: usize,
-    pub(crate) uid: u64,
+    /// 
+    /// NOTE: This is public only out of necessity for macro expansion in other crates, but is not part of the public API. Please do not use it.
+    pub initial_index_hint: usize,
+
+    /// NOTE: This is public only out of necessity for macro expansion in other crates, but is not part of the public API. Please do not use it.
+    pub uid: u64,
 }
 
 impl UntypedListenerHandle {
@@ -39,6 +43,7 @@ impl UntypedListenerHandle {
 static LAST_LISTENER_UID: AtomicU64 = AtomicU64::new(0);
 
 impl UntypedListenerHandle {
+    /// NOTE: This is public only out of necessity for macro expansion in other crates, but is not part of the public API. Please do not use it.
     #[must_use]
     pub fn generate_new(initial_index_hint: usize) -> Self {
         Self {
@@ -46,8 +51,9 @@ impl UntypedListenerHandle {
             uid: LAST_LISTENER_UID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
         }
     }
+    /// NOTE: This is public only out of necessity for macro expansion in other crates, but is not part of the public API. Please do not use it.
     #[must_use]
-    pub(crate) const fn from_parts(initial_index_hint: usize, uid: u64) -> Self {
+    pub const fn from_parts(initial_index_hint: usize, uid: u64) -> Self {
         Self { initial_index_hint, uid }
     }
 }

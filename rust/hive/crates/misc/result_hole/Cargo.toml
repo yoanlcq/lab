@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 debugger = { path = "../../os/debugger" }
+delegates = { path = "../../collections/delegates" }
 
 [lints]
 workspace = true

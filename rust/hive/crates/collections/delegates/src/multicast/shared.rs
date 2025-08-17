@@ -3,36 +3,39 @@
 //! Because such delegates are typically used a lot in large codebases, it is important that they offer strong guarantees about their behavior.
 //! This is why the implementation is very careful about many details; the slightest modification may be a breaking change in the most advanced use cases.
 
-use pastey::paste;
-
-mod pending_removal {
+/// Just like `private_reexports`, this module is only public out of necessity for macro expansion in other crates, but is not part of the public API.
+#[doc(hidden)]
+pub mod pending_removal {
     use std::collections::HashSet;
 
     use crate::listener::UntypedListenerHandle;
 
     /// The point is to preserve the order of removals but also have an efficient `contains()` implementation
     #[derive(Debug, Default)]
-    pub(super) struct PendingRemoval {
+    pub struct PendingRemoval {
         ordered_listener_handles: Vec<UntypedListenerHandle>,
         set_of_uids: HashSet<u64>,
     }
 
     impl PendingRemoval {
-        pub(super) fn with_capacity(capacity: usize) -> Self {
+        #[must_use]
+        pub fn with_capacity(capacity: usize) -> Self {
             Self {
                 ordered_listener_handles: Vec::with_capacity(capacity),
                 set_of_uids: HashSet::with_capacity(capacity),
             }
         }
-        pub(super) fn push(&mut self, listener_handle: UntypedListenerHandle) {
+        pub fn push(&mut self, listener_handle: UntypedListenerHandle) {
             if self.set_of_uids.insert(listener_handle.uid) {
                 self.ordered_listener_handles.push(listener_handle);
             }
         }
-        pub(super) fn contains_listener_uid(&self, uid: u64) -> bool {
+        #[must_use]
+        pub fn contains_listener_uid(&self, uid: u64) -> bool {
             self.set_of_uids.contains(&uid)
         }
-        pub(super) fn into_inner_listener_handles_vec(self) -> Vec<UntypedListenerHandle> {
+        #[must_use]
+        pub fn into_inner_listener_handles_vec(self) -> Vec<UntypedListenerHandle> {
             self.ordered_listener_handles
         }
     }
@@ -44,7 +47,7 @@ mod pending_removal {
 #[macro_export]
 macro_rules! declare_shared_multicast_delegate {
     ($(#[$outer:meta])* $visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
-        paste!{
+        $crate::private_reexports::pastey::paste!{
             $(#[$outer])* 
             $visibility type $Delegate = [<$Delegate _internal>]::Delegate;
 
@@ -59,9 +62,11 @@ macro_rules! declare_shared_multicast_delegate {
             #[expect(clippy::allow_attributes, reason = "allow(...) is necessary if $visibility is empty")]
             mod [<$Delegate _internal>] {
                 use core::cell::RefCell;
-                use parking_lot::{Mutex, ReentrantMutex, ReentrantMutexGuard};
+                use $crate::private_reexports::parking_lot::{Mutex, ReentrantMutex, ReentrantMutexGuard};
                 use $crate::{listener::{UntypedListenerHandle, ListenerReply}, multicast::shared::pending_removal::PendingRemoval};
                 use $crate::multicast::BroadcastStats;
+                #[allow(unused_imports, reason = "This is actually required for convenience for callers")]
+                use super::*;
 
                 type Func = Box<dyn $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
 
@@ -257,7 +262,6 @@ macro_rules! declare_shared_multicast_delegate {
                     /// - **Immediacy**: When `broadcast()` acquires the lock, all listeners are called immediately, even if this call was recursive (implying we were in already in the middle of broadcasting something else).
                     /// - **Added listeners will miss the train**: Any listener added **during** a call to `broadcast()` will not be called for that one. Doing so would require extra complexity and overhead.
                     /// - **The order of removals is always respected**. To guarantee this, returning `ListenerReply::Remove` will add to the list of pending removals, as if `remove()` was called.
-                    /// 
                     pub fn broadcast(&self, $(args: $Args),*) -> BroadcastStats where $($Args: Copy),* {
                         self.broadcast_impl(self.listeners.lock(), $({ let _: $Args; &args }),*)
                     }
