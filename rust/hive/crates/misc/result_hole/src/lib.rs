@@ -3,7 +3,7 @@
 //! This can come up in some situations:
 //! - A function call that fails 1% of the time due to factors outside of your control (such as graphics API results);
 //! - When there is no good way to handle the `Err(...)` case but you don't want to panic either (example: some uses of `std::sync::Mutex::lock()`).
-//! - The result occurs in a inconvenient place such as a system callback or a `Drop` implementation.
+//! - The result occurs in an inconvenient place such as a system callback or a `Drop` implementation.
 //! 
 //! The primary purpose of this crate is to provide a "standardized" way of dealing with those cases.
 //! Then, if it ever becomes an issue, you can easily find all places where you call this crate's API, and/or modify this crate's behavior to fit your needs.
