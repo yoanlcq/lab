@@ -1,4 +1,3 @@
-#![feature(allocator_api)]
 #![expect(unsafe_code, reason = "Necessary for memory management")]
 
 extern crate alloc;
