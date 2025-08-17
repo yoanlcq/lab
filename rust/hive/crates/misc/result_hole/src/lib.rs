@@ -23,7 +23,7 @@ pub struct ErrorPayload<'a> {
 }
 
 declare_shared_multicast_delegate!{
-    pub OnError<>, Fn<'a>(&'a ErrorPayload<'a>) + Send
+    pub OnError, Fn<'a>(&'a ErrorPayload<'a>) + Send
 }
 
 #[derive(Debug, Default)]
