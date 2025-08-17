@@ -11,10 +11,10 @@
 /// Declare your own exclusive delegate types with as precise trait requirements as needed.
 #[macro_export]
 macro_rules! declare_exclusive_multicast_delegate {
-    ($(#[$outer:meta])* $visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
+    ($(#[$outer:meta])* $visibility:vis $Delegate:ident $(<$($delegatelifetimes:lifetime),* $($delegatetypeparams:ident),*>)?, $FnTrait:ident $(<$($argslifetimes:lifetime),*>)? ($($Args:ty),*) $(+ $ExtraTraits:path)*) => {
         $crate::private_reexports::pastey::paste!{
             $(#[$outer])* 
-            $visibility type $Delegate = [<$Delegate _internal>]::Delegate;
+            $visibility type $Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? = [<$Delegate _internal>]::Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)?;
 
             #[allow(dead_code, reason = "This lightens the load when $visibility is empty and the delegate type is not used")]
             #[expect(clippy::allow_attributes, reason = "allow(...) is necessary if $visibility is empty")]
@@ -32,14 +32,14 @@ macro_rules! declare_exclusive_multicast_delegate {
                 #[allow(unused_imports, reason = "This is actually required for convenience for callers")]
                 use super::*;
 
-                type Func = Box<dyn $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
+                type Func $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? = Box<dyn $(for<$($argslifetimes),*>)? $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
 
-                struct Listener {
-                    func: Func,
+                struct Listener $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
+                    func: Func $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)?,
                     uid: u64,
                 }
 
-                impl core::fmt::Debug for Listener {
+                impl $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? core::fmt::Debug for Listener $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                         let Self { func: _, ref uid } = *self;
                         f.debug_struct("Listener").field("uid", &uid).finish_non_exhaustive()
@@ -76,12 +76,12 @@ macro_rules! declare_exclusive_multicast_delegate {
                     }
                 }
 
-                pub struct Delegate {
-                    listeners: Vec<Listener>,
+                pub struct Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
+                    listeners: Vec<Listener $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)?>,
                 }
 
                 /// Have a well-defined drop order where listeners are dropped from last to first
-                impl Drop for Delegate {
+                impl $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? Drop for Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
                     fn drop(&mut self) {
                         for listener in core::mem::take(&mut self.listeners).into_iter().rev() {
                             drop(listener);
@@ -89,7 +89,7 @@ macro_rules! declare_exclusive_multicast_delegate {
                     }
                 }
 
-                impl core::fmt::Debug for Delegate {
+                impl $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? core::fmt::Debug for Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                         let Self { ref listeners } = *self;
                         f.debug_struct(stringify!($Delegate))
@@ -98,13 +98,13 @@ macro_rules! declare_exclusive_multicast_delegate {
                     }
                 }
 
-                impl Default for Delegate {
+                impl $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? Default for Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
                     fn default() -> Self {
                         Self::new()
                     }
                 }
 
-                impl Delegate {
+                impl $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
                     /// Creates a new delegate, doesn't perform any allocation.
                     #[must_use]
                     pub const fn new() -> Self {
@@ -129,7 +129,7 @@ macro_rules! declare_exclusive_multicast_delegate {
                     /// Removes a listener by handle, preserving ordering of the listeners list, returning `Some(...)` if it was found and removed.
                     /// 
                     /// This has O(N) complexity, but has an O(1) "happy path" when removals always occur from the end of the list.
-                    pub fn remove(&mut self, listener_handle: &ListenerHandle) -> Option<Func> {
+                    pub fn remove(&mut self, listener_handle: &ListenerHandle) -> Option<Func $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)?> {
                         let listener_handle = listener_handle.untyped();
                         if let Some(listener) = self.listeners.get(listener_handle.initial_index_hint) {
                             if listener.uid == listener_handle.uid {
@@ -146,11 +146,14 @@ macro_rules! declare_exclusive_multicast_delegate {
                     /// 
                     /// `func` must return a `ListenerReply` indicating whether or not it should be removed from the list.
                     /// This is useful when `func` has a clear "receiver" that may expire, or if it's designed as a one-shot alarm.
-                    pub fn push(&mut self, func: Func) -> ListenerHandle {
+                    pub fn push(&mut self, func: Func $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)?) -> ListenerHandle {
                         let listener_handle = ListenerHandle::generate_new(self.listeners.len());
                         self.listeners.push(Listener { func, uid: listener_handle.untyped().uid });
                         listener_handle
                     }
+                }
+
+                impl<$($($delegatelifetimes,)*)? $($($argslifetimes,)*)? $($($delegatetypeparams,)*)?> Delegate $(<$($delegatelifetimes,)* $($delegatetypeparams),*>)? {
                     /// Broadcast (or "dispatch" or "invoke") this delegate, calling all listeners with the provided arguments to the function.
                     /// 
                     /// Listeners are called following the natural order in which they appear in the list.
@@ -189,6 +192,14 @@ declare_exclusive_multicast_delegate!{
     /// 
     /// Also consider using a "shared" delegate instead.
     pub SimpleExclusiveMulticastDelegateSendAndSync, FnMut() + Send + Sync
+}
+
+#[expect(dead_code, unused_qualifications, reason = "This serves as a compile-time check")]
+mod macro_stress_test {
+    declare_exclusive_multicast_delegate!{
+        /// A shared multicast delegate that is `Send` and `Sync`.
+        MacroStressTest<T>, Fn<'a>(&'a T) + core::marker::Sync
+    }
 }
 
 impl SimpleExclusiveMulticastDelegateSendAndSync {
