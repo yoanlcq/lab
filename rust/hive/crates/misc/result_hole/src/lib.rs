@@ -70,18 +70,14 @@ impl ResultHole {
         if let Err(error) = r.as_ref() {
             eprintln!("Discarded result at ({source_line_info}): {error}");
             debugger::breakpoint!();
-            _ = self.on_error.broadcast(&ErrorPayload {
-                error,
-                source_line_info,
-                caller_may_use_ok,
-                caller_may_use_err,
-            });
+            _ = self.on_error.broadcast(&ErrorPayload { error, source_line_info, caller_may_use_ok, caller_may_use_err });
         }
     }
 }
 
 pub static GLOBAL: LazyLock<ResultHole> = LazyLock::new(ResultHole::new);
 
+#[doc(hidden)]
 pub mod private_reexports {
     pub use source_line_info::source_line_info;
 }
