@@ -1,4 +1,6 @@
 //! [Rationale](https://stackoverflow.com/a/33687996)
+ 
+#![no_std]
 
 use core::any::Any;
 

@@ -1,3 +1,4 @@
+#![no_std]
 #![expect(unsafe_code, reason = "This is expected for Unique<>")]
 
 use core::{marker::PhantomData, ptr::NonNull};

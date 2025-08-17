@@ -1,3 +1,5 @@
+#![no_std]
+
 #[inline]
 #[must_use]
 pub fn is_attached() -> bool {
