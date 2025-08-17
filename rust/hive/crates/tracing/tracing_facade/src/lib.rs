@@ -4,6 +4,9 @@
 
 #![allow(clippy::multiple_crate_versions, reason = "It's for regex-automata and regex-syntax. The 'loom' crate (indirectly referenced by tracy-client) depends on it, but we really never use it. Clippy complains because it conservatively assumes we have enabled cfg(loom)")]
 
+use core::alloc::GlobalAlloc;
+use core::alloc::Layout;
+
 pub struct TracingManager {
     tracy_client: tracy_client::Client,
 }
@@ -63,4 +66,37 @@ macro_rules! span {
     ($name: expr) => {
         $crate::Span::from_tracy($crate::private_reexports::tracy_client::span!($name))
     };
+}
+
+pub struct GlobalAllocatorWrapper<A: GlobalAlloc> {
+    tracy: tracy_client::ProfiledAllocator<A>,
+}
+
+impl<A: GlobalAlloc> GlobalAllocatorWrapper<A> {
+    #[must_use]
+    pub const fn new(inner_allocator: A, callstack_depth: u16) -> Self {
+        Self {
+            tracy: tracy_client::ProfiledAllocator::new(inner_allocator, callstack_depth)
+        }
+    }
+}
+
+#[expect(clippy::undocumented_unsafe_blocks, reason = "We are just a thin wrapper")]
+#[expect(unsafe_code, reason = "This is to be expected for an allocator")]
+unsafe impl<A: GlobalAlloc> GlobalAlloc for GlobalAllocatorWrapper<A> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { self.tracy.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { self.tracy.dealloc(ptr, layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        unsafe { self.tracy.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        unsafe { self.tracy.realloc(ptr, layout, new_size) }
+    }
 }
