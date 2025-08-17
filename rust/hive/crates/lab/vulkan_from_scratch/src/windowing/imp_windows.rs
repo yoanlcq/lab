@@ -30,7 +30,7 @@ impl Win32HandleType for HWND {}
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct Win32HandleWrapper<T: Win32HandleType>(pub T);
 
-// TODO: I'm not certain about that. We should probably fix this another way
+// TODO: I'm not certain about making Win32HandleWrapper Send and Sync. We should probably fix this another way. Maybe a window should be neither Send nor Sync, ensuring that it's only interacted with from the thread that created it. Then we could write a wrapper that sends commands to the windows's owning thread.
 #[expect(
     clippy::non_send_fields_in_send_ty,
     reason = "Generated Win32 handle types use a *mut void, but we know the related APIs are thread-safe"

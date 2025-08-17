@@ -18,7 +18,7 @@ macro_rules! breakpoint_even_if_not_attached {
         // Safety: Well this is as "safe" as it gets
         unsafe { std::arch::asm!("int3"); }
         #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-        TODO;
+        TODO; // Implement breakpoint on other platforms
     };
 }
 

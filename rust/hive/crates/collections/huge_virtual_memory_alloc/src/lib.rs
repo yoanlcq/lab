@@ -10,11 +10,6 @@ use unique_ptr::Unique;
 
 type Result<T> = core::result::Result<T, Error>;
 
-// TODO: Provide good (and illustrated) documentation
-// TODO: automated copyright notice?
-// TODO: automated licenses gathering?
-// TODO: automated export of non-confidential source code and commits?
-
 // A wrapper around a function; it allows you to opt-out of dynamic allocation if you don't want it
 pub enum DropResultHandler {
     Unwrap,
@@ -449,8 +444,8 @@ impl Allocation {
             #[cfg(feature="track_allocation_sizes")]
             if let Some(mut state) = optional_state_lock {
                 if old_actual_committed_size != 0 {
-                    #[expect(clippy::unwrap_used, reason = "TODO")]
-                    let refcount = state.allocations_actual_committed_sizes.get_mut(&old_actual_committed_size).unwrap();
+                    #[expect(clippy::expect_used, reason = "See below")]
+                    let refcount = state.allocations_actual_committed_sizes.get_mut(&old_actual_committed_size).expect("If old_actual_committed_size is non-zero, it implies we inserted it into allocations_actual_committed_sizes");
                     if *refcount == 1 {
                         _ = state.allocations_actual_committed_sizes.remove(&old_actual_committed_size);
                     } else {

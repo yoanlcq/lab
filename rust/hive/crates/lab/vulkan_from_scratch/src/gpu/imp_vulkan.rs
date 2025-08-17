@@ -242,6 +242,7 @@ impl VulkanApi {
                     // In fact any call to DestroyWindow() is unsafe when there is work in-flight for it...
                     // We should have our own delegate for the "1st chance destroy", and for the "last chance destroy"
                     // (WM_DESTROY)
+                    // TODO: VK_EXT_swapchain_maintenance1 https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html
                     unsafe {
                         this.surface_loader.destroy_surface(surface, this.allocator.as_ref());
                     };
@@ -615,7 +616,7 @@ impl Drop for VulkanDevice {
 
 impl DeviceImpl for VulkanDevice {
     fn create_swap_chain(&self, _params: &SwapChainParams) -> Result<Box<dyn SwapChainImpl>> {
-        // TODO
+        // TODO: create_swap_chain
         todo!()
     }
     fn test_upload_large_buffer(&self) -> Result<()> {
@@ -629,7 +630,7 @@ impl DeviceImpl for VulkanDevice {
                 &vk_mem::AllocationCreateInfo {
                     usage: vk_mem::MemoryUsage::Auto,
                     flags: vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-                    user_data: 0_usize, // TODO
+                    user_data: 0_usize,
                     ..Default::default()
                 }
             )?;
@@ -645,14 +646,13 @@ impl DeviceImpl for VulkanDevice {
                 result_hole::consume!(debug_utils_loader.set_debug_utils_object_name(&name_info));
             }
 
-            // TODO: vk_mem doesn't expose this function supported by VMA. Consider adding it?
-            // self.vma_allocator.set_allocation_name(allocation, c"TODO");
+            // TODO: vk_mem doesn't expose set_allocation_name() supported by VMA. Consider adding it?
+            // self.vma_allocator.set_allocation_name(allocation, c"Buffer name");
 
             let ptr = self.vma_allocator.map_memory(&mut allocation).inspect_err(|_| {
                 self.vma_allocator.destroy_buffer(buffer, &mut allocation);
             })?;
 
-            // TODO: do this on multiple threads?
             core::ptr::write_bytes(ptr, 0xbe, size);
 
             self.vma_allocator.unmap_memory(&mut allocation);
