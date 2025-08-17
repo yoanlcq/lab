@@ -1,19 +1,11 @@
 [package]
-name = "vulkan_from_scratch"
+name = "vulkan_from_scratch_lib"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [lints]
 workspace = true
-
-[lib]
-name = "vulkan_from_scratch_lib"
-path = "src/lib.rs"
-
-[[bin]]
-name = "vulkan_from_scratch_bin"
-path = "src/main.rs"
 
 [dependencies]
 ash = "0.38.0"
@@ -26,7 +18,6 @@ debugger = { path = "../../os/debugger" }
 result_hole = { path = "../../misc/result_hole" }
 weak_self = { path = "../../std_based/weak_self" }
 tracing_facade = { path = "../../tracing/tracing_facade" }
-mimalloc = "0.1.47"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"

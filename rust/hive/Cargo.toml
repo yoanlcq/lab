@@ -5,7 +5,8 @@ members = [
     "crates/collections/hive",
     "crates/collections/huge_virtual_memory_alloc",
     "crates/lab/research_lab",
-    "crates/lab/vulkan_from_scratch",
+    "crates/lab/vulkan_from_scratch_bin",
+    "crates/lab/vulkan_from_scratch_lib",
     "crates/misc/result_hole",
     "crates/os/debugger",
     "crates/os/virtual_memory",
@@ -36,7 +37,7 @@ cargo_common_metadata = "allow"
 missing_errors_doc = "allow"
 
 #
-# Clippy "nursery" lints
+# Clippp misc lints
 #
 
 # Sorry, but map_or_else is really less readable...
@@ -47,6 +48,11 @@ redundant_pub_crate = "allow"
 
 # I liked this one, but unfortunately it wanted me to write 0x00ff_0000 instead of 0xff0000 for a hex color... The suggestion is actually less readable.
 unreadable_literal = "allow"
+
+# I currently have too many problems with regex-automata, regex-syntax and windows-targets.
+# We may still re-enable it periodically to check how screwed we are.
+# In general we defer to "cargo deny check", which gives us a way to be more specific in what we allow.
+multiple_crate_versions = "allow"
 
 #
 # Clippy "restriction" lints

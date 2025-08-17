@@ -1,0 +1,13 @@
+[package]
+name = "vulkan_from_scratch_bin"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vulkan_from_scratch_lib = { path = "../vulkan_from_scratch_lib" }
+mimalloc = "0.1.47"
+tracing_facade = { path = "../../tracing/tracing_facade" }
+
+[lints]
+workspace = true

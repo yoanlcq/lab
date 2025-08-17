@@ -2,8 +2,6 @@
 //! 
 //! All code in this workspace should use+extend this instead of relying on any concrete tracing service.
 
-#![allow(clippy::multiple_crate_versions, reason = "It's for regex-automata and regex-syntax. The 'loom' crate (indirectly referenced by tracy-client) depends on it, but we really never use it. Clippy complains because it conservatively assumes we have enabled cfg(loom)")]
-
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
 
