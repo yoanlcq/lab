@@ -2,6 +2,8 @@
 //! 
 //! All code in this workspace should use+extend this instead of relying on any concrete tracing service.
 
+TODO; // Disable tracy in shipping builds! Because it connects to 127.0.0.1 and we might not want that!
+
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
 
