@@ -17,10 +17,17 @@ impl TracingManager {
         }
     }
     pub fn start_first_frame(&self) {
-        self.tracy_client.color_message("start_first_frame", 0xff0000, 0);
+        self.tracy_client.color_message("Starting first frame", 0xff0000, 0);
     }
     pub fn end_frame(&self) {
         self.tracy_client.frame_mark();
+    }
+    // TODO: Consider exposing an API based on `core::fmt::Formatter` instead. Users would provide a closure in which they use `write!()`.
+    pub fn log_dynamic_message<F>(&self, mut get_message: F, color: u32, callstack_depth: u16) where F: FnMut() -> String {
+        self.tracy_client.color_message(&get_message(), color, callstack_depth);
+    }
+    pub fn log_static_message(&self, message: &'static str, color: u32, callstack_depth: u16) {
+        self.tracy_client.color_message(message, color, callstack_depth);
     }
 }
 

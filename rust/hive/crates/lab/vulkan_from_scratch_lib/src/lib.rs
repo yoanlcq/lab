@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Instant;
 use core::time::Duration;
 use vek::{Extent2, Vec2};
@@ -13,12 +14,14 @@ pub mod windowing;
 
 struct StartupProfiler {
     startup_instant: Instant,
+    pub tracing_manager: OnceLock<Arc<tracing_facade::TracingManager>>,
 }
 
 impl StartupProfiler {
     pub(crate) fn new() -> Self {
         let this = Self {
             startup_instant: Instant::now(),
+            tracing_manager: OnceLock::new(),
         };
         Self::log_exe_startup_time();
         this
@@ -49,6 +52,9 @@ impl StartupProfiler {
     pub(crate) fn log_step(&self, description: &str) {
         let elapsed = Instant::now().duration_since(self.startup_instant).as_secs_f32();
         println!("[Startup][{elapsed:.3}] {description}");
+
+        #[expect(clippy::unwrap_used, reason = "It's impossible to mess this up")]
+        self.tracing_manager.get().unwrap().log_dynamic_message(|| format!("[Startup][{elapsed:.3}] {description}"), 0xff0000, 0);
     }
 }
 
@@ -87,7 +93,9 @@ fn make_window_params(index: u32) -> WindowParams {
 pub fn main() -> gpu::Result<()> {
     // StartupProfiler goes first because Tracy initialization takes some time and we want to capture that fact
     let startup_profiler = Arc::new(StartupProfiler::new());
-    let tracing_manager = tracing_facade::TracingManager::start();
+    let tracing_manager = Arc::new(tracing_facade::TracingManager::start());
+    #[expect(clippy::unwrap_used, reason = "It's obvious nobody has set it before")]
+    startup_profiler.tracing_manager.set(Arc::clone(&tracing_manager)).map_err(drop).unwrap();
 
     let mut gpu_thread = Some({
         let startup_profiler = startup_profiler.clone();
