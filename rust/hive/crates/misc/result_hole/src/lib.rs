@@ -11,25 +11,33 @@
 //! The only requirement is that the `Err(...)` variant implements `core::error::Error`; this is required to have minimum guarantees that we can do something with the error.
 
 use core::error::Error;
+use std::sync::LazyLock;
 
 use delegates::declare_shared_multicast_delegate;
 
+#[derive(Debug, Copy, Clone)]
 pub struct ErrorPayload<'a> {
-    error: &'a dyn Error,
-    caller_may_use_ok: bool,
-    caller_may_use_err: bool,
+    pub error: &'a dyn Error,
+    pub caller_may_use_ok: bool,
+    pub caller_may_use_err: bool,
 }
 
 declare_shared_multicast_delegate!{
-    /// TODO
-    pub OnError, Fn(ErrorPayload) + Send
+    pub OnError<>, Fn<'a>(&'a ErrorPayload<'a>) + Send
 }
 
+#[derive(Debug, Default)]
 pub struct ResultHole {
-    on_error: OnError,
+    pub on_error: OnError,
 }
 
 impl ResultHole {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            on_error: OnError::new(),
+        }
+    }
     #[expect(dead_code, reason = "This is a static assert")]
     const fn must_be_send_and_sync() {
         const fn f<T: Send + Sync>() {}
@@ -60,7 +68,7 @@ impl ResultHole {
         if let Err(e) = r.as_ref() {
             eprintln!("Discarded result: {e}");
             debugger::breakpoint!();
-            self.on_error.broadcast(ErrorPayload {
+            _ = self.on_error.broadcast(&ErrorPayload {
                 error: e,
                 caller_may_use_ok,
                 caller_may_use_err,
@@ -69,27 +77,20 @@ impl ResultHole {
     }
 }
 
-/// A general-purpose function for results that we don't know what to do with.
-///
-/// For instance, if they occur during Drop or other inconvenient places such as system callbacks.
-/// At the very least this allows us to have better control over the overall behavior when errors
-/// occur in such a context.
+pub static GLOBAL: LazyLock<ResultHole> = LazyLock::new(ResultHole::new);
+
 pub fn consume<T, E: Error>(r: Result<T, E>) {
-    drop(inspect(r));
+    GLOBAL.consume(r);
 }
 
-/// A general-purpose function for results that we don't know what to do with.
-/// 
-/// This is useful if you want to match only on the `Ok(...)` variant and don't know what to do with the `Err(...)` one.
-///
-/// For instance, if they occur during Drop or other inconvenient places such as system callbacks.
-/// At the very least this allows us to have better control over the overall behavior when errors
-/// occur in such a context.
+pub fn consume_err<T, E: Error>(r: Result<T, E>) -> Option<T> {
+    GLOBAL.consume_err(r)
+}
+
 pub fn inspect<T, E: Error>(r: Result<T, E>) -> Result<T, E> {
-    if let Err(e) = r.as_ref() {
-        eprintln!("Discarded result: {e}");
-        debugger::breakpoint!();
-    }
-    r
+    GLOBAL.inspect(r)
 }
 
+pub fn inspect_ref<T, E: Error>(r: &Result<T, E>) -> &Result<T, E> {
+    GLOBAL.inspect_ref(r)
+}

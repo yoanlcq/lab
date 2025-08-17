@@ -46,10 +46,10 @@ pub mod pending_removal {
 /// Note that you cannot use `FnMut` for the `FnTrait` parameter: `FnMut` is fundamentally incompatible with reentrancy, even if we did wrap it in a `RefCell`.
 #[macro_export]
 macro_rules! declare_shared_multicast_delegate {
-    ($(#[$outer:meta])* $visibility:vis $Delegate:ident, $FnTrait:ident($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
+    ($(#[$outer:meta])* $visibility:vis $Delegate:ident<$($delegatelifetimes:lifetime),*>, $FnTrait:ident<$($argslifetimes:lifetime),*>($($Args:ty),*) $(+ $ExtraTraits:tt)*) => {
         $crate::private_reexports::pastey::paste!{
             $(#[$outer])* 
-            $visibility type $Delegate = [<$Delegate _internal>]::Delegate;
+            $visibility type $Delegate<$($delegatelifetimes),*> = [<$Delegate _internal>]::Delegate<$($delegatelifetimes),*>;
 
             #[allow(dead_code, reason = "This lightens the load when $visibility is empty and the delegate type is not used")]
             #[expect(clippy::allow_attributes, reason = "allow(...) is necessary if $visibility is empty")]
@@ -68,14 +68,14 @@ macro_rules! declare_shared_multicast_delegate {
                 #[allow(unused_imports, reason = "This is actually required for convenience for callers")]
                 use super::*;
 
-                type Func = Box<dyn $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
+                type Func<$($delegatelifetimes),*> = Box<dyn for<$($argslifetimes),*> $FnTrait($($Args),*) -> ListenerReply $(+ $ExtraTraits)*>;
 
-                struct Listener {
-                    func: Func,
+                struct Listener<$($delegatelifetimes),*> {
+                    func: Func<$($delegatelifetimes),*>,
                     uid: u64,
                 }
 
-                impl core::fmt::Debug for Listener {
+                impl<$($delegatelifetimes),*> core::fmt::Debug for Listener<$($delegatelifetimes),*> {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                         let Self { func: _, ref uid } = *self;
                         f.debug_struct("Listener").field("uid", &uid).finish_non_exhaustive()
@@ -112,15 +112,15 @@ macro_rules! declare_shared_multicast_delegate {
                     }
                 }
 
-                pub struct Delegate {
-                    listeners: ReentrantMutex<RefCell<Vec<Listener>>>,
-                    pending_push: Mutex<Vec<(ListenerHandle, Func)>>,
+                pub struct Delegate<$($delegatelifetimes),*> {
+                    listeners: ReentrantMutex<RefCell<Vec<Listener<$($delegatelifetimes),*>>>>,
+                    pending_push: Mutex<Vec<(ListenerHandle, Func<$($delegatelifetimes),*>)>>,
                     pending_removal: Mutex<PendingRemoval>,
                     must_call_listeners_even_if_pending_removal: bool,
                 }
 
                 /// When dropping the delegate, pending removals are applied in their natural order, then listeners are dropped in reverse order.
-                impl Drop for Delegate {
+                impl<$($delegatelifetimes),*> Drop for Delegate<$($delegatelifetimes),*> {
                     fn drop(&mut self) {
                         let mut listeners = core::mem::take(self.listeners.get_mut().get_mut());
                         for (listener_handle, func) in core::mem::take(self.pending_push.get_mut()) {
@@ -136,7 +136,7 @@ macro_rules! declare_shared_multicast_delegate {
                     }
                 }
 
-                impl core::fmt::Debug for Delegate {
+                impl<$($delegatelifetimes),*> core::fmt::Debug for Delegate<$($delegatelifetimes),*> {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                         let Self { ref listeners, ref pending_push, ref pending_removal, must_call_listeners_even_if_pending_removal } = *self;
                         f.debug_struct(stringify!($Delegate))
@@ -149,13 +149,13 @@ macro_rules! declare_shared_multicast_delegate {
                 }
 
                 /// Creates a new delegate, doesn't perform any allocation.
-                impl Default for Delegate {
+                impl<$($delegatelifetimes),*> Default for Delegate<$($delegatelifetimes),*> {
                     fn default() -> Self {
                         Self::new()
                     }
                 }
 
-                impl Delegate {
+                impl<$($delegatelifetimes),*> Delegate<$($delegatelifetimes),*> {
                     /// Creates a new delegate, doesn't perform any allocation.
                     #[must_use]
                     pub fn new() -> Self {
@@ -205,7 +205,7 @@ macro_rules! declare_shared_multicast_delegate {
                     pub fn is_empty_racy(&self) -> bool {
                         self.listeners.lock().borrow().is_empty()
                     }
-                    fn remove_immediate(listeners: &mut Vec<Listener>, listener_handle: &UntypedListenerHandle) -> Option<Func> {
+                    fn remove_immediate(listeners: &mut Vec<Listener<$($delegatelifetimes),*>>, listener_handle: &UntypedListenerHandle) -> Option<Func<$($delegatelifetimes),*>> {
                         if let Some(listener) = listeners.get(listener_handle.initial_index_hint) {
                             if listener.uid == listener_handle.uid {
                                 return Some(listeners.remove(listener_handle.initial_index_hint).func);
@@ -222,7 +222,7 @@ macro_rules! declare_shared_multicast_delegate {
                     /// Note that it's possible that it returns `None` if the listener is "pending push"; it will still be removed eventually.
                     /// 
                     /// This has O(N) complexity, but has an O(1) "happy path" when removals always occur from the end of the list.
-                    pub fn remove(&self, listener_handle: &ListenerHandle) -> Option<Func> {
+                    pub fn remove(&self, listener_handle: &ListenerHandle) -> Option<Func<$($delegatelifetimes),*>> {
                         if let Some(mut listeners) = self.listeners.try_lock().as_ref().and_then(|x| x.try_borrow_mut().ok()) {
                             Self::remove_immediate(&mut listeners, &listener_handle.untyped())
                         } else {
@@ -236,7 +236,7 @@ macro_rules! declare_shared_multicast_delegate {
                     /// 
                     /// `func` must return a `ListenerReply` indicating whether or not it should be removed from the list.
                     /// This is useful when `func` has a clear "receiver" that may expire, or if it's designed as a one-shot alarm.
-                    pub fn push(&self, func: Func) -> ListenerHandle {
+                    pub fn push(&self, func: Func<$($delegatelifetimes),*>) -> ListenerHandle {
                         if let Some(mut listeners) = self.listeners.try_lock().as_ref().and_then(|x| x.try_borrow_mut().ok()) {
                             let listener_handle = ListenerHandle::generate_new(listeners.len());
                             listeners.push(Listener { func, uid: listener_handle.untyped().uid });
@@ -247,6 +247,9 @@ macro_rules! declare_shared_multicast_delegate {
                             listener_handle
                         }
                     }
+                }
+
+                impl<$($delegatelifetimes),* $($argslifetimes),*> Delegate<$($delegatelifetimes),*> {
                     /// Broadcast (or "dispatch" or "invoke") this delegate, calling all listeners with the provided arguments to the function.
                     /// 
                     /// During the call, the list of listeners is "locked" to prevent modification during iteration.
@@ -277,7 +280,7 @@ macro_rules! declare_shared_multicast_delegate {
                     pub fn try_broadcast_cloning(&self, $(args: &$Args),*) -> Option<BroadcastStats> where $($Args: Clone),* {
                         self.listeners.try_lock().map(|listeners_lock| self.broadcast_impl(listeners_lock, $({ let _: $Args; &args }),*))
                     }
-                    fn broadcast_impl(&self, listeners_lock: ReentrantMutexGuard<RefCell<Vec<Listener>>>, $(args: &$Args),*) -> BroadcastStats where $($Args: Clone),* {
+                    fn broadcast_impl(&self, listeners_lock: ReentrantMutexGuard<RefCell<Vec<Listener<$($delegatelifetimes),*>>>>, $(args: &$Args),*) -> BroadcastStats where $($Args: Clone),* {
                         let mut stats = BroadcastStats::default();
 
                         for (i, listener) in listeners_lock.borrow().iter().enumerate() {
@@ -329,14 +332,14 @@ macro_rules! declare_shared_multicast_delegate {
 
 declare_shared_multicast_delegate!{
     /// A shared multicast delegate that is `Send` and `Sync`.
-    pub SimpleSharedMulticastDelegate, Fn() + Send
+    pub SimpleSharedMulticastDelegate<>, Fn<>() + Send
 }
 
 declare_shared_multicast_delegate!{
     /// A shared multicast delegate that isn't `Send` or `Sync`.
     /// 
     /// Compared to `SimpleSharedMulticastDelegate`, this one is given the longer name, because it is expected to be less commonly used.
-    pub SimpleSharedMulticastDelegateNoSend, Fn()
+    pub SimpleSharedMulticastDelegateNoSend<>, Fn<>()
 }
 
 impl SimpleSharedMulticastDelegate {
