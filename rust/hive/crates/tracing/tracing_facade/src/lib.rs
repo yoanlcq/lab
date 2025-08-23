@@ -63,7 +63,7 @@ impl Span {
         self.tracy_span.emit_color(color);
     }
     #[must_use]
-    pub fn with_function_call_string< F>(mut self, f: F) -> Self where F: FnMut() -> String {
+    pub fn with_function_call_string<F>(mut self, f: F) -> Self where F: FnMut() -> String {
         self.set_function_call_string(f);
         self
     }
