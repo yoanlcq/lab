@@ -2,42 +2,50 @@
 //! 
 //! All code in this workspace should use+extend this instead of relying on any concrete tracing service.
 
-TODO; // Disable tracy in shipping builds! Because it connects to 127.0.0.1 and we might not want that!
-
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
 
 pub struct TracingManager {
+    #[cfg(feature = "tracy")]
     tracy_client: tracy_client::Client,
 }
 
+#[cfg_attr(not(feature = "tracy"), expect(clippy::missing_const_for_fn, unused_variables, unused_mut, reason = "Normal"))]
 impl TracingManager {
     #[must_use]
     pub fn start() -> Self {
         Self {
+            #[cfg(feature = "tracy")]
             tracy_client: tracy_client::Client::start(),
         }
     }
     pub fn start_first_frame(&self) {
+        #[cfg(feature = "tracy")]
         self.tracy_client.color_message("Starting first frame", 0xff0000, 0);
     }
     pub fn end_frame(&self) {
+        #[cfg(feature = "tracy")]
         self.tracy_client.frame_mark();
     }
     // TODO: Consider exposing an API based on `core::fmt::Formatter` instead. Users would provide a closure in which they use `write!()`.
     pub fn log_dynamic_message<F>(&self, mut get_message: F, color: u32, callstack_depth: u16) where F: FnMut() -> String {
+        #[cfg(feature = "tracy")]
         self.tracy_client.color_message(&get_message(), color, callstack_depth);
     }
     pub fn log_static_message(&self, message: &'static str, color: u32, callstack_depth: u16) {
+        #[cfg(feature = "tracy")]
         self.tracy_client.color_message(message, color, callstack_depth);
     }
 }
 
 pub struct Span {
+    #[cfg(feature = "tracy")]
     tracy_span: tracy_client::Span,
 }
 
+#[cfg_attr(not(feature = "tracy"), expect(clippy::missing_const_for_fn, unused_variables, unused_mut, reason = "Normal"))]
 impl Span {
+    #[cfg(feature = "tracy")]
     #[must_use]
     pub const fn from_tracy(tracy_span: tracy_client::Span) -> Self {
         Self { tracy_span }
@@ -51,6 +59,7 @@ impl Span {
     }
     /// See `with_color()`
     pub fn set_color(&mut self, color: u32) {
+        #[cfg(feature = "tracy")]
         self.tracy_span.emit_color(color);
     }
     #[must_use]
@@ -59,31 +68,51 @@ impl Span {
         self
     }
     pub fn set_function_call_string<F>(&mut self, mut f: F) where F: FnMut() -> String {
+        #[cfg(feature = "tracy")]
         self.tracy_span.emit_text(&f());
     }
 }
 
 #[doc(hidden)]
 pub mod private_reexports {
+    #[cfg(feature = "tracy")]
     pub use tracy_client;
 }
 
 #[macro_export]
+#[cfg(feature = "tracy")]
 macro_rules! span {
     ($name: expr) => {
         $crate::Span::from_tracy($crate::private_reexports::tracy_client::span!($name))
     };
 }
 
+#[macro_export]
+#[cfg(not(feature = "tracy"))]
+macro_rules! span {
+    ($name: expr) => {
+        $crate::Span {}
+    };
+}
+
 pub struct GlobalAllocatorWrapper<A: GlobalAlloc> {
+    #[cfg(feature = "tracy")]
     tracy: tracy_client::ProfiledAllocator<A>,
+    #[cfg(not(feature = "tracy"))]
+    inner: A,
 }
 
 impl<A: GlobalAlloc> GlobalAllocatorWrapper<A> {
     #[must_use]
     pub const fn new(inner_allocator: A, callstack_depth: u16) -> Self {
         Self {
-            tracy: tracy_client::ProfiledAllocator::new(inner_allocator, callstack_depth)
+            #[cfg(feature = "tracy")]
+            tracy: tracy_client::ProfiledAllocator::new(inner_allocator, callstack_depth),
+            #[cfg(not(feature = "tracy"))]
+            inner: {
+                _ = callstack_depth;
+                inner_allocator
+            },
         }
     }
 }
@@ -92,18 +121,30 @@ impl<A: GlobalAlloc> GlobalAllocatorWrapper<A> {
 #[expect(unsafe_code, reason = "This is to be expected for an allocator")]
 unsafe impl<A: GlobalAlloc> GlobalAlloc for GlobalAllocatorWrapper<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        #[cfg(feature = "tracy")]
         unsafe { self.tracy.alloc(layout) }
+        #[cfg(not(feature = "tracy"))]
+        unsafe { self.inner.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        #[cfg(feature = "tracy")]
         unsafe { self.tracy.dealloc(ptr, layout) }
+        #[cfg(not(feature = "tracy"))]
+        unsafe { self.inner.dealloc(ptr, layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        #[cfg(feature = "tracy")]
         unsafe { self.tracy.alloc_zeroed(layout) }
+        #[cfg(not(feature = "tracy"))]
+        unsafe { self.inner.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        #[cfg(feature = "tracy")]
         unsafe { self.tracy.realloc(ptr, layout, new_size) }
+        #[cfg(not(feature = "tracy"))]
+        unsafe { self.inner.realloc(ptr, layout, new_size) }
     }
 }

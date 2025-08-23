@@ -5,7 +5,11 @@ edition = "2024"
 publish = false
 
 [dependencies]
-tracy-client = "0.18.2"
+tracy-client = { version = "0.18.2", optional = true }
 
 [lints]
 workspace = true
+
+[features]
+default = ["tracy"]
+tracy = ["dep:tracy-client"]
