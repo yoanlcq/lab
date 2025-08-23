@@ -6,6 +6,8 @@ publish = false
 
 [dependencies]
 tracy-client = { version = "0.18.2", optional = true }
+tunables = { path = "../../application/tunables" }
+linkme = "0.3"
 
 [lints]
 workspace = true

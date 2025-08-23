@@ -5,6 +5,27 @@
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
 
+TODO;
+// TODO: le vrai système que je veux:
+// - Un programme lancable n'importe quand
+// - Il pourrait visiter tous les fichiers source du workspace et faire des vérifications
+//   - copyright header
+//   - loctexts
+//   - header de confidentialité (vérifier si c'est safe à open-sourcer)
+//   - forbidden patterns?
+// - Il utilise "cargo metadata" pour lister toutes les dépendances de la crate ciblée
+//   - Il génère une crate automatique qui doit être ignorée par le VCS
+//     - Génère le Cargo.toml d'après un template en passant chaque dépendance
+//     - Génère chaque fichier src d'après un template
+//   - Il faut que la crate ciblée ajoute elle-même cette dépendance vers la crate automatique et s'en serve
+
+#[linkme::distributed_slice(tunables::TUNABLES)]
+static ENABLE_TRACY: tunables::Tunable<'static> = tunables::Tunable {
+    name: "tracy",
+    help: "Enables Tracy",
+    default: tunables::TunableValue::Bool(true),
+};
+
 pub struct TracingManager {
     #[cfg(feature = "tracy")]
     tracy_client: tracy_client::Client,

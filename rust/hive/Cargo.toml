@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/application/tunables",
     "crates/collections/delegates",
     "crates/collections/hive",
     "crates/collections/huge_virtual_memory_alloc",
